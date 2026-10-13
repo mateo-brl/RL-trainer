@@ -104,11 +104,6 @@ TEST(bm_fix_airdribble_flip_finish_free_play) {
     CHECK_EQ(h.countSkill("ball.flick"), 0);
     CHECK_EQ(h.countSkill("ball.airdribble"), 1);
     CHECK_EQ(h.results.size(), 1u);  // the flip touch (aerial) is absorbed by the air dribble
-    for (const auto& r : h.results) {
-        std::printf("  %s %s %.0f %d\n", r.skill.c_str(), r.title.c_str(), r.score, r.success ? 1 : 0);
-        for (const auto& mm : r.metrics) std::printf("    %s=%.3f\n", mm.key.c_str(), mm.value);
-        for (const auto& t : r.tips) std::printf("    tip %s\n", t.code.c_str());
-    }
     if (!h.results.empty()) {
         CHECK(h.results[0].title.rfind("Air dribble depuis le sol", 0) == 0);
         CHECK(h.results[0].success);
@@ -398,9 +393,15 @@ TEST(bm_fix_sdk_reset_gating) {
 TEST(bm_fix_stats_score_sum_double) {
     Stats a;
     MechStats& m = a.at(Mech::Aerial);
-    for (int i = 0; i < 25000; ++i) m.record(static_cast<float>(37 + (i % 7)), i % 3 == 0);  // sum is 999 994
+    double expected = 0.0;
+    for (int i = 0; i < 30000; ++i) {
+        const float score = 40.5f + static_cast<float>(i % 7);
+        m.record(score, i % 3 == 0);
+        expected += static_cast<double>(score);
+    }
     const double sum = m.scoreSum;
-    CHECK(sum == 999994.0);
+    CHECK(sum == expected);
+    CHECK(sum > 1e6);  // beyond the 6 significant digits of Store::setFloat
     Stats b = a;
     for (int cycle = 0; cycle < 5; ++cycle) {  // repeated save / load cycles do not drift
         Store st;
@@ -410,7 +411,7 @@ TEST(bm_fix_stats_score_sum_double) {
         b = c;
     }
     CHECK(b.at(Mech::Aerial).scoreSum == sum);
-    CHECK_EQ(b.at(Mech::Aerial).attempts, 25000);
+    CHECK_EQ(b.at(Mech::Aerial).attempts, 30000);
     CHECK_NEAR(b.at(Mech::Aerial).average(), m.average(), 1e-6f);
     // Older saves (written with setFloat) still load.
     Store legacy;

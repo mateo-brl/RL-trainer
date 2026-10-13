@@ -1,6 +1,7 @@
 #include "plugin/RLTrainer.h"
 
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 
@@ -276,6 +277,18 @@ void RLTrainer::refreshContext() {
     ctx.isCustomMap = ctx.mode == GameMode::Workshop;
     if (ctx.isCustomMap) maps_->describeCurrentMap(ctx.mapName, ctx);
     ctx.paused = gameWrapper->IsPaused();
+    {
+        const std::time_t now = std::time(nullptr);
+        std::tm tm{};
+#ifdef _WIN32
+        localtime_s(&tm, &now);
+#else
+        localtime_r(&now, &tm);
+#endif
+        char buf[16];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+        ctx.localDate = buf;
+    }
 
     const GameContext& cur = engine_->context();
     if (ctx.paused != lastPaused_) {
@@ -283,7 +296,7 @@ void RLTrainer::refreshContext() {
         sendEvent(ctx.paused ? GameEventKind::Paused : GameEventKind::Unpaused);
     }
     if (ctx.mode != cur.mode || ctx.mapName != cur.mapName || ctx.workshopId != cur.workshopId ||
-        ctx.category != cur.category || ctx.isCustomMap != cur.isCustomMap) {
+        ctx.category != cur.category || ctx.isCustomMap != cur.isCustomMap || ctx.localDate != cur.localDate) {
         Actions actions;
         engine_->setContext(ctx, actions);
         run(actions);

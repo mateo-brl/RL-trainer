@@ -47,6 +47,7 @@ struct GameContext {
     std::string mapTitle;        // display title when known
     MapCategory category = MapCategory::Standard;
     bool paused = false;
+    std::string localDate;       // "YYYY-MM-DD" (player's local date, set by the glue) for streaks/history
     // Computed by the engine from mode + user overrides: may modules teleport the ball/car?
     bool worldControlAllowed = false;
 };

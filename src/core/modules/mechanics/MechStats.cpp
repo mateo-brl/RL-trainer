@@ -1,6 +1,7 @@
 #include "core/modules/mechanics/MechStats.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 namespace rlt::mech {
@@ -25,7 +26,7 @@ bool MechStats::record(Mech m, const AttemptResult& r) {
         s.successes++;
         s.sessionSuccesses++;
     }
-    s.scoreSum += r.score;
+    s.scoreSum += static_cast<double>(r.score);
     s.best = std::max(s.best, r.score);
     s.recent.push_back(r.score);
     while (s.recent.size() > MechStat::kRecentMax) s.recent.pop_front();
@@ -81,7 +82,7 @@ void MechStats::save(Store& st) const {
         }
         st.setInt(p + ".attempts", s.attempts);
         st.setInt(p + ".successes", s.successes);
-        st.setFloat(p + ".scoreSum", s.scoreSum);
+        st.setDouble(p + ".scoreSum", s.scoreSum);
         st.setFloat(p + ".best", s.best);
         st.setBool(p + ".hasPb", s.hasPb);
         st.setFloat(p + ".pb", s.pb);
@@ -101,10 +102,12 @@ void MechStats::load(const Store& st) {
         const std::string p = prefix(m);
         s.attempts = static_cast<int>(std::max(0LL, st.getInt(p + ".attempts", 0)));
         s.successes = static_cast<int>(std::clamp(st.getInt(p + ".successes", 0), 0LL, static_cast<long long>(s.attempts)));
-        s.scoreSum = std::max(0.f, st.getFloat(p + ".scoreSum", 0.f));
+        const double sum = st.getDouble(p + ".scoreSum", 0.0);
+        s.scoreSum = std::isfinite(sum) ? std::clamp(sum, 0.0, 100.0 * static_cast<double>(s.attempts)) : 0.0;
         s.best = std::clamp(st.getFloat(p + ".best", 0.f), 0.f, 100.f);
-        s.hasPb = st.getBool(p + ".hasPb", false);
         s.pb = st.getFloat(p + ".pb", 0.f);
+        s.hasPb = st.getBool(p + ".hasPb", false) && std::isfinite(s.pb);
+        if (!s.hasPb) s.pb = 0.f;
         for (const std::string& v : st.getList(p + ".recent")) {
             if (s.recent.size() >= MechStat::kRecentMax) break;
             s.recent.push_back(std::clamp(static_cast<float>(std::atof(v.c_str())), 0.f, 100.f));

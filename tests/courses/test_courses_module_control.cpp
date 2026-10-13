@@ -330,7 +330,7 @@ TEST(courses_draw_sanity) {
     DrawList dl;
     h.mod.draw(view, dctx, dl);
     CHECK(!dl.lines3D.empty());
-    CHECK(dl.lines3D.size() < 1500u);
+    CHECK(dl.lines3D.size() < 700u);
     CHECK_EQ(dl.panels.size(), 1u);
     if (!dl.panels.empty()) {
         CHECK_NEAR(dl.panels[0].pos.x, 0.01f * 1920.f, 1e-3);
@@ -353,7 +353,7 @@ TEST(courses_draw_sanity) {
     h.tick();
     DrawList run;
     h.mod.draw(view, dctx, run);
-    CHECK(run.lines3D.size() < 1500u);
+    CHECK(run.lines3D.size() < 700u);
     bool timeLine = false;
     for (const auto& l : run.panels[0].lines) timeLine = timeLine || l.text.find("Temps ") == 0;
     CHECK(timeLine);

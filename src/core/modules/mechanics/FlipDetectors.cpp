@@ -126,6 +126,18 @@ bool SpeedFlipDetector::onDodge(const DodgeRecord& r, const Ctx& c, const Kickof
         g.err("KO_NO_BOOST_AT_START", 10.f);
         score -= 10.f;
     }
+    // First jump timing from GO (SpeedFlipTrainer meter: 55-70 ticks green, 50-75 yellow; UNVERIFIED for the
+    // centre and offset spawns, so only clear outliers cost points).
+    if (kickoff && ko.firstJumpTicks() >= 0) {
+        const int64_t fj = ko.firstJumpTicks();
+        if (fj < kKickoffJumpEarlyTicks) {
+            g.err("KO_FIRST_JUMP_EARLY", 6.f);
+            score -= 4.f;
+        } else if (fj > kKickoffJumpLateTicks) {
+            g.err("KO_FIRST_JUMP_LATE", 6.f);
+            score -= 4.f;
+        }
+    }
     if (r.cancelTicks < 0) g.err("SF_NO_CANCEL", 25.f);
     else if (r.cancelTicks > 9) g.err("SF_LATE_CANCEL", 0.25f * (100.f - cancelScore));
     if (a < target - 15.f) g.err("SF_ANGLE_STRAIGHT", 0.25f * (100.f - angleScore));

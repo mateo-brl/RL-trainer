@@ -39,7 +39,10 @@ public:
         float level = 0.f;     // 0..1
         int drillAttempts = 0, drillSuccesses = 0;
         bool worldControl = false;
-        float gameSpeed = 1.f; // game speed this module applied
+        float gameSpeed = 1.f; // game speed this module applies (1 when it does not control the world)
+        // The activity was taken away while the game was slowed down: the restore may not have reached the game
+        // (the UI offers the "restore_speed" command).
+        bool speedRestorePending = false;
         int chainDashes = 0;
         int sessionAttempts = 0;
     };
@@ -91,6 +94,7 @@ public:
     bool drillActive() const { return drill_.active; }
     mech::Focus drillFocus() const { return drill_.focus; }
     float appliedGameSpeed() const { return appliedSpeed_; }
+    bool speedRestorePending() const { return pendingSpeedRestore_; }
     float level(mech::Focus f) const;
     const mech::MechStats& stats() const { return stats_; }
     const mech::DetectConfig& detectConfig() const { return coach_.cfg; }
@@ -113,6 +117,8 @@ private:
     };
 
     bool familyEnabled(mech::Focus f) const;
+    // The player asked for this family (focus or running drill): graded even when its toggle is off.
+    bool trained(mech::Focus f) const { return f != mech::Focus::None && (f == focus_ || (drill_.active && f == drill_.focus)); }
     static bool categoryAllows(mech::Mech m, MapCategory c);
     void applyDetectConfig();
     SpeedUnit speedUnit() const { return resolveUnit(SpeedUnit::Auto, profile_.metric); }
@@ -123,6 +129,14 @@ private:
     void runWorld(const TickContext& ctx, Actions& out);
     void beginAttempt(const TickContext& ctx, Actions& out);
     void afterDetection(const TickContext& ctx, Actions& out);
+    // Emits what the detectors still hold (kickoff speedflip waiting for the ball, chain in progress) and the
+    // drill grade waiting for a touch, before a reset drops them.
+    void flushBeforeReset(const TickContext& ctx, Actions& out);
+    // Drill grade that waited for a ball touch that never came: graded as a miss.
+    void releaseHeld(const TickContext& ctx, Actions& out);
+    // Routes a game speed (only called while owning the activity with world control allowed).
+    void emitSpeed(float speed, Actions& out);
+    void restoreSpeed(const TickContext& ctx, Actions& out);
     void handleGrade(mech::MechGrade& g, const TickContext& ctx, Actions& out);
     void emitAttempt(const mech::MechGrade& g, const TickContext& ctx, Actions& out, bool drillAttempt);
     void toast(Actions& out, const std::string& title, const std::string& text, ToastKind kind) const;
@@ -144,8 +158,14 @@ private:
     float heldTime_ = 0.f;
 
     bool focusSpeedOwned_ = false;   // activity held only for the focus slow motion
+    bool focusSpeedWanted_ = false;  // slow motion turned on while a focus runs: ask for the activity once
     bool focusFromDrill_ = false;    // focus_ was set by the running drill (cleared when the drill stops)
-    float appliedSpeed_ = 1.f;       // game speed this module set
+    // Game speed bookkeeping. The engine drops world control (game speed included) from a module that does not
+    // own the activity, so a restore only counts once it was routed as the owner:
+    //   appliedSpeed_        last speed routed as the owner (what the game runs at because of this module);
+    //   pendingSpeedRestore_ the activity was lost while appliedSpeed_ != 1: the next activity of this module
+    //                        sends its speed first (1 for a normal drill), and the UI offers restore_speed.
+    float appliedSpeed_ = 1.f;
     bool pendingRelease_ = false;    // release the activity on the next tick (after the speed restore was routed)
     bool pendingSpeedRestore_ = false;
     int resetTicks_ = 0;             // ticks to skip after a placement (teleport)

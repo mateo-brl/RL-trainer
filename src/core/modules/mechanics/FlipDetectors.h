@@ -47,6 +47,8 @@ private:
 
 class SpeedFlipDetector {
 public:
+    static constexpr int64_t kKickoffJumpEarlyTicks = 50;  // first jump earlier than this after GO: tip
+    static constexpr int64_t kKickoffJumpLateTicks = 80;
     bool onDodge(const DodgeRecord& r, const Ctx& c, const KickoffTracker& ko, std::vector<MechGrade>& out);
     // Kickoff speedflips are emitted once the ball is touched (time to ball known) or after 3 s.
     void onTick(const Ctx& c, const KickoffTracker& ko, std::vector<MechGrade>& out);

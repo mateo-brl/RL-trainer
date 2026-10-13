@@ -16,12 +16,18 @@ constexpr float kPerTickS = 1.f / 120.f;
 using B = MetricSpec::Band;
 
 // {key, label, unit, scale, band, lo, hi, tol, ideal, idealKey, decimals, absolute, validMin, validMax}
+// Unit kYesNo: raw 1/0 shown as "oui"/"non" (sent to the coach as a percentage).
+constexpr const char* kYesNo = "oui/non";
 const std::vector<MetricSpec> kSpeedFlip = {
     {"absAngleDeg", "Angle du flip", "°", 1.f, B::AroundIdeal, -8.f, 8.f, 17.f, 30.f, "targetAngleDeg", 0, false, 0.f, 180.f},
     {"cancelTicks", "Annulation", "ms", kMsTick, B::Fixed, -kBig, 50.f, 67.f, 40.f, nullptr, 0, false, 0.f, 1e6f},
-    {"jumpToDodgeTicks", "Saut -> flip", "ms", kMsTick, B::Fixed, -kBig, 108.f, 142.f, 100.f, nullptr, 0, false, 0.f, 1e6f},
-    {"boostRatio", "Boost tenu", "%", 100.f, B::Fixed, 90.f, kBig, 40.f, 100.f, nullptr, 0, false, 0.f, 2.f},
+    // SpeedFlipTrainer first-jump meter (Musty kickoff pack): jump 55-70 ticks after GO, yellow 50-75.
+    {"kickoffFirstJumpTicks", "1er saut après le GO", "s", kPerTickS, B::Fixed, 0.46f, 0.58f, 0.12f, 0.52f, nullptr, 2, false, 0.f, 1e6f},
     {"timeToBall", "Temps jusqu'à la balle", "s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 2, false, 0.f, 1e6f},
+    {"jumpToDodgeTicks", "Saut -> flip", "ms", kMsTick, B::Fixed, -kBig, 108.f, 142.f, 100.f, nullptr, 0, false, 0.f, 1e6f},
+    // SpeedFlipTrainer bot: first jump held 11 ticks (92 ms).
+    {"firstJumpHoldTicks", "1er saut tenu", "ms", kMsTick, B::Fixed, 75.f, 108.f, 50.f, 92.f, nullptr, 0, false, 0.f, 1e6f},
+    {"boostRatio", "Boost tenu", "%", 100.f, B::Fixed, 90.f, kBig, 40.f, 100.f, nullptr, 0, false, 0.f, 2.f},
     {"headingErrorDeg", "Cap à la réception", "°", 1.f, B::Fixed, -kBig, 5.f, 20.f, 0.f, nullptr, 0, false, 0.f, 179.f},
 };
 const std::vector<MetricSpec> kHalfFlip = {
@@ -29,19 +35,32 @@ const std::vector<MetricSpec> kHalfFlip = {
     {"headingChangeDeg", "Demi-tour", "°", 1.f, B::Fixed, 165.f, 195.f, 35.f, 180.f, nullptr, 0, false, 0.f, 360.f},
     {"rollDelayTicks", "Air roll après l'annulation", "ms", kMsTick, B::Fixed, -kBig, 375.f, 250.f, 200.f, nullptr, 0, false, 0.f, 900.f},
     {"landingTicks", "Durée du demi-tour", "ms", kMsTick, B::Fixed, -kBig, 917.f, 500.f, 900.f, nullptr, 0, false, 0.f, 1e6f},
+    {"timeToBall", "Temps jusqu'à la balle", "s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 2, false, 0.f, 1e6f},
     {"exitSpeed", "Vitesse en sortie", "uu/s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 0, false, -1e6f, 1e6f},
 };
 const std::vector<MetricSpec> kFlipCancel = {
     {"cancelTicks", "Annulation", "ms", kMsTick, B::Fixed, -kBig, 50.f, 117.f, 40.f, nullptr, 0, false, 0.f, 1e6f},
     {"cancelStrength", "Stick opposé", "%", 100.f, B::Fixed, 95.f, kBig, 45.f, 100.f, nullptr, 0, false, 0.f, 2.f},
+    {"landedOnWheels", "Réception sur les roues", kYesNo, 1.f, B::Fixed, 1.f, kBig, 1.f, 1.f, nullptr, 0, false, 0.f, 1.f},
+    {"landingTicks", "Flip -> réception", "ms", kMsTick, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 0, false, 0.f, 1e6f},
 };
+// Wavedash: the nose tilt at the dodge (15-25 deg, the advice given everywhere) is shown; the score uses the attitude
+// at the first wheel contact. Late / centred-stick failures carry the stick, the delay and the hop height.
 const std::vector<MetricSpec> kWavedash = {
     {"gainRatio", "Efficacité du dash", "%", 100.f, B::Fixed, 80.f, kBig, 50.f, 100.f, nullptr, 0, false, -10.f, 10.f},
     {"gainAlongDash", "Gain de vitesse", "uu/s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, "expectedGain", 0, false, -1e6f, 1e6f},
     {"firstContactTicks", "Flip -> roues au sol", "ms", kMsTick, B::Fixed, -kBig, 67.f, 67.f, 25.f, nullptr, 0, false, 0.f, 1e6f},
-    {"pitchAtContactDeg", "Nez au contact", "°", 1.f, B::Fixed, -3.f, 25.f, 17.f, 12.f, nullptr, 0, false, -90.f, 90.f},
-    {"stickAtPress", "Stick au saut", "", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, "deadzone", 2, false, 0.f, 10.f},
+    {"pitchAtDodgeDeg", "Nez cabré au flip", "°", 1.f, B::Fixed, 15.f, 25.f, 15.f, 20.f, nullptr, 0, false, -90.f, 90.f},
+    {"stickAtPress", "Stick au saut", "", 1.f, B::Fixed, 0.f, kBig, 0.3f, 0.f, "deadzone", 2, false, 0.f, 10.f},
     {"ticksAfterLanding", "Retard (roues déjà au sol)", "ms", kMsTick, B::Fixed, -kBig, 0.f, 50.f, 0.f, nullptr, 0, false, 0.f, 1e6f},
+    {"hopHeight", "Hauteur du saut", "uu", 1.f, B::Fixed, -kBig, 90.f, 60.f, 40.f, nullptr, 0, false, 0.f, 1e6f},
+};
+// Zap and ceiling dashes start from a bounce or a ceiling: the nose angle at the first contact is what matters.
+const std::vector<MetricSpec> kZapDash = {
+    {"gainRatio", "Efficacité du dash", "%", 100.f, B::Fixed, 80.f, kBig, 50.f, 100.f, nullptr, 0, false, -10.f, 10.f},
+    {"gainAlongDash", "Gain de vitesse", "uu/s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, "expectedGain", 0, false, -1e6f, 1e6f},
+    {"firstContactTicks", "Flip -> roues au sol", "ms", kMsTick, B::Fixed, -kBig, 67.f, 67.f, 25.f, nullptr, 0, false, 0.f, 1e6f},
+    {"pitchAtContactDeg", "Nez au contact", "°", 1.f, B::Fixed, -3.f, 25.f, 17.f, 12.f, nullptr, 0, false, -90.f, 90.f},
 };
 const std::vector<MetricSpec> kWallDash = {
     {"jumpToDodgeTicks", "Entre les 2 sauts", "ms", kMsTick, B::Fixed, -kBig, 83.f, 50.f, 70.f, nullptr, 0, false, 0.f, 1e6f},
@@ -85,6 +104,8 @@ const std::vector<MetricSpec> kStall = {
     {"yawPlusRoll", "Yaw + air roll", "", 1.f, B::Fixed, -kBig, 0.1f, 0.4f, 0.f, nullptr, 2, true, -10.f, 10.f},
     {"pitchAbs", "Stick haut / bas", "", 1.f, B::Fixed, -kBig, 0.1f, 0.4f, 0.f, nullptr, 2, false, 0.f, 10.f},
     {"hoverTicks", "Flottement", "ms", kMsTick, B::Fixed, 417.f, kBig, 250.f, 500.f, nullptr, 0, false, 0.f, 1e6f},
+    // The flip (hence the stall) is only available 1.25 s after the jump.
+    {"sinceJumpTicks", "Temps depuis le saut", "s", kPerTickS, B::Fixed, -kBig, 1.25f, 0.5f, 1.f, nullptr, 2, false, 0.f, 1e6f},
 };
 const std::vector<MetricSpec> kAirSpin = {
     {"durationTicks", "Durée", "s", kPerTickS, B::Fixed, 1.f, kBig, 0.5f, 1.5f, nullptr, 1, false, 0.f, 1e6f},
@@ -98,6 +119,7 @@ const std::vector<MetricSpec> kRecovery = {
     {"speedRetained", "Vitesse conservée", "%", 100.f, B::Fixed, 95.f, kBig, 35.f, 100.f, nullptr, 0, false, 0.f, 10.f},
     {"settleTicks", "Stabilisation", "ms", kMsTick, B::Fixed, -kBig, 125.f, 375.f, 50.f, nullptr, 0, false, 0.f, 1e6f},
     {"dashGain", "Gain du wavedash", "uu/s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 0, false, -1e6f, 1e6f},
+    {"airTicks", "Temps en l'air", "s", kPerTickS, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 1, false, 0.f, 1e6f},
 };
 const std::vector<MetricSpec> kPowerslide = {
     {"speedRetained", "Vitesse conservée", "%", 100.f, B::Fixed, 85.f, kBig, 35.f, 100.f, nullptr, 0, false, 0.f, 10.f},
@@ -162,6 +184,11 @@ Resolved resolve(Mech m, const MetricSpec& sp, const DetectConfig& cfg, const Me
         r.lo = r.ideal + sp.lo;
         r.hi = r.ideal + sp.hi;
     }
+    // Stick at the press: anything at or past the player's flip deadzone is a dash.
+    if (sp.band == B::Fixed && sp.idealKey && std::strcmp(sp.idealKey, "deadzone") == 0) {
+        r.lo = r.ideal;
+        r.hi = kBig;
+    }
     if (m == Mech::SpeedFlip && std::strcmp(sp.key, "cancelTicks") == 0) {
         r.hi = static_cast<float>(cfg.speedflipCancelGreenTicks) * kMsTick;
         r.ideal = std::min(r.ideal, r.hi);
@@ -169,9 +196,20 @@ Resolved resolve(Mech m, const MetricSpec& sp, const DetectConfig& cfg, const Me
     return r;
 }
 
-std::string formatValue(float v, const char* unit, int decimals, SpeedUnit su) {
-    if (std::strcmp(unit, "uu/s") == 0) return formatSpeed(v, su, 0);
+bool isYesNo(const char* unit) { return std::strcmp(unit, kYesNo) == 0; }
+
+// French decimal separator ("0,52 s"), like the tips.
+std::string num(float v, int decimals) {
     std::string s = formatNumber(v, decimals);
+    for (char& c : s)
+        if (c == '.') c = ',';
+    return s;
+}
+
+std::string formatValue(float v, const char* unit, int decimals, SpeedUnit su) {
+    if (std::strcmp(unit, "uu/s") == 0) return formatSpeed(v, su, 0);  // no decimals: no separator
+    if (isYesNo(unit)) return v >= 0.5f ? "oui" : "non";
+    std::string s = num(v, decimals);
     if (unit[0] == '\0') return s;
     if (std::strcmp(unit, "°") == 0 || std::strcmp(unit, "/100") == 0) return s + unit;
     return s + " " + unit;
@@ -179,15 +217,16 @@ std::string formatValue(float v, const char* unit, int decimals, SpeedUnit su) {
 
 std::string idealText(const MetricSpec& sp, const Resolved& r, SpeedUnit su) {
     if (!r.hasIdeal) return {};
+    if (isYesNo(sp.unit)) return "oui";
     if (sp.band == B::AroundIdeal)
-        return formatValue(r.ideal, sp.unit, sp.decimals, su) + " +/-" + formatNumber(sp.hi, sp.decimals);
+        return formatValue(r.ideal, sp.unit, sp.decimals, su) + " +/-" + num(sp.hi, sp.decimals);
     if (sp.band == B::None) return formatValue(r.ideal, sp.unit, sp.decimals, su);
     const bool openLo = r.lo <= -kBig * 0.5f, openHi = r.hi >= kBig * 0.5f;
     if (openLo && !openHi) return "<= " + formatValue(r.hi, sp.unit, sp.decimals, su);
     if (openHi && !openLo) return ">= " + formatValue(r.lo, sp.unit, sp.decimals, su);
     if (!openLo && !openHi) {
         if (r.lo == r.hi) return formatValue(r.lo, sp.unit, sp.decimals, su);
-        return formatNumber(r.lo, sp.decimals) + " à " + formatValue(r.hi, sp.unit, sp.decimals, su);
+        return num(r.lo, sp.decimals) + " à " + formatValue(r.hi, sp.unit, sp.decimals, su);
     }
     return formatValue(r.ideal, sp.unit, sp.decimals, su);
 }
@@ -210,9 +249,9 @@ const std::vector<MetricSpec>& metricSpecs(Mech m) {
     case Mech::SpeedFlip: return kSpeedFlip;
     case Mech::HalfFlip: return kHalfFlip;
     case Mech::FlipCancel: return kFlipCancel;
-    case Mech::Wavedash:
+    case Mech::Wavedash: return kWavedash;
     case Mech::ZapDash:
-    case Mech::CeilingDash: return kWavedash;
+    case Mech::CeilingDash: return kZapDash;
     case Mech::WallDash: return kWallDash;
     case Mech::ChainWavedash: return kChain;
     case Mech::WallChain: return kWallChain;
@@ -261,6 +300,11 @@ AttemptResult buildResult(const MechGrade& g, const PlayerProfile& profile, cons
         m.unit = sp.unit;
         m.ideal = rs.ideal;
         m.hasIdeal = rs.hasIdeal;
+        if (isYesNo(sp.unit)) {  // the coach shows numbers: 100 % = yes
+            m.value = raw >= 0.5f ? 100.f : 0.f;
+            m.unit = "%";
+            m.ideal = 100.f;
+        }
         r.metrics.push_back(std::move(m));
     }
 

@@ -103,6 +103,7 @@ GoalProjection projectToGoal(const Vec3& p, const Vec3& v, int team, float r, bo
     // A ball on the floor without a real vertical speed rolls: no bounce, no impact friction, only the rolling drag
     // (spin is not tracked, so applying the impact friction on every micro bounce would stop it far too early).
     bool rolling = pos.z <= r + 2.f && std::fabs(vel.z) < kBallRollVz;
+    float slipLeft = -1.f;  // remaining slide-to-roll speed change (unknown until the first floor impact)
     for (int i = 1; i <= steps; ++i) {
         if (rolling) {
             const float k = 1.f - kBallRollDrag * dt;
@@ -124,11 +125,14 @@ GoalProjection projectToGoal(const Vec3& p, const Vec3& v, int team, float r, bo
                     vel.z = 0.f;  // too slow to bounce: the ball starts rolling
                     rolling = true;
                 } else {
-                    // Real impact. Friction impulse bounded by mu (1 + e) |vn| (mu 0.35) and by the slide-to-roll
-                    // change (2/7 of vt).
+                    // Real impact. Friction impulse bounded by mu (1 + e) |vn| (mu 0.35) and by what is left of the
+                    // slide-to-roll change: 2/7 of the tangential speed at the first impact, assuming no initial
+                    // spin. Once the spin matches the rolling speed, later bounces no longer brake the ball.
                     const float vt = length2D(vel);
-                    if (vt > 1.f) {
-                        const float loss = std::min(0.35f * (1.f + kBallRestitution) * vn, vt * (2.f / 7.f));
+                    if (slipLeft < 0.f) slipLeft = vt * (2.f / 7.f);
+                    if (vt > 1.f && slipLeft > 0.f) {
+                        const float loss = std::min({0.35f * (1.f + kBallRestitution) * vn, slipLeft, vt});
+                        slipLeft -= loss;
                         const float k = (vt - loss) / vt;
                         vel.x *= k;
                         vel.y *= k;

@@ -19,14 +19,15 @@ struct MechStat {
     static constexpr size_t kErrorsMax = 8;
 
     int attempts = 0, successes = 0;
-    float scoreSum = 0.f, best = 0.f;
+    double scoreSum = 0.0;  // large accumulator: double in memory and in the store (Store::setDouble)
+    float best = 0.f;
     bool hasPb = false;
     float pb = 0.f;
     std::deque<float> recent;                         // last scores, oldest first
     std::vector<std::pair<std::string, int>> errors;  // tip code -> count
     int sessionAttempts = 0, sessionSuccesses = 0;    // not persisted
 
-    float average() const { return attempts > 0 ? scoreSum / static_cast<float>(attempts) : 0.f; }
+    float average() const { return attempts > 0 ? static_cast<float>(scoreSum / static_cast<double>(attempts)) : 0.f; }
     float successRate() const { return attempts > 0 ? static_cast<float>(successes) / static_cast<float>(attempts) : 0.f; }
     // Most frequent tip code ("" when none).
     std::string topError() const;

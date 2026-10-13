@@ -126,8 +126,10 @@ void splitsTable(const std::vector<RunSplit>& splits, const MapsConfig& cfg) {
         ImGui::NextColumn();
         ImGui::TextUnformatted(formatTime(s.time, false).c_str());
         ImGui::NextColumn();
-        if (s.hasDelta) ui::textColored(s.delta <= 0.f ? cfg.aheadColor : cfg.behindColor, formatDeltaSeconds(s.delta));
-        else ImGui::TextDisabled("-");
+        if (s.hasDelta)
+            ui::textColored(s.delta <= 0.f ? cfg.aheadColor : cfg.behindColor, formatDeltaSeconds(s.delta));
+        else
+            ImGui::TextDisabled("-");
         ImGui::NextColumn();
     }
     ImGui::Columns(1);
@@ -159,7 +161,8 @@ void kismetDebug(UiContext& ctx, const MapsLiveStatus& st, const std::vector<Kis
         ImGui::SameLine();
         if (ImGui::SmallButton("Appliquer##maps_final_apply"))
             ctx.post("maps", "pin", {"final", std::to_string(ui->finalLevelInput)});
-        tooltip("Dernier niveau de la map : quand tu le termines, le run compte comme fini (record possible).");
+        tooltip("Dernier niveau de la map (avec une variable de niveau épinglée) : quand tu le termines, le run "
+                "compte comme fini (record possible).");
         ImGui::SameLine();
     }
     if (ImGui::SmallButton("Tout désépingler##maps_unpin")) ctx.post("maps", "unpin", {"all"});
@@ -296,7 +299,8 @@ void currentMapSection(UiContext& ctx, const MapsLiveStatus& st, const MapsConfi
                         formatTime(st.last.time, false);
         if (st.lastWasPb) s += "  nouveau record !";
         else if (st.last.endedByReset) s += "  (fini sur reset, hors record)";
-        else if (!st.last.recordEligible) s += st.last.cleanStart ? "  (hors record)" : "  (départ pas vu, hors record)";
+        else if (!st.last.recordEligible)
+            s += st.last.cleanStart ? "  (hors record)" : "  (départ pas vu, hors record)";
         ui::textColored(st.lastWasPb ? cfg.aheadColor : colors::Grey, s);
     }
     ImGui::Text("Session : %s", formatClock(static_cast<float>(st.sessionSeconds)).c_str());

@@ -87,7 +87,7 @@ std::optional<MechGrade> FlickDetector::update(const Frame& prev, const Frame& c
                 rollAccum_ = 0.f;
                 airTicks_ = airRollTicks_ = keptTicks_ = farTicks_ = airNewTouches_ = noFlipTicks_ = 0;
                 lost_ = false;
-                flipSeen_ = c.hasFlip;
+                flipSeen_ = false;  // set by the airborne ticks (the ground value of the flag is not trusted)
             } else {
                 state_ = State::Idle;
             }

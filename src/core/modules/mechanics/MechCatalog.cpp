@@ -80,15 +80,23 @@ struct Token {
     const char* to;
 };
 
+// Whole dashed groups first (word order and hyphens differ in French), then single tokens.
+const Token kPhrases[] = {
+    {"roll-left", "air roll à gauche"},    {"roll-right", "air roll à droite"},
+    {"airroll-left", "air roll à gauche"}, {"airroll-right", "air roll à droite"},
+    {"no-roll", "sans air roll"},          {"no-flip", "sans flip"},
+    {"u-turn", "demi-tour"},               {"double-jump", "double saut"},
+};
+
 const Token kTokens[] = {
     {"left", "gauche"},       {"right", "droite"},     {"forward", "avant"},   {"back", "arrière"},
     {"side", "côté"},         {"diag", "diag."},       {"kickoff", "kickoff"}, {"wall", "mur"},
     {"floor", "sol"},         {"ceiling", "plafond"},  {"roll", "air roll"},   {"airroll", "air roll"},
     {"no", "sans"},           {"late", "trop tard"},   {"fast", "rapide"},     {"double", "double"},
     {"jump", "saut"},         {"helicopter", "hélico"}, {"tornado", "tornado"}, {"landing", "atterrissage"},
-    {"wavedash", "wavedash"}, {"cut", "virage"},       {"u", "demi"},          {"turn", "tour"},
-    {"window", "fenêtre"},    {"straight", "droit"},   {"flip", "flip"},       {"nostick", "stick au centre"},
-    {"stall", "stall"},       {"drill", "exercice"},
+    {"wavedash", "wavedash"}, {"cut", "virage"},       {"window", "fenêtre"},  {"straight", "droit"},
+    {"flip", "flip"},         {"nostick", "stick au centre"}, {"stall", "stall"}, {"drill", "exercice"},
+    {"crash", "sur le toit"},
 };
 
 std::string translateToken(const std::string& t) {
@@ -98,6 +106,14 @@ std::string translateToken(const std::string& t) {
 }
 
 std::string translateDashed(const std::string& part) {
+    for (const Token& k : kPhrases)
+        if (part == k.from) return k.to;
+    // A phrase at the start of a longer group ("roll-right-..."): translate it, then the rest.
+    for (const Token& k : kPhrases) {
+        const size_t n = std::strlen(k.from);
+        if (part.size() > n + 1 && part.compare(0, n, k.from) == 0 && part[n] == '-')
+            return std::string(k.to) + " " + translateDashed(part.substr(n + 1));
+    }
     std::string out, tok;
     auto flush = [&]() {
         if (tok.empty()) return;

@@ -51,6 +51,8 @@ const Plain kPlain[] = {
     {"SF_HEADING_OFF", "Corrige ton orientation avec l'air roll et le yaw avant de toucher le sol : tu retombes de travers."},
     {"SF_DRIFT", "Braque légèrement à l'opposé avant le saut : ta trajectoire dérive sur le côté."},
     {"KO_STARTED_IN_AIR", "Attends que la voiture soit posée avant de démarrer."},
+    {"KO_FIRST_JUMP_EARLY", "Saute un poil plus tard : vers 0,5 s après le départ, une fois bien lancé."},
+    {"KO_FIRST_JUMP_LATE", "Saute plus tôt : vers 0,5 s après le départ, le flip te lance plus vite vers la balle."},
     {"HF_NO_CANCEL", "Pousse le stick à fond vers l'avant pendant le flip arrière pour l'annuler."},
     {"HF_EARLY_CANCEL", "Laisse le nez monter jusqu'à la verticale (~0,2 s) avant de pousser le stick."},
     {"HF_LATE_CANCEL", "Pousse le stick vers l'avant dès que la voiture est à la verticale."},
@@ -163,6 +165,11 @@ std::string tipText(std::string_view code, const MechGrade& g, const PlayerProfi
     if (code == "PS_NO_THROTTLE") return "Garde " + throttle + " appuyé pendant le powerslide.";
     if (code == "SM_BOOST_AT_MAX") return "Lâche " + boost + " à vitesse max : l'accélérateur suffit pour rester supersonique.";
     if (code == "SM_NO_THROTTLE") return "Garde " + throttle + " appuyé : sans lui tu ralentis et perds le supersonique.";
+    if (code == "DRILL_BELOW_LEVEL") {
+        if (g.hasMetric("passScore"))
+            return "Presque : vise au moins " + num0(g.metric("passScore")) + "/100 pour valider ce niveau de l'exercice.";
+        return "Presque : soigne chaque détail pour atteindre le score que demande ton niveau d'exercice.";
+    }
     return "Recommence en te concentrant sur le geste clé de cette méca.";
 }
 

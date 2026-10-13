@@ -403,7 +403,7 @@ std::vector<SimTick> airDribbleFlipFinish(int bumps) {
         setAir(x.car);
         x.car.jumped = true;
         x.in.jump = true;
-        x.car.vel = {0, 900, 650};
+        x.car.vel = {0, 900, 350};
         sim.touchNow = true;
     });
     sim.step(1, [&](Snapshot& x, int) { x.in.jump = false; });
@@ -418,7 +418,7 @@ std::vector<SimTick> airDribbleFlipFinish(int bumps) {
     sim.step(4);
     sim.dodge(1.f, 0.f);
     sim.attached = false;
-    sim.hit(sim.s.ball.vel + Vec3{0, 1500, 300});
+    sim.hit({0, 2800, 0});  // flipped into the ball toward the goal
     sim.ballGravity = true;
     sim.step(240);
     return sim.out;

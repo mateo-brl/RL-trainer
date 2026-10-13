@@ -169,7 +169,8 @@ TEST(shooting_predict_ballistic_matches_analytic_drag) {
     const auto c = predictToPlaneY(p0, v0, Vec3{}, 5120.f);
     CHECK(c.has_value());
     if (!c) return;
-    // Continuous solution with linear drag k = 0.03: y(t) = v0/k (1 - e^-kt), z(t) = z0 + (vz0 + g/k)(1 - e^-kt)/k - g t / k.
+    // Continuous solution with linear drag k = 0.03: y(t) = v0/k (1 - e^-kt),
+    // z(t) = z0 + (vz0 + g/k)(1 - e^-kt)/k - g t / k.
     const double k = 0.03, g = 650.0;
     const double t = -std::log(1.0 - k * 3120.0 / 3000.0) / k;
     const double e = 1.0 - std::exp(-k * t);

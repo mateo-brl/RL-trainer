@@ -118,7 +118,8 @@ void flickSection(UiContext& ctx, const ShootingView& v) {
         }
         ImGui::PopID();
     }
-    ImGui::TextDisabled("(?) dans un résultat = classification incertaine (seuils à calibrer, voir Avancé).");
+    ImGui::TextDisabled("(?) dans un résultat = classification incertaine : proche d'un seuil (voir Avancé) "
+                        "ou dodge non confirmé par le jeu.");
     ui::settingsSection(ctx, "shooting", "Flicks");
 }
 
@@ -276,11 +277,13 @@ void recordsSection(UiContext& ctx, const ShootingView& v) {
 
 void commandsSection() {
     ImGui::TextWrapped("Dans la console BakkesMod (F6) ou dans un bind :");
-    ImGui::BulletText("rlt shooting flick [type|any] : front, 45, 90, backflip, delayed, musty, breezi, reverse");
+    ImGui::BulletText("rlt shooting flick [type|any] : front, 45, 90, backflip, delayed, musty, breezi, reverse "
+                      "(any = tous les flicks)");
     ImGui::BulletText("rlt shooting targets [tl|tr|bl|br|center|random] [mix|rolling|bouncing|pass|roof]");
     ImGui::BulletText("rlt shooting power : défi de puissance");
     ImGui::BulletText("rlt shooting next : nouvel essai tout de suite");
-    ImGui::BulletText("rlt shooting setup <mise en place> / zone <zone> : change la situation ou la cible");
+    ImGui::BulletText("rlt shooting setup <mise en place> / zone <zone> : change la situation ou la cible "
+                      "(tout de suite en Cibles, sinon pour le prochain exercice)");
     ImGui::BulletText("rlt shooting stop : arrête l'exercice");
     ImGui::BulletText("rlt shooting reset_stats [session] : efface les statistiques (tout, ou la session)");
 }

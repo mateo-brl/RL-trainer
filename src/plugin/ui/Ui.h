@@ -32,6 +32,7 @@ struct UiContext {
     // Executes Actions produced by an engine call made from runOnGame (game thread only), exactly like the glue
     // does for hooks: world actions, chat, toasts, console commands, settings resets.
     std::function<void(Actions&)> applyActions;
+    std::shared_ptr<bool> alive;  // false once the plugin unloads: pending runOnGame calls are dropped
 
     // Sets a cvar from the UI (string form, as in the schema). Marks the config for saving.
     void setCvar(const std::string& name, const std::string& value) const;

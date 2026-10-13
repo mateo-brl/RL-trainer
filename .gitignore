@@ -1,0 +1,24 @@
+# Build outputs
+/build*/
+/out/
+/cmake-build-*/
+*.dll
+*.pdb
+*.lib
+*.exp
+*.ilk
+*.obj
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeSettings.json
+CMakeUserPresets.json
+
+# ImGui runtime layout file (created by tests or local runs)
+imgui.ini
+
+# Local SDK copies used by tools/sdk_syntax_check.sh
+/.sdk/

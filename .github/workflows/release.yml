@@ -91,9 +91,11 @@ jobs:
           Compress-Archive -Path pkg/* -DestinationPath "dist/RLTrainer-$env:VERSION.zip"
           Copy-Item scripts/install.ps1 dist/
           Copy-Item build/Release/rltrainer.pdb "dist/rltrainer-$env:VERSION.pdb"
-          Get-ChildItem dist -File | ForEach-Object {
+          # Hash into a variable first: piping straight to Out-File would hash SHA256SUMS.txt while it is open.
+          $sums = Get-ChildItem dist -File | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
-          } | Out-File dist/SHA256SUMS.txt -Encoding ascii
+          }
+          $sums | Out-File dist/SHA256SUMS.txt -Encoding ascii
           Get-ChildItem dist
 
       - uses: actions/upload-artifact@v4

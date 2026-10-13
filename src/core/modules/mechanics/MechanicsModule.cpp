@@ -29,6 +29,8 @@ std::string seconds1(float s) {
     return t + " s";
 }
 
+std::string dashCount(int n) { return std::to_string(n) + (n > 1 ? " dashes" : " dash"); }
+
 } // namespace
 
 // ---- Settings ------------------------------------------------------------------------------------------
@@ -117,9 +119,15 @@ void MechanicsModule::describeSettings(SettingsSchema& schema) {
 }
 
 void MechanicsModule::onSettingsChanged(const Settings& settings) {
+    const float oldSlow = cfg_.slowMotion;
     cfg_ = settings.mechanics;
     keyStyle_ = keyStyleFromIndex(settings.profile.buttonStyle);
     cfg_.slowMotion = clampf(cfg_.slowMotion, 0.25f, 1.f);
+    // Slow motion turned on (or changed) while a focus runs without the activity: ask for it once, next tick.
+    // Only on a change of this setting, never as a standing condition (that would steal other drills).
+    if (std::fabs(cfg_.slowMotion - oldSlow) > 1e-4f && cfg_.slowMotion < 0.999f && focus_ != Focus::None &&
+        !drill_.active && !focusSpeedOwned_)
+        focusSpeedWanted_ = true;
     applyDetectConfig();
 }
 
@@ -140,7 +148,7 @@ void MechanicsModule::applyDetectConfig() {
     d.speedWindowTicks = (drill_.active && setup_.boostWindow) ? 1000000 : std::max(5, cfg_.boostWindowSeconds) * 120;
     d.dodgeDeadzone = deadzone_;
     d.focus = focus_;
-    d.recoveryEnabled = cfg_.recovery;
+    d.recoveryEnabled = cfg_.recovery || trained(Focus::Recovery);
 }
 
 bool MechanicsModule::familyEnabled(Focus f) const {
@@ -185,19 +193,28 @@ void MechanicsModule::toast(Actions& out, const std::string& title, const std::s
 // ---- Tick ----------------------------------------------------------------------------------------------
 void MechanicsModule::onTick(const TickContext& ctx, Actions& out) {
     worldControl_ = ctx.worldControlAllowed;
-    if (pendingSpeedRestore_) {
-        // The activity was taken away while the game was slowed down (no Actions in onActivityStopped).
-        out.setGameSpeed = 1.f;
-        pendingSpeedRestore_ = false;
-        appliedSpeed_ = 1.f;
-    }
-    if (pendingRelease_) {
+    if (pendingSpeedRestore_ && ctx.ownsActivity && ctx.worldControlAllowed && !drill_.active && !focusSpeedOwned_) {
+        emitSpeed(1.f, out);  // still the owner (release pending): this restore reaches the game
+        pendingRelease_ = true;
+    } else if (pendingRelease_) {
         pendingRelease_ = false;
         if (!drill_.active && !focusSpeedOwned_ && ctx.ownsActivity) releaseActivity();
     }
     if (!cfg_.enabled) {
+        focusSpeedWanted_ = false;
         if (drill_.active || focusSpeedOwned_) stopWorld(ctx, out);
         return;
+    }
+    if (focusSpeedWanted_) {
+        focusSpeedWanted_ = false;
+        if (focus_ != Focus::None && !drill_.active && !focusSpeedOwned_ && cfg_.slowMotion < 0.999f) {
+            if (ctx.worldControlAllowed && requestActivity("Mécas : focus " + focusTitle(focus_))) {
+                focusSpeedOwned_ = true;
+                pendingRelease_ = false;
+            } else {
+                toast(out, "Mécas mouvement", "Ralenti indisponible ici : focus sans ralenti.", ToastKind::Info);
+            }
+        }
     }
     if (!ctx.hasSnapshot) return;
     const Snapshot& s = ctx.snap;
@@ -249,6 +266,8 @@ void MechanicsModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, A
     }
     case GameEventKind::ResetShot:
     case GameEventKind::CarSpawned:
+        // A kickoff speedflip still waiting for the ball (missed, then reset at once) is graded, not dropped.
+        if (cfg_.enabled) flushBeforeReset(ctx, out);
         coach_.reset();
         if (drill_.active) {
             if (drill_.phase == Phase::Showing) drill_.attempt++;  // manual reset after a result: next variant
@@ -296,8 +315,13 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
         if (drill_.active) drill_.phase = Phase::Setup;
         return;
     }
+    if (cmd.name == "restore_speed") {
+        restoreSpeed(ctx, out);
+        return;
+    }
     if (cmd.name != "focus" && cmd.name != "drill") {
-        toast(out, "Mécas mouvement", "Commande inconnue : " + cmd.name + " (focus, drill, stop, reset_stats, retry).",
+        toast(out, "Mécas mouvement",
+              "Commande inconnue : " + cmd.name + " (focus, drill, stop, retry, reset_stats, restore_speed).",
               ToastKind::Warning);
         return;
     }
@@ -319,6 +343,7 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
 }
 
 void MechanicsModule::setFocus(Focus f, const TickContext& ctx, Actions& out) {
+    focusSpeedWanted_ = false;
     if (f == Focus::None) {
         if (drill_.active || focusSpeedOwned_) stopWorld(ctx, out);
         focus_ = Focus::None;
@@ -365,17 +390,23 @@ void MechanicsModule::startDrill(Focus f, const TickContext& ctx, Actions& out) 
     toast(out, "Exercice : " + focusTitle(f), mech::focusInfo(f).key, ToastKind::Info);
 }
 
+void MechanicsModule::emitSpeed(float speed, Actions& out) {
+    out.setGameSpeed = speed;
+    appliedSpeed_ = speed;
+    pendingSpeedRestore_ = false;  // routed as the owner: the game runs at this speed now
+}
+
 void MechanicsModule::stopWorld(const TickContext& ctx, Actions& out) {
-    (void)ctx;
-    if (ownsActivity()) {
+    const bool owner = ownsActivity();
+    if (owner && ctx.worldControlAllowed) {
         // Still the owner: the speed restore is routed with this callback, the release happens next tick.
-        if (appliedSpeed_ != 1.f) {
-            out.setGameSpeed = 1.f;
-            appliedSpeed_ = 1.f;
-        }
+        if (appliedSpeed_ != 1.f || pendingSpeedRestore_) emitSpeed(1.f, out);
         pendingRelease_ = true;
-    } else if (appliedSpeed_ != 1.f) {
-        pendingSpeedRestore_ = true;
+    } else {
+        // The engine would drop the restore: keep it pending (see appliedSpeed_), give the activity back now.
+        if (appliedSpeed_ != 1.f) pendingSpeedRestore_ = true;
+        if (owner) releaseActivity();
+        pendingRelease_ = false;
     }
     if (drill_.active && focusFromDrill_) focus_ = Focus::None;  // the drill chose the focus: it ends with it
     focusFromDrill_ = false;
@@ -389,7 +420,10 @@ void MechanicsModule::stopWorld(const TickContext& ctx, Actions& out) {
 }
 
 void MechanicsModule::onActivityStopped() {
+    // No Actions here and no ownership any more: this module cannot route a restore (the engine has to restore the
+    // speed on stop / handover). appliedSpeed_ is kept so that the next activity of this module sends 1 first.
     if (appliedSpeed_ != 1.f) pendingSpeedRestore_ = true;
+    focusSpeedWanted_ = false;
     if (drill_.active && focusFromDrill_) focus_ = Focus::None;
     focusFromDrill_ = false;
     drill_ = Drill{};
@@ -404,15 +438,13 @@ void MechanicsModule::onActivityStopped() {
 
 // ---- Drill state machine -------------------------------------------------------------------------------
 void MechanicsModule::runWorld(const TickContext& ctx, Actions& out) {
-    if (!ctx.ownsActivity || !ctx.worldControlAllowed) {
+    // Live query: ctx.ownsActivity was taken before this callback, the activity may have been granted during it.
+    if (!ownsActivity() || !ctx.worldControlAllowed) {
         stopWorld(ctx, out);
         return;
     }
     const float desired = clampf(cfg_.slowMotion, 0.25f, 1.f);
-    if (std::fabs(desired - appliedSpeed_) > 0.001f) {
-        out.setGameSpeed = desired;
-        appliedSpeed_ = desired;
-    }
+    if (pendingSpeedRestore_ || std::fabs(desired - appliedSpeed_) > 0.001f) emitSpeed(desired, out);
     if (focusSpeedOwned_ && !drill_.active) {
         if (desired >= 0.999f) {  // slow motion turned off: give the activity back
             focusSpeedOwned_ = false;
@@ -476,12 +508,7 @@ void MechanicsModule::afterDetection(const TickContext& ctx, Actions& out) {
     const Snapshot& s = ctx.snap;
     const float elapsed = s.time - drill_.startTime;
     if (held_ && s.time - heldTime_ > 2.5f) {
-        MechGrade g = std::move(*held_);
-        held_.reset();
-        g.err("DRILL_NO_TOUCH", 30.f);
-        mech::finalizeGrade(g, std::min(g.score, 40.f));
-        g.success = false;
-        emitAttempt(g, ctx, out, true);
+        releaseHeld(ctx, out);
         return;
     }
     if (!setup_.endOnResult) {
@@ -507,13 +534,55 @@ void MechanicsModule::afterDetection(const TickContext& ctx, Actions& out) {
     }
 }
 
+void MechanicsModule::releaseHeld(const TickContext& ctx, Actions& out) {
+    if (!held_) return;
+    MechGrade g = std::move(*held_);
+    held_.reset();
+    g.err("DRILL_NO_TOUCH", 30.f);
+    mech::finalizeGrade(g, std::min(g.score, 40.f));
+    g.success = false;
+    emitAttempt(g, ctx, out, drill_.active && drill_.phase == Phase::Running);
+}
+
+void MechanicsModule::flushBeforeReset(const TickContext& ctx, Actions& out) {
+    if (!ctx.hasSnapshot) return;
+    grades_.clear();
+    coach_.flushPending(ctx.snap, grades_, false);
+    for (MechGrade& g : grades_) handleGrade(g, ctx, out);
+    grades_.clear();
+    releaseHeld(ctx, out);
+}
+
+void MechanicsModule::restoreSpeed(const TickContext& ctx, Actions& out) {
+    if (drill_.active || focusSpeedOwned_) {
+        toast(out, "Mécas mouvement", "Le ralenti suit le réglage « Ralenti » : mets-le à 1 ou arrête l'exercice.",
+              ToastKind::Info);
+        return;
+    }
+    if (!ctx.worldControlAllowed || (!ownsActivity() && !requestActivity("Mécas : vitesse normale"))) {
+        toast(out, "Mécas mouvement", "Vitesse du jeu modifiable en freeplay uniquement.", ToastKind::Warning);
+        return;
+    }
+    emitSpeed(1.f, out);
+    pendingRelease_ = true;  // owner during this callback: the restore is routed, the activity is given back next tick
+    toast(out, "Mécas mouvement", "Vitesse du jeu remise à 1.", ToastKind::Ok);
+}
+
 // ---- Results -------------------------------------------------------------------------------------------
 void MechanicsModule::handleGrade(MechGrade& g, const TickContext& ctx, Actions& out) {
     const Focus fam = mech::familyOf(g.mech);
-    if (!familyEnabled(fam)) return;
-    if (!categoryAllows(g.mech, ctx.game.category)) return;
+    const bool asked = trained(fam);  // explicit focus or drill: the family toggle and the map filter do not apply
+    if (!asked && !familyEnabled(fam)) return;
+    if (!asked && !categoryAllows(g.mech, ctx.game.category)) return;
     if (focus_ != Focus::None && fam != focus_) return;
     const bool drillAttempt = drill_.active && drill_.phase == Phase::Running && fam == drill_.focus;
+    // Kickoff drill: the speedflip has to reach the ball (time to ball measured at the touch).
+    if (drillAttempt && setup_.kickoff && g.mech == Mech::SpeedFlip && g.metric("timeToBall", -1.f) < 0.f &&
+        !g.hasError("DRILL_NO_TOUCH")) {
+        g.err("DRILL_NO_TOUCH", 30.f);
+        mech::finalizeGrade(g, g.score);
+        g.success = false;
+    }
     if (drillAttempt && setup_.needTouch && !held_) {
         if (drill_.touchTime >= 0.f) {
             g.add("timeToBall", std::max(0.f, drill_.touchTime - drill_.startTime));
@@ -530,15 +599,23 @@ void MechanicsModule::emitAttempt(const MechGrade& g, const TickContext& ctx, Ac
     const float t = ctx.hasSnapshot ? ctx.snap.time : nowTime_;
     AttemptResult r = mech::buildResult(g, ctx.profile, coach_.cfg, t, keyStyle_);
     if (drillAttempt) {
-        bool ok = r.success && r.score >= setup_.passScore;
+        const bool detectorOk = r.success;
+        bool ok = detectorOk && r.score >= setup_.passScore;
         if (setup_.boostWindow)
             ok = g.metric("supersonicRatio", 0.f) >= 0.85f && g.metric("boostUsed", 1e9f) <= 15.f;
         r.success = ok;
-        if (!ok && r.tips.empty()) {
-            // Clean execution, but under the score this level asks for.
-            r.tips.push_back({"me.drill_below_level",
-                              "Presque : vise au moins " + formatNumber(setup_.passScore, 0) + "/100 pour valider ce niveau.",
-                              std::max(1.f, setup_.passScore - r.score)});
+        if (!ok && detectorOk && !setup_.boostWindow) {
+            // Good enough for the detector, but under the score this level asks for: say why it does not count.
+            // Ranked after the technique tips (they say what to improve), the only tip of a clean attempt.
+            mech::MechGrade why;
+            why.mech = g.mech;
+            why.add("passScore", setup_.passScore);
+            float w = std::max(1.f, setup_.passScore - r.score);
+            if (!r.tips.empty()) w = std::min(w, r.tips.back().weight);
+            Tip t{mech::tipCode("DRILL_BELOW_LEVEL"), mech::tipText("DRILL_BELOW_LEVEL", why, ctx.profile, deadzone_, keyStyle_),
+                  w};
+            if (r.tips.size() >= 3) r.tips.back() = std::move(t);
+            else r.tips.push_back(std::move(t));
         }
         if (!ok && (r.verdict == Verdict::Good || r.verdict == Verdict::Perfect)) r.verdict = Verdict::Ok;
         if (ok && r.verdict == Verdict::Fail) r.verdict = Verdict::Ok;
@@ -620,7 +697,7 @@ void MechanicsModule::draw(const ViewContext& view, const DrawContext& ctx, Draw
     }
     if (coach_.chainCount() > 0 && (cfg_.chainDash || cfg_.wallDash) &&
         (focus_ == Focus::None || focus_ == Focus::ChainDash || focus_ == Focus::WallDash)) {
-        p.lines.push_back({"Chaîne en cours : " + std::to_string(coach_.chainCount()) + " dashes, " +
+        p.lines.push_back({"Chaîne en cours : " + dashCount(coach_.chainCount()) + ", " +
                                formatSpeed(coach_.chainMaxSpeed(), unit, 0),
                            info});
     }
@@ -680,7 +757,8 @@ MechanicsModule::Status MechanicsModule::status() const {
     s.focus = focus_;
     s.drillActive = drill_.active;
     s.worldControl = worldControl_;
-    s.gameSpeed = appliedSpeed_;
+    s.gameSpeed = (drill_.active || focusSpeedOwned_) ? appliedSpeed_ : 1.f;
+    s.speedRestorePending = pendingSpeedRestore_ && !drill_.active && !focusSpeedOwned_;
     s.chainDashes = coach_.chainCount();
     s.sessionAttempts = stats_.sessionTotal();
     if (drill_.active) {

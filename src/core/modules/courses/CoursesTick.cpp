@@ -20,6 +20,10 @@ constexpr float kCatchSoftBad = 800.f;
 constexpr float kCatchHardTip = 500.f;
 constexpr float kCatchOffCentre = 60.f;
 
+constexpr const char* kTipSlalomWeave =
+    "Fais le slalom : décale la balle d'un côté puis de l'autre pour passer au centre de chaque porte.";
+constexpr const char* kTipRingCentre = "Vise le centre de l'anneau suivant avant d'accélérer.";
+
 std::string signedSeconds(float v) {
     const std::string n = formatNumber(std::fabs(v), 2);
     return (v < 0.f ? "-" : "+") + n;
@@ -58,7 +62,8 @@ void addBoostTip(CoursesKind k, bool emptied, std::vector<Tip>& tips) {
     if (k == CoursesKind::RingsAir || k == CoursesKind::RingsAirDribble)
         tips.push_back({"courses.rings_boost_out", "Économise le boost : alterne boost et plané entre les anneaux.", 6.f});
     else if (k == CoursesKind::RingsGround)
-        tips.push_back({"courses.rings_boost_out", "Économise le boost : garde ta vitesse dans les virages au lieu de réaccélérer.", 6.f});
+        tips.push_back({"courses.rings_boost_out",
+                        "Économise le boost : garde ta vitesse dans les virages au lieu de réaccélérer.", 6.f});
 }
 
 // Coaching for a ball lost off the roof, from how it left (roof dribble and slalom).
@@ -296,7 +301,8 @@ void CoursesModule::ringsTick(const TickContext& ctx, Actions& out, double t, fl
                 switch (ev) {
                 case courses::RunEvent::Missed:
                     if (penalty) flash((gate ? "Porte " + num + " ratée" : "Anneau " + num + " raté") + plus, colors::Red);
-                    else flash(gate ? "Ratée : repasse par la porte " + num + " !" : "Raté : repasse dans l'anneau " + num + " !",
+                    else flash(gate ? "Ratée : repasse par la porte " + num + " !"
+                                    : "Raté : repasse dans l'anneau " + num + " !",
                                colors::Red);
                     break;
                 case courses::RunEvent::Skipped:
@@ -324,11 +330,9 @@ void CoursesModule::ringsTick(const TickContext& ctx, Actions& out, double t, fl
     }
     if (run_.failed()) {
         if (gateCourse())
-            failRun(ctx, out, "porte ratée (mode échec immédiat)", "courses.rings_missed",
-                    "Fais le slalom : décale la balle d'un côté puis de l'autre pour passer au centre de chaque porte.");
+            failRun(ctx, out, "porte ratée (mode échec immédiat)", "courses.rings_missed", kTipSlalomWeave);
         else
-            failRun(ctx, out, "anneau raté (mode échec immédiat)", "courses.rings_missed",
-                    "Vise le centre de l'anneau suivant avant d'accélérer.");
+            failRun(ctx, out, "anneau raté (mode échec immédiat)", "courses.rings_missed", kTipRingCentre);
         return;
     }
     if (cfg_.unlimitedBoost) out.setBoost = 100.f;
@@ -348,7 +352,8 @@ void CoursesModule::ringsTick(const TickContext& ctx, Actions& out, double t, fl
             std::vector<Tip> tips;
             addFallTip(courses::classifyFall(departRelVel_, departRelPos_), true, tips);
             if (tips.empty())
-                tips.push_back({"courses.slalom_off_roof", "Garde la balle posée sur le toit : vire en douceur entre les portes.", 8.f});
+                tips.push_back({"courses.slalom_off_roof",
+                                "Garde la balle posée sur le toit : vire en douceur entre les portes.", 8.f});
             failRun(ctx, out, "la balle est tombée du toit", tips.front().code, tips.front().text);
             return;
         }
@@ -372,8 +377,7 @@ void CoursesModule::finishRings(const TickContext& ctx, Actions& out) {
     // Penalty mode gives missed rings up and goes on: reaching the end with most rings missed is not a success.
     if (n - passed > maxMissesAllowed(n)) {
         if (gate)
-            failRun(ctx, out, "trop de portes ratées", "courses.rings_missed",
-                    "Fais le slalom : décale la balle d'un côté puis de l'autre pour passer au centre de chaque porte.");
+            failRun(ctx, out, "trop de portes ratées", "courses.rings_missed", kTipSlalomWeave);
         else
             failRun(ctx, out, "trop d'anneaux ratés", "courses.rings_missed",
                     "Vise le centre de chaque anneau : ralentis un peu pour mieux viser.");
@@ -383,9 +387,8 @@ void CoursesModule::finishRings(const TickContext& ctx, Actions& out) {
     const bool hadBest = pb.time > 0.f;
     const float oldBest = pb.time;
     const bool teleported = teleports_ > 0;  // a teleport during the run: finished, but never a record
-    // Rings given up only cost the penalty: with a tiny penalty a sloppy run would beat every clean one.
-    const bool fairTime = run_.penaltyTime() <= 0.0 || missPolicy() != courses::MissPolicy::Penalty ||
-                          cfg_.missPenalty >= kMinPenaltyForRecord;
+    // Rings given up (penalty mode) only cost the penalty: with a tiny one a sloppy run would beat every clean one.
+    const bool fairTime = passed == n || cfg_.missPenalty >= kMinPenaltyForRecord;
     const bool faster = !hadBest || time < oldBest - 1e-3f;
     const bool isPb = !teleported && fairTime && faster;
     ++pb.attempts;
@@ -437,10 +440,7 @@ void CoursesModule::finishRings(const TickContext& ctx, Actions& out) {
         r.metrics.push_back(metric("centring", "Centrage", 100.f * (1.f - static_cast<float>(centring / counted)), "%"));
 
     if (misses > 0)
-        r.tips.push_back({"courses.rings_missed",
-                          gate ? "Fais le slalom : décale la balle d'un côté puis de l'autre pour passer au centre de chaque porte."
-                               : "Vise le centre de l'anneau suivant avant d'accélérer.",
-                          5.f * static_cast<float>(misses)});
+        r.tips.push_back({"courses.rings_missed", gate ? kTipSlalomWeave : kTipRingCentre, 5.f * static_cast<float>(misses)});
     if (run_.grazes() >= 2)
         r.tips.push_back({"courses.rings_grazed",
                           gate ? "Passe plus au centre des portes : tu frôles les poteaux."
@@ -454,7 +454,8 @@ void CoursesModule::finishRings(const TickContext& ctx, Actions& out) {
     addBoostTip(kind_, boostEmptied_, r.tips);
     if (run_.wrongWays() > 0)
         r.tips.push_back({"courses.rings_wrong_way",
-                          gate ? "Passe les portes dans le sens de la flèche." : "Passe les anneaux dans le sens de la flèche.", 3.f});
+                          gate ? "Passe les portes dans le sens de la flèche." : "Passe les anneaux dans le sens de la flèche.",
+                          3.f});
     sortTips(r.tips);
     r.time = ctx.snap.time;
     r.valueForRecord = score;
@@ -526,7 +527,7 @@ void CoursesModule::failRun(const TickContext& ctx, Actions& out, const std::str
     if (run_.misses() > 0 && tipCode != "courses.rings_missed")
         r.tips.push_back({"courses.rings_missed",
                           gateCourse() ? "Passe au centre de chaque porte : la balle ne doit pas toucher les poteaux."
-                                       : "Vise le centre de l'anneau suivant avant d'accélérer.",
+                                       : kTipRingCentre,
                           5.f * static_cast<float>(run_.misses())});
     addBoostTip(kind_, boostEmptied_, r.tips);
     sortTips(r.tips);

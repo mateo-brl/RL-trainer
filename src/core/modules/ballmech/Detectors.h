@@ -126,7 +126,7 @@ private:
     State state_ = State::Idle;
     float tFirst_ = 0.f, tBounce_ = 0.f, tSecond_ = 0.f, bounceZ_ = 0.f, carDistAtBounce_ = 0.f;
     int64_t evalAt_ = 0;
-    bool readMode_ = false, wasAirborne_ = false;
+    bool readMode_ = false, wasAirborne_ = false, carAirAtBounce_ = false;
 };
 
 // ================================================================================================

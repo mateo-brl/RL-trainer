@@ -98,6 +98,7 @@ DrillSetup makeDrill(Focus f, float level, int attempt, int team, Rng& rng) {
         placeBall(d, {0.f, L(0.f, 700.f), kBallZ});
         d.timeLimit = 3.5f;
         d.passScore = L(55.f, 80.f);
+        d.needTouch = true;  // the half-flip only counts when the car then reaches the ball
         d.variant = "marche arrière";
         d.goal = "Tu recules vers la balle : half-flip pour faire demi-tour, puis fonce dessus.";
         break;

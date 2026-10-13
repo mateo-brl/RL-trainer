@@ -11,7 +11,8 @@ namespace rlt::bm {
 //   AwaitBounce -> bounce (vy changes sign near the opponent back wall) -> AwaitSecond
 //   AwaitSecond: touch -> Eval -> grade | DT_LANDED (landed after flying) | DT_NO_SECOND_TOUCH (ball low or 2.5 s)
 // Drill "read" mode: the drill sent the ball to the backboard itself, so the detector starts in AwaitBounce.
-// A failure while the car was far from the rebound (> 1500 uu) is not a real attempt: weak, drill only.
+// A failure while the car was far from the rebound (> 1500 uu) or already back on the ground at the bounce is not a
+// real attempt (an aerial shot that simply went over the bar): weak, drill only, so the shot keeps its own grade.
 
 void DoubleTapDetector::reset() {
     state_ = State::Idle;
@@ -19,6 +20,7 @@ void DoubleTapDetector::reset() {
     evalAt_ = 0;
     readMode_ = false;
     wasAirborne_ = false;
+    carAirAtBounce_ = false;
 }
 
 void DoubleTapDetector::armReadMode(float now) {
@@ -83,6 +85,7 @@ std::optional<MechGrade> DoubleTapDetector::update(const Frame& prev, const Fram
             tBounce_ = cur.t;
             bounceZ_ = b.pos.z;
             carDistAtBounce_ = distance(b.pos, c.pos);
+            carAirAtBounce_ = carAir;
         } else if (cur.t - tFirst_ > 2.5f) {
             state_ = State::Idle;
         }
@@ -133,7 +136,7 @@ MechGrade DoubleTapDetector::finish(const Frame& cur, const char* failCode) {
     if (!readMode_ && bounceZ_ < arena::kGoalHeight + 100.f) g.errors.push_back("DT_LOW_BACKBOARD");
     if (second && proj.valid && !proj.onTarget) g.errors.push_back("DT_OFF_TARGET");
     g.success = second && (!proj.valid || proj.onTarget);
-    if (!second && carDistAtBounce_ > 1500.f) {
+    if (!second && (carDistAtBounce_ > 1500.f || !carAirAtBounce_)) {
         g.weak = true;
         g.drillOnly = true;
     }

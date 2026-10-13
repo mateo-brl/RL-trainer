@@ -1073,5 +1073,12 @@ TEST(mech_catalog_ids_roundtrip) {
     CHECK(focusFromId("SpeedFlip") == Focus::SpeedFlip);
     CHECK(focusFromId("nope") == Focus::None);
     CHECK(variantLabel("left-kickoff") == "gauche kickoff");
-    CHECK(variantLabel("roll-right+forward") == "air roll droite + avant");
+    CHECK(variantLabel("roll-right+forward") == "air roll à droite + avant");
+    CHECK(variantLabel("u-turn") == "demi-tour");
+    CHECK(variantLabel("airroll-left") == "air roll à gauche");
+    CHECK(variantLabel("no-roll") == "sans air roll");
+    CHECK(variantLabel("no-flip") == "sans flip");
+    CHECK(variantLabel("double-jump") == "double saut");
+    CHECK(variantLabel("wall-diag-forward-right") == "mur diag. avant droite");
+    CHECK(variantLabel("left+roll-right") == "gauche + air roll à droite");
 }

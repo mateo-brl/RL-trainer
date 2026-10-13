@@ -3,244 +3,11 @@
 #include <memory>
 #include <string>
 
-#include "tests/TestFramework.h"
-#include "tests/mechanics/MiniSim.h"
-
-#include "core/common/Settings.h"
-#include "core/modules/mechanics/MechanicsModule.h"
-#include "core/modules/mechanics/Tips.h"
+#include "tests/mechanics/MechRig.h"
 
 using namespace rlt;
 using namespace rlt::mech;
 using namespace rlt_test_mech;
-
-namespace {
-
-struct FakeHost : ActivityHost {
-    bool allow = true;
-    const Module* owner = nullptr;
-    int requests = 0, releases = 0;
-    std::string name;
-    bool requestActivity(Module* m, const std::string& n) override {
-        ++requests;
-        if (!allow) return false;
-        if (owner && owner != m) {
-            // A real engine would call the previous owner's onActivityStopped here.
-        }
-        owner = m;
-        name = n;
-        return true;
-    }
-    void releaseActivity(Module* m) override {
-        ++releases;
-        if (owner == m) {
-            owner = nullptr;
-            name.clear();
-        }
-    }
-    bool ownsActivity(const Module* m) const override { return m && owner == m; }
-};
-
-// Drives the module like the engine does: tick context, routing filter on world control (checked after the
-// callback, as Engine::route does), placements applied to the MiniSim, touches near the ball.
-struct Rig {
-    SettingsSchema schema;
-    Settings settings;
-    GameContext game;
-    PlayerProfile profile;
-    TickHistory history{600};
-    FakeHost host;
-    MechanicsModule mod;
-    MiniSim sim;
-    int64_t frame = 1000;
-    Snapshot last;
-    bool hasSnap = false;
-    bool frozen = false;
-    bool ballAtCentre = false;   // the drill ball (game axes, centre spot) for touches
-    Vec3 ballGame{1e5f, 1e5f, 92.75f};
-    bool touched = false;
-    Actions raw, routed;
-    std::vector<AttemptResult> results;
-    std::vector<ToastMessage> toasts;
-    std::vector<ChatMessage> chat;
-    int setCars = 0, speedChanges = 0;
-    float lastSpeed = 1.f;
-
-    Rig() {
-        MechanicsModule::describeSettings(schema);
-        schema.applyDefaults(settings);
-        game.mode = GameMode::Freeplay;
-        game.mapName = "Park_P";
-        game.worldControlAllowed = true;
-        mod.attach(&host);
-        mod.onSettingsChanged(settings);
-        mod.onProfileChanged(profile);
-        last = sim.snap(frame, {});
-        last.ball.pos = ballGame;
-        GameEvent ev;
-        ev.kind = GameEventKind::ContextChanged;
-        Actions a;
-        mod.onGameEvent(ev, ctx(), a);
-        route(a);
-    }
-    TickContext ctx() const {
-        return TickContext{last, history, settings, game, profile, hasSnap, host.ownsActivity(&mod), game.worldControlAllowed};
-    }
-    Actions route(Actions a) {
-        if (!game.worldControlAllowed || !host.ownsActivity(&mod)) a.clearWorldControl();
-        for (auto& r : a.results) results.push_back(r);
-        for (auto& t : a.toasts) toasts.push_back(t);
-        for (auto& c : a.chat) chat.push_back(c);
-        if (a.setCar) ++setCars;
-        if (a.setGameSpeed) {
-            ++speedChanges;
-            lastSpeed = *a.setGameSpeed;
-        }
-        return a;
-    }
-    void set(const std::string& cvar, const std::string& value) {
-        CHECK_MSG(schema.apply(settings, cvar, value), cvar);
-        mod.onSettingsChanged(settings);
-    }
-    void setProfile(const PlayerProfile& p) {
-        profile = p;
-        mod.onProfileChanged(profile);
-    }
-    Actions tick(const Inputs& playerIn, bool paused = false) {
-        sim.tick(frozen ? Inputs{} : playerIn);
-        if (frozen) {
-            sim.vel = {};
-            sim.w = {};
-        }
-        last = sim.snap(frame++, playerIn);
-        last.ball.pos = ballGame;
-        last.paused = paused;
-        history.push(last);
-        hasSnap = true;
-        Actions a;
-        mod.onTick(ctx(), a);
-        raw = a;
-        routed = route(a);
-        frozen = routed.freezeCar;
-        if (routed.setCar) sim.place(*routed.setCar);
-        if (routed.setBall) {
-            ballGame = routed.setBall->pos;
-            touched = false;
-        }
-        if (!touched && length(last.car.pos - ballGame) < 200.f) {
-            touched = true;
-            TouchEvent t;
-            t.frame = last.frame;
-            t.pre = last;
-            t.post1 = last;
-            t.post = last;
-            Actions ta;
-            mod.onTouch(t, ctx(), ta);
-            route(ta);
-        }
-        return routed;
-    }
-    void run(int n, const Script& s) {
-        for (int i = 0; i < n; ++i) tick(s(i, sim));
-    }
-    Actions command(const std::string& name, std::vector<std::string> args = {}) {
-        Command c;
-        c.module = "mechanics";
-        c.name = name;
-        c.args = std::move(args);
-        Actions a;
-        mod.onCommand(c, ctx(), a);
-        raw = a;
-        routed = route(a);
-        return routed;
-    }
-    Actions event(GameEventKind k) {
-        GameEvent ev;
-        ev.kind = k;
-        Actions a;
-        mod.onGameEvent(ev, ctx(), a);
-        return route(a);
-    }
-    const AttemptResult* result(const std::string& skill) const {
-        for (const auto& r : results)
-            if (r.skill == skill) return &r;
-        return nullptr;
-    }
-    int count(const std::string& skill) const {
-        int n = 0;
-        for (const auto& r : results) n += r.skill == skill ? 1 : 0;
-        return n;
-    }
-    bool toastContains(const std::string& part) const {
-        for (const auto& t : toasts)
-            if (t.title.find(part) != std::string::npos || t.text.find(part) != std::string::npos) return true;
-        return false;
-    }
-};
-
-struct WdS {
-    int phase = 0, dodgeT = -1, jumpT = -1;
-};
-
-Script groundWavedash(int startTick = 10) {
-    auto S = std::make_shared<WdS>();
-    return [=](int t, MiniSim& c) {
-        Inputs in;
-        in.throttle = 1.f;
-        if (S->phase == 0 && t >= startTick) {
-            S->phase = 1;
-            S->jumpT = t;
-        }
-        if (S->phase == 1) {
-            in.jump = t - S->jumpT < 3;
-            if (t - S->jumpT >= 3) {
-                in.pitch = pitchToNose(c, 20.f);
-                if (c.vel.z < 0.f && c.rearWheelZ() < 6.f) {
-                    S->phase = 2;
-                    S->dodgeT = t;
-                }
-            }
-        }
-        if (S->phase == 2) {
-            in.jump = t - S->dodgeT < 3;
-            in.pitch = t - S->dodgeT < 3 ? -1.f : 0.f;
-        }
-        return in;
-    };
-}
-
-// Dash at the landing of a drop (wavedash drill): no first jump, tilt then dodge near the floor.
-Script dropWavedash() {
-    auto S = std::make_shared<WdS>();
-    return [=](int, MiniSim& c) {
-        Inputs in;
-        in.throttle = 1.f;
-        if (S->phase == 0 && c.wheelCount() == 0) {
-            in.pitch = pitchToNose(c, 20.f);
-            if (c.vel.z < 0.f && c.rearWheelZ() < 6.f) {
-                S->phase = 1;
-                S->dodgeT = 0;
-            }
-        }
-        if (S->phase == 1 && S->dodgeT < 3) {
-            in.jump = true;
-            in.pitch = -1.f;
-            S->dodgeT++;
-        }
-        return in;
-    };
-}
-
-Script idle() {
-    return [](int, MiniSim&) {
-        Inputs in;
-        return in;
-    };
-}
-
-bool hasEmDash(const std::string& s) { return s.find("\xE2\x80\x94") != std::string::npos; }
-
-} // namespace
 
 // ---- Settings ------------------------------------------------------------------------------------------
 TEST(mechanics_schema_defaults_and_labels) {
@@ -652,16 +419,21 @@ TEST(mechanics_activity_taken_away) {
     rig.tick(Inputs{});
     CHECK_NEAR(rig.lastSpeed, 0.5f, 1e-6f);
     // Another module takes the activity: the engine calls onActivityStopped (no Actions there).
-    rig.host.owner = nullptr;
-    rig.mod.onActivityStopped();
+    OtherModule other;
+    other.attach(&rig.host);
+    CHECK(other.start("Kickoff"));
     CHECK(!rig.mod.drillActive());
     CHECK(rig.mod.focus() == Focus::None);  // the drill's focus ends with the drill
-    rig.tick(Inputs{});
-    // The module asks for normal speed again (the engine filters it today: see the shared change request).
-    CHECK(rig.raw.setGameSpeed.has_value() && *rig.raw.setGameSpeed == 1.f);
-    CHECK_NEAR(rig.mod.appliedGameSpeed(), 1.f, 1e-6f);
+    const int requests = rig.host.requests;
     rig.run(20, idle());
-    CHECK(!rig.raw.setCar);
+    // Not the owner any more: no world control at all (a restore sent now would be dropped by the engine, or would
+    // override the new owner's speed), never a request to take the activity back.
+    CHECK(!rig.raw.setCar && !rig.raw.setGameSpeed && !rig.raw.freezeCar);
+    CHECK(rig.host.requests == requests);
+    CHECK(rig.host.ownsActivity(&other));
+    // The speed it left is remembered (not faked to 1): its next activity starts by sending a speed.
+    CHECK_NEAR(rig.mod.appliedGameSpeed(), 0.5f, 1e-6f);
+    CHECK(rig.mod.speedRestorePending());
 }
 
 TEST(mechanics_focus_survives_drill_it_preceded) {
@@ -669,40 +441,91 @@ TEST(mechanics_focus_survives_drill_it_preceded) {
     rig.command("focus", {"halfflip"});
     rig.command("drill", {"halfflip"});
     rig.tick(Inputs{});
-    rig.host.owner = nullptr;
-    rig.mod.onActivityStopped();
+    rig.host.stopActivity();
     CHECK(rig.mod.focus() == Focus::HalfFlip);
 }
 
-TEST(mechanics_drill_below_level_explains) {
-    Rig rig;
-    rig.command("drill", {"wavedash"});
-    rig.tick(Inputs{});
-    rig.run(150, [](int, MiniSim& c) {  // late tilt: graded, maybe a success, but judged against the level
+namespace {
+// Drop wavedash of the drill with a chosen nose tilt and dodge height (rear wheels above the floor).
+Script dropDash(float tiltDeg, float rearZ) {
+    auto S = std::make_shared<WdS>();
+    return [=](int, MiniSim& c) {
         Inputs in;
         in.throttle = 1.f;
-        if (c.wheelCount() == 0 && c.vel.z < 0.f && c.rearWheelZ() < 6.f) {
+        if (S->phase == 0 && c.wheelCount() == 0) {
+            in.pitch = pitchToNose(c, tiltDeg);
+            if (c.vel.z < 0.f && c.rearWheelZ() < rearZ) {
+                S->phase = 1;
+                S->dodgeT = 0;
+            }
+        }
+        if (S->phase == 1 && S->dodgeT < 3) {
             in.jump = true;
             in.pitch = -1.f;
+            S->dodgeT++;
         }
         return in;
-    });
-    for (const auto& r : rig.results) {
-        if (!r.success) CHECK(!r.tips.empty());
+    };
+}
+} // namespace
+
+TEST(mechanics_drill_below_level_explains) {
+    // Hardest level: the drill asks for 80/100. A slightly early dash is a detector success (72) but not enough.
+    Rig rig;
+    Store st;
+    st.setFloat("mechanics.level.wavedash.level", 1.f);
+    rig.mod.load(st);
+    CHECK_NEAR(rig.mod.level(Focus::Wavedash), 1.f, 1e-6f);
+    rig.command("drill", {"wavedash"});
+    rig.tick(Inputs{});
+    rig.run(150, dropDash(35.f, 38.f));
+    const AttemptResult* r = rig.result("mech.wavedash");
+    CHECK_MSG(r != nullptr, "no wavedash graded");
+    if (!r) return;
+    CHECK(!r->success);
+    CHECK(r->score >= 60.f && r->score < 80.f);
+    bool below = false;
+    for (const auto& t : r->tips) {
+        if (t.code != "me.drill_below_level") continue;
+        below = true;
+        CHECK(t.text.find("80/100") != std::string::npos);
     }
+    CHECK(below);
+    // Ranked after the technique tip (what to fix comes first).
+    CHECK(!r->tips.empty() && r->tips.front().code != "me.drill_below_level");
+    for (size_t i = 1; i < r->tips.size(); ++i) CHECK(r->tips[i - 1].weight >= r->tips[i].weight);
+    CHECK(rig.mod.status().drillAttempts == 1 && rig.mod.status().drillSuccesses == 0);
+    // The stats show a dedicated line for this error, not the generic one.
+    const MechanicsModule::StatRow* row = nullptr;
+    const auto rows = rig.mod.statRows();
+    for (const auto& x : rows)
+        if (x.focus == Focus::Wavedash) row = &x;
+    CHECK(row != nullptr);
+    if (row && !row->topErrorTip.empty()) CHECK(row->topErrorTip.find("Recommence en te concentrant") == std::string::npos);
+
+    // Same level, a cleaner dash (83) passes.
+    Rig ok;
+    ok.mod.load(st);
+    ok.command("drill", {"wavedash"});
+    ok.tick(Inputs{});
+    ok.run(150, dropDash(20.f, 34.f));
+    const AttemptResult* g = ok.result("mech.wavedash");
+    CHECK(g != nullptr && g->success);
 }
 
 TEST(mechanics_context_change_stops_drill) {
+    // Freeplay to another freeplay map: world control stays allowed, so the engine does not stop the activity
+    // before ContextChanged and the module restores the speed itself while still the owner.
     Rig rig;
     rig.set("rlt_me_slowmo", "0.75");
     rig.command("drill", {"powerslide"});
     rig.tick(Inputs{});
-    rig.game.mapName = "Stadium_P";
-    Actions a = rig.event(GameEventKind::ContextChanged);
+    Actions a = rig.setContext(GameMode::Freeplay, "Stadium_P", true);
     CHECK(!rig.mod.drillActive());
     CHECK(a.setGameSpeed.has_value() && *a.setGameSpeed == 1.f);
     rig.tick(Inputs{});
     CHECK(!rig.host.ownsActivity(&rig.mod));
+    CHECK(!rig.mod.speedRestorePending());
 }
 
 TEST(mechanics_reset_shot_replaces_drill) {

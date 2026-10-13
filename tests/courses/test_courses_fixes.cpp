@@ -301,27 +301,29 @@ TEST(courses_fix_penalty_success_needs_three_quarters_of_the_rings) {
 }
 
 TEST(courses_fix_no_record_with_misses_and_a_tiny_penalty) {
-    // One ring missed with a 0.5 s penalty: a success, but no record (it would beat every clean run).
-    Harness h;
-    h.set("rlt_co_chain", "1");
-    h.set("rlt_co_miss_penalty", "0.5");
-    h.keepLog = true;
-    h.command("rings", {"air", code42()});
-    h.runCountdown();
-    h.followPath(pathMissing(h, {4}), 2000.f, false);
-    const AttemptResult* r = lastResult(h);
-    CHECK(r && r->success);
-    CHECK(!h.mod.lastAttempt().newRecord);
-    CHECK(h.mod.lastAttempt().headline.find("pas de record") != std::string::npos);
-    CHECK(h.mod.personalBests().size() == 1u && h.mod.personalBests()[0].time == 0.f);
-    CHECK(!logHasChat(h, "Premier chrono"));
-    // A clean run then sets the first record.
-    while (h.mod.phase() == CoursesPhase::Result) h.tick();
-    h.log.clear();
-    h.runCountdown();
-    h.followPath(h.ringPath(h.carCentre()), 2000.f, false);
-    CHECK(h.mod.lastAttempt().newRecord);
-    CHECK(logHasChat(h, "Premier chrono"));
+    // One ring missed with a 0.5 s (or no) penalty: a success, but no record (it would beat every clean run).
+    for (const char* penalty : {"0.5", "0"}) {
+        Harness h;
+        h.set("rlt_co_chain", "1");
+        h.set("rlt_co_miss_penalty", penalty);
+        h.keepLog = true;
+        h.command("rings", {"air", code42()});
+        h.runCountdown();
+        h.followPath(pathMissing(h, {4}), 2000.f, false);
+        const AttemptResult* r = lastResult(h);
+        CHECK_MSG(r && r->success, penalty);
+        CHECK_MSG(!h.mod.lastAttempt().newRecord, penalty);
+        CHECK(h.mod.lastAttempt().headline.find("pas de record") != std::string::npos);
+        CHECK(h.mod.personalBests().size() == 1u && h.mod.personalBests()[0].time == 0.f);
+        CHECK(!logHasChat(h, "Premier chrono"));
+        // A clean run then sets the first record.
+        while (h.mod.phase() == CoursesPhase::Result) h.tick();
+        h.log.clear();
+        h.runCountdown();
+        h.followPath(h.ringPath(h.carCentre()), 2000.f, false);
+        CHECK(h.mod.lastAttempt().newRecord);
+        CHECK(logHasChat(h, "Premier chrono"));
+    }
     // With a real penalty (default 2 s), a run with one miss is a fair time and may be a record.
     Harness p;
     p.set("rlt_co_chain", "3");

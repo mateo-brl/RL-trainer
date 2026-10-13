@@ -428,3 +428,61 @@ TEST(bm_fix_stats_score_sum_double) {
     x.load(bad);
     CHECK(x.at(Mech::Flick).average() <= 100.f);
 }
+
+// ---- Double tap: a shot over the bar is not a failed double tap when the car did not follow ---------------------------
+namespace {
+// Aerial shot that goes over the bar onto the backboard. `follow`: the car keeps flying toward the rebound; otherwise
+// it drops back to the floor before the ball reaches the wall.
+std::vector<SimTick> overTheBar(bool follow) {
+    Sim sim;
+    Snapshot& s = sim.s;
+    setAir(s.car);
+    orient(s.car, PI / 2, 0.2f, 0);
+    s.car.pos = {0, 3500, 600};
+    s.car.vel = {0, 1000, 200};
+    s.ball.pos = s.car.pos + s.car.basis.fwd * 140.f;
+    sim.step(30, [&](Snapshot& x, int) { x.ball.pos = x.car.pos + x.car.basis.fwd * 140.f; });
+    sim.hit({0, 1800, 900}, [&](Snapshot& x) { x.ball.pos = x.car.pos + x.car.basis.fwd * 140.f; });
+    sim.ballGravity = true;
+    sim.step(1, [&](Snapshot& x, int) { x.car.vel = follow ? Vec3{0, 900, 300} : Vec3{0, 800, -1300}; });
+    for (int i = 0; i < 420; ++i) {
+        sim.step(1, [&](Snapshot& x, int) {
+            if (x.ball.pos.y >= arena::kBackWallY - x.ball.radius && x.ball.vel.y > 0.f) x.ball.vel.y = -0.6f * x.ball.vel.y;
+            if (follow && x.car.pos.y >= 4300.f) x.car.vel = {};  // waits for the rebound (missed)
+            if (!follow && x.car.pos.z <= arena::kCarRestZ) {
+                x.car.pos.z = arena::kCarRestZ;
+                x.car.vel = {};
+                orient(x.car, PI / 2, 0, 0);
+                setGround(x.car);
+            }
+        });
+    }
+    return sim.out;
+}
+} // namespace
+
+TEST(bm_fix_doubletap_over_the_bar_is_an_aerial) {
+    // The car is back on the floor when the ball hits the backboard: the aerial shot (over the bar) is reported.
+    Harness h;
+    h.run(overTheBar(false));
+    h.idle(30);
+    CHECK_EQ(h.countSkill("ball.doubletap"), 0);
+    CHECK_EQ(h.countSkill("ball.aerial"), 1);
+    CHECK_EQ(h.results.size(), 1u);
+    if (!h.results.empty()) CHECK(hasTip(h.results[0], "bm.ae_off_target"));
+    // The detector still grades it, as a weak drill-only claim.
+    DoubleTapDetector dt;
+    auto g = run(dt, overTheBar(false));
+    CHECK_EQ(g.size(), 1u);
+    if (!g.empty()) {
+        CHECK(g[0].weak && g[0].drillOnly && !g[0].success);
+        CHECK(g[0].value("car_dist_at_bounce") < 1500.f);  // close enough, but on the ground
+    }
+    // Following the ball in the air without the second touch: a real double tap attempt, reported as failed.
+    Harness f;
+    f.run(overTheBar(true));
+    f.idle(30);
+    CHECK_EQ(f.countSkill("ball.doubletap"), 1);
+    CHECK_EQ(f.results.size(), 1u);
+    if (!f.results.empty()) CHECK(!f.results[0].success);
+}

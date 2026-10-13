@@ -18,10 +18,10 @@ struct DrillSetup {
     bool placeBall = false;        // false: the ball is parked out of the way
     BallPlacement ball;
     float countdown = 0.f;         // seconds of frozen countdown before GO (speedflip kickoff)
-    bool kickoff = false;          // the kickoff tracker follows the drill (time to ball)
+    bool kickoff = false;          // the kickoff tracker follows the drill (time to ball); no touch = failure
     float timeLimit = 4.f;         // seconds after the start before the attempt is over
-    float passScore = 60.f;        // drill success: detector success and score >= passScore
-    bool needTouch = false;        // fast aerial: the result waits for the ball touch (time to ball)
+    float passScore = 60.f;        // drill success: detector success and score >= passScore (and the touch below)
+    bool needTouch = false;        // fast aerial, half-flip: the result waits for the ball touch (time to ball)
     bool endOnResult = true;       // false: several results per attempt (wall dash runs)
     bool boostWindow = false;      // boost drill: the efficiency window is graded at the end
     std::string goal;              // French instruction line

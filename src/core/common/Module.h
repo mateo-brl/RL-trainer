@@ -41,6 +41,7 @@ struct TickContext {
     bool hasSnapshot = false;        // false until the first tick of the current map
     bool ownsActivity = false;       // this module currently owns the world-control activity
     bool worldControlAllowed = false;
+    bool otherActivityRunning = false;  // another module's drill is running (do not steal it for minor reasons)
 };
 
 struct DrawContext {

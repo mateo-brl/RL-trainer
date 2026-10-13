@@ -84,6 +84,8 @@ public:
     bool hasSnapshot() const { return hasSnapshot_; }
     const Snapshot& latest() const { return latest_; }
     bool worldControlAllowed() const { return worldControlAllowed_; }
+    // True while a drill changed the game speed (the glue restores it on unload).
+    bool gameSpeedModified() const { return gameSpeedModified_; }
 
 private:
     TickContext makeTickContext(const Module* m) const;
@@ -95,6 +97,8 @@ private:
     void resolveTouches(Actions& out);
     void notifySettings();
     void recomputeWorldControl(Actions& out);
+    void markWorldRestore();              // the activity ended: restore speed / boost rules soon
+    void flushWorldRestore(Actions& out); // writes the pending restore into `out`
 
     mutable std::recursive_mutex mutex_;
     std::vector<std::unique_ptr<Module>> modules_;
@@ -118,6 +122,11 @@ private:
     std::vector<PendingTouch> pendingTouches_;
     int64_t lastTouchFrame_ = -1000000;
     int lastSeenTouchFrame_ = -1;
+
+    bool gameSpeedModified_ = false;
+    bool boostRulesModified_ = false;
+    bool pendingSpeedReset_ = false;
+    bool pendingBoostRestore_ = false;
 
     std::deque<Command> commands_;
     bool saveRequested_ = false;

@@ -29,6 +29,9 @@ struct UiContext {
     bool showAdvanced = false;
     bool* configDirty = nullptr;  // set when a cvar changed: the plugin writes config.cfg a bit later
     UpdateService* updateService = nullptr;
+    // Executes Actions produced by an engine call made from runOnGame (game thread only), exactly like the glue
+    // does for hooks: world actions, chat, toasts, console commands, settings resets.
+    std::function<void(Actions&)> applyActions;
 
     // Sets a cvar from the UI (string form, as in the schema). Marks the config for saving.
     void setCvar(const std::string& name, const std::string& value) const;

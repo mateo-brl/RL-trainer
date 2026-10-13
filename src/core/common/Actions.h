@@ -4,6 +4,7 @@
 // emitting module owns the current activity AND the context allows world control (freeplay, see Engine).
 
 #include <optional>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,13 @@ struct CarPlacement {
     std::optional<float> boost;  // 0..100, unchanged when empty
 };
 
+// Boost rules of the local car during a drill (freeplay "unlimited boost" falsifies kickoff times).
+// The glue saves the original rules the first time and the engine restores them when the activity ends.
+struct BoostRules {
+    bool unlimited = false;
+    bool noBoost = false;
+};
+
 enum class ToastKind : int { Info = 0, Ok = 1, Warning = 2, Error = 3 };
 
 struct ToastMessage {
@@ -51,7 +59,9 @@ struct Actions {
     std::optional<float> setBoost;          // 0..100
     std::optional<Inputs> overrideInputs;   // replace the player's inputs for THIS tick (pre-hook only)
     bool freezeCar = false;                 // zero inputs + keep car still for this tick
-    std::optional<float> setGameSpeed;      // 1.0 = normal (sv_soccar_gamespeed)
+    std::optional<float> setGameSpeed;      // 1.0 = normal (sv_soccar_gamespeed); restored by the engine on stop
+    std::optional<BoostRules> boostRules;   // restored by the engine when the activity ends
+    bool resetPickups = false;              // respawn every boost pad (ServerWrapper::ResetPickups)
 
     // Native freeplay countdown messages ("3", "2", "1", "GO!").
     std::optional<int> countdownMessage;    // 3, 2, 1
@@ -73,11 +83,17 @@ struct Actions {
     // Reset settings to their schema defaults: module ids (only the emitting module's own id is honoured)
     // or "<module>/<section>" for one section. Executed by the glue through cvars (so they are saved).
     std::vector<std::string> resetSettings;
+    // Set some of the emitting module's OWN settings (cvar name, value in cvar format), saved like a UI change.
+    std::vector<std::pair<std::string, std::string>> setCvars;
+
+    // Engine-generated (never set by modules): put back the saved boost rules.
+    bool restoreBoostRules = false;
 
     bool empty() const {
         return !setBall && !setCar && !setBoost && !overrideInputs && !freezeCar && !setGameSpeed && !countdownMessage &&
                !goMessage && chat.empty() && toasts.empty() && results.empty() && events.empty() && consoleCommands.empty() &&
-               !requestSave && resetSettings.empty();
+               !requestSave && resetSettings.empty() && setCvars.empty() && !boostRules && !resetPickups &&
+               !restoreBoostRules;
     }
 
     void clearWorldControl() {
@@ -87,6 +103,8 @@ struct Actions {
         overrideInputs.reset();
         freezeCar = false;
         setGameSpeed.reset();
+        boostRules.reset();
+        resetPickups = false;
         countdownMessage.reset();
         goMessage = false;
     }
@@ -99,6 +117,9 @@ struct Actions {
         if (o.overrideInputs) overrideInputs = o.overrideInputs;
         freezeCar = freezeCar || o.freezeCar;
         if (o.setGameSpeed) setGameSpeed = o.setGameSpeed;
+        if (o.boostRules) boostRules = o.boostRules;
+        resetPickups = resetPickups || o.resetPickups;
+        restoreBoostRules = restoreBoostRules || o.restoreBoostRules;
         if (o.countdownMessage) countdownMessage = o.countdownMessage;
         goMessage = goMessage || o.goMessage;
         for (auto& m : o.chat) chat.push_back(std::move(m));
@@ -108,6 +129,7 @@ struct Actions {
         for (auto& c : o.consoleCommands) consoleCommands.push_back(std::move(c));
         requestSave = requestSave || o.requestSave;
         for (auto& r : o.resetSettings) resetSettings.push_back(std::move(r));
+        for (auto& c : o.setCvars) setCvars.push_back(std::move(c));
     }
 };
 

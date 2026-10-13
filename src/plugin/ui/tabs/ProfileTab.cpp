@@ -77,7 +77,8 @@ void refreshNow(const UiContext& ctx) {
     if (!ps) return;
     Engine* eng = &ctx.engine;
     std::shared_ptr<GameWrapper> gw = ctx.game;
-    ctx.runOnGame([eng, ps, gw]() {
+    auto apply = ctx.applyActions;
+    ctx.runOnGame([eng, ps, gw, apply]() {
         PlayerProfile previous;
         bool accents = false;
         {
@@ -88,8 +89,9 @@ void refreshNow(const UiContext& ctx) {
         const PlayerProfile p = ps->read(previous);
         Actions a;
         eng->setProfile(p, a);
-        // The glue is not involved in this forced read: show the feedback produced by the modules here.
-        if (gw) {
+        if (apply) {
+            apply(a);  // the glue executes everything (toasts, chat, saves, settings...)
+        } else if (gw) {  // fallback: show the feedback produced by the modules here
             for (const auto& t : a.toasts)
                 gw->Toast(hudText(t.title, accents), hudText(t.text, accents), "default", t.seconds,
                           static_cast<uint8_t>(t.kind));

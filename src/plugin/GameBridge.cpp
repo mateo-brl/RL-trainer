@@ -147,6 +147,17 @@ GameMode GameBridge::detectMode(bool isStockMap) const {
     return GameMode::Menu;
 }
 
+void GameBridge::restoreBoostRules() {
+    if (!boostSaved_) return;
+    boostSaved_ = false;
+    CarWrapper car = gw_->GetLocalCar();
+    if (car.IsNull()) return;
+    BoostWrapper b = car.GetBoostComponent();
+    if (b.IsNull()) return;
+    b.SetUnlimitedBoostRefCount(savedUnlimitedRefCount_);
+    b.SetbNoBoost(savedNoBoost_);
+}
+
 void GameBridge::runConsole(const std::string& cmd) {
     // Allow-list: only map navigation commands may come from the core.
     auto starts = [&](const char* p) { return cmd.rfind(p, 0) == 0; };
@@ -202,6 +213,23 @@ void GameBridge::execute(const Actions& a, void* params, bool hudAccents) {
             BoostWrapper b = car.GetBoostComponent();
             if (!b.IsNull()) b.SetBoostAmount(std::clamp(*p.boost, 0.f, 100.f) / 100.f);
         }
+    }
+    if (a.restoreBoostRules) restoreBoostRules();
+    if (a.boostRules && !car.IsNull()) {
+        BoostWrapper b = car.GetBoostComponent();
+        if (!b.IsNull()) {
+            if (!boostSaved_) {
+                savedUnlimitedRefCount_ = b.GetUnlimitedBoostRefCount();
+                savedNoBoost_ = b.GetbNoBoost();
+                boostSaved_ = true;
+            }
+            b.SetUnlimitedBoostRefCount(a.boostRules->unlimited ? 1 : 0);
+            b.SetbNoBoost(a.boostRules->noBoost ? 1 : 0);
+        }
+    }
+    if (a.resetPickups) {
+        ServerWrapper server = currentServer();
+        if (!server.IsNull()) server.ResetPickups();
     }
     if (a.setBoost && !car.IsNull()) {
         BoostWrapper b = car.GetBoostComponent();

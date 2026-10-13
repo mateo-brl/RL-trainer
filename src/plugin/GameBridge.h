@@ -36,6 +36,9 @@ public:
     // Physics frame counter (EngineTA::GetPhysicsFrame), -1 when unavailable.
     int64_t physicsFrame() const;
 
+    // Puts back the boost rules saved before a drill changed them (also called on unload).
+    void restoreBoostRules();
+
 private:
     ServerWrapper currentServer() const;
     void runConsole(const std::string& cmd);
@@ -43,6 +46,10 @@ private:
     std::shared_ptr<GameWrapper> gw_;
     std::shared_ptr<CVarManagerWrapper> cvars_;
     bool frozen_ = false;
+    // Boost rules of the local car before a drill changed them.
+    bool boostSaved_ = false;
+    int savedUnlimitedRefCount_ = 0;
+    unsigned long savedNoBoost_ = 0;
 };
 
 } // namespace rlt

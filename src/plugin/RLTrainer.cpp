@@ -8,6 +8,8 @@
 
 #include "core/common/Text.h"
 #include "imgui.h"
+#include "core/modules/maps/MapsModule.h"
+#include "core/modules/profile/ProfileModule.h"
 #include "plugin/Version.h"
 #include "plugin/ui/Ui.h"
 
@@ -52,6 +54,9 @@ void RLTrainer::onLoad() {
     updates_->cleanup();
     ui_ = std::unique_ptr<UiContext>(new UiContext{*engine_, cvarManager, gameWrapper, profile_.get(), maps_.get(), false, &configDirty_});
     ui_->updateService = updates_.get();
+    ui_->applyActions = [alive = alive_, this](Actions& a) {
+        if (*alive) guarded(cvarManager, "applyActions", [&] { run(a); });
+    };
 
     registerCvars();
     loadProgress();
@@ -84,8 +89,14 @@ void RLTrainer::onUnload() {
     for (const auto& name : hookedPost_) gameWrapper->UnhookEventPost(name);
     saveProgress();
     if (configDirty_) cvarManager->executeCommand("writeconfig", false);
-    // Restore normal driving / game speed in case a drill was running.
+    // Restore normal driving, game speed and boost rules in case a drill was running.
+    const bool speedModified = engine_ && engine_->gameSpeedModified();
     if (engine_) engine_->stopActivity();
+    if (speedModified) {
+        CVarWrapper speed = cvarManager->getCvar("sv_soccar_gamespeed");
+        if (!speed.IsNull()) speed.setValue(1.f);
+    }
+    if (bridge_) bridge_->restoreBoostRules();
     CarWrapper car = gameWrapper->GetLocalCar();
     if (!car.IsNull()) car.SetbDriving(1);
 }
@@ -226,6 +237,12 @@ void RLTrainer::run(Actions& actions, void* params) {
         accents = engine_->settings().general.hudAccents;
     }
     bridge_->execute(actions, params, accents);
+    // Settings changed by a module command (already filtered by the engine to the module's own cvars).
+    for (const auto& kv : actions.setCvars) {
+        CVarWrapper cv = cvarManager->getCvar(kv.first);
+        if (!cv.IsNull()) cv.setValue(kv.second);
+        configDirty_ = true;
+    }
     // Settings resets requested by a module (already filtered by the engine to the module's own settings).
     for (const std::string& target : actions.resetSettings) {
         const size_t slash = target.find('/');
@@ -280,7 +297,12 @@ void RLTrainer::periodic() {
     run(actions);
 
     profileTimer_ += kPeriod;
-    if (profileTimer_ >= 3.f) {
+    bool refreshAsked = false;
+    {
+        auto lk = engine_->lock();
+        if (auto* profileModule = engine_->get<ProfileModule>()) refreshAsked = profileModule->report().refreshPending;
+    }
+    if (profileTimer_ >= 3.f || refreshAsked) {
         profileTimer_ = 0.f;
         refreshProfile(false);
     }
@@ -307,7 +329,12 @@ void RLTrainer::refreshContext() {
     const bool stock = maps_->isStockMap(ctx.mapName);
     ctx.mode = bridge_->detectMode(stock);
     ctx.isCustomMap = ctx.mode == GameMode::Workshop;
-    if (ctx.isCustomMap) maps_->describeCurrentMap(ctx.mapName, ctx);
+    if (ctx.isCustomMap) {
+        maps_->describeCurrentMap(ctx.mapName, ctx);
+        // The maps module knows the player's category choice and the Kismet/catalogue identity.
+        auto lk = engine_->lock();
+        if (auto* mapsModule = engine_->get<MapsModule>()) mapsModule->refineContext(ctx);
+    }
     ctx.paused = gameWrapper->IsPaused();
     {
         const std::time_t now = std::time(nullptr);
@@ -336,6 +363,12 @@ void RLTrainer::refreshContext() {
 }
 
 void RLTrainer::refreshProfile(bool force) {
+    // "rlt profile refresh" (console or tab) asks for a full read even when nothing seems to have changed.
+    {
+        auto lk = engine_->lock();
+        if (auto* profileModule = engine_->get<ProfileModule>())
+            if (profileModule->report().refreshPending) force = true;
+    }
     if (!force && !profile_->quickChanged(engine_->profile())) return;
     PlayerProfile p = profile_->read(engine_->profile());
     Actions actions;

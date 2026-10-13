@@ -1,6 +1,7 @@
 #include "core/engine/Engine.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "core/modules/ballmech/BallMechModule.h"
 #include "core/modules/coach/CoachModule.h"
@@ -89,6 +90,7 @@ void Engine::setContext(const GameContext& ctx, Actions& out) {
         lastTouchFrame_ = -1000000;
     }
     recomputeWorldControl(out);
+    flushWorldRestore(out);
     GameEvent ev;
     ev.kind = GameEventKind::ContextChanged;
     ev.frame = latest_.frame;
@@ -131,6 +133,7 @@ void Engine::tick(const Snapshot& snap, Actions& out) {
     hasSnapshot_ = true;
 
     pump(out);
+    flushWorldRestore(out);
     if (!settings_.general.enabled) {
         pendingTouches_.clear();
         return;
@@ -212,6 +215,7 @@ void Engine::gameEvent(const GameEvent& ev, Actions& out) {
         stopActivity();
     }
     dispatch(out, [&](Module* m, Actions& a) { m->onGameEvent(ev, makeTickContext(m), a); });
+    flushWorldRestore(out);
 }
 
 void Engine::kismet(const std::vector<KismetVar>& vars, Actions& out) {
@@ -250,6 +254,7 @@ void Engine::pump(Actions& out) {
         target->onCommand(c, makeTickContext(target), a);
         route(target, std::move(a), out, 0);
     }
+    flushWorldRestore(out);
 }
 
 bool Engine::parseCommandLine(const std::vector<std::string>& words, Command& out) {
@@ -275,6 +280,7 @@ bool Engine::requestActivity(Module* m, const std::string& name) {
         Module* old = find(activityOwner_);
         activityOwner_.clear();
         activityName_.clear();
+        markWorldRestore();
         if (old) old->onActivityStopped();
     }
     activityOwner_ = m->id();
@@ -287,6 +293,7 @@ void Engine::releaseActivity(Module* m) {
     if (m && activityOwner_ == m->id()) {
         activityOwner_.clear();
         activityName_.clear();
+        markWorldRestore();
     }
 }
 
@@ -301,6 +308,7 @@ void Engine::stopActivity() {
     Module* old = find(activityOwner_);
     activityOwner_.clear();
     activityName_.clear();
+    markWorldRestore();
     if (old) old->onActivityStopped();
 }
 
@@ -330,8 +338,9 @@ Module* Engine::find(const std::string& id) const {
 }
 
 TickContext Engine::makeTickContext(const Module* m) const {
-    return TickContext{latest_,  history_, settings_, context_, profile_, hasSnapshot_, ownsActivity(m),
-                       worldControlAllowed_};
+    const bool owns = ownsActivity(m);
+    return TickContext{latest_, history_, settings_, context_, profile_, hasSnapshot_, owns, worldControlAllowed_,
+                       !activityOwner_.empty() && !owns};
 }
 
 DrawContext Engine::makeDrawContext(const Module* m, const ViewContext& view) const {
@@ -350,8 +359,44 @@ void Engine::dispatch(Actions& out, Fn&& fn, const Module* skip) {
     }
 }
 
+void Engine::markWorldRestore() {
+    if (gameSpeedModified_) pendingSpeedReset_ = true;
+    if (boostRulesModified_) pendingBoostRestore_ = true;
+}
+
+void Engine::flushWorldRestore(Actions& out) {
+    if (pendingSpeedReset_) {
+        out.setGameSpeed = 1.f;
+        pendingSpeedReset_ = false;
+        gameSpeedModified_ = false;
+    }
+    if (pendingBoostRestore_) {
+        out.restoreBoostRules = true;
+        pendingBoostRestore_ = false;
+        boostRulesModified_ = false;
+    }
+}
+
 void Engine::route(Module* source, Actions&& a, Actions& out, int depth) {
     if (!worldControlAllowed_ || !source || activityOwner_ != source->id()) a.clearWorldControl();
+    a.restoreBoostRules = false;  // engine-only flag
+    if (a.setGameSpeed) {
+        gameSpeedModified_ = std::fabs(*a.setGameSpeed - 1.f) > 1e-3f;
+        pendingSpeedReset_ = false;  // the owner sets the speed itself this tick
+    }
+    if (a.boostRules) {
+        boostRulesModified_ = true;
+        pendingBoostRestore_ = false;
+    }
+    // A module may only change its own settings.
+    if (!a.setCvars.empty()) {
+        std::vector<std::pair<std::string, std::string>> kept;
+        for (auto& c : a.setCvars) {
+            const SettingDef* d = schema_.find(c.first);
+            if (source && d && d->module == source->id()) kept.push_back(std::move(c));
+        }
+        a.setCvars.swap(kept);
+    }
     if (!settings_.general.chatFeedback) a.chat.clear();
     if (!settings_.general.toastFeedback) a.toasts.clear();
     if (a.requestSave) saveRequested_ = true;

@@ -83,11 +83,13 @@ struct PlayerProfile {
     float screenWidth = 1920.f, screenHeight = 1080.f;
 };
 
-// A car-ball contact of the local car, resolved by the engine from the tick history:
-// `pre` is the state at the start of the touch tick (before the hit), `post` one tick later (after the hit).
+// A car-ball contact of the local car, resolved by the engine from the tick history (2 ticks later):
+// `pre` is the state at the start of the touch tick (before the hit), `post1` the next tick and `post`
+// two ticks after `pre` (the hit impulse is fully applied there; use `post` for "after the touch").
 struct TouchEvent {
     int64_t frame = 0;
     Snapshot pre;
+    Snapshot post1;
     Snapshot post;
     bool hasHitInfo = false;   // HitLocation/HitNormal from the OnHitBall hook
     Vec3 hitLocation;          // world contact point

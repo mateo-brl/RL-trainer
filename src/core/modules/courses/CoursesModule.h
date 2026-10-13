@@ -1,5 +1,5 @@
 #pragma once
-// Parcours: Maps virtuelles : anneaux, flicks, contrôle, tir de précision.
+// Parcours: Maps virtuelles : parcours d'anneaux (vol, sol, air dribble) et parcours de contrôle (dribble, slalom, rattrapages).
 
 #include "core/common/Module.h"
 #include "core/modules/courses/CoursesConfig.h"

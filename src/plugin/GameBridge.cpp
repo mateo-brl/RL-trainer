@@ -60,8 +60,10 @@ bool GameBridge::buildSnapshot(CarWrapper car, const ControllerInput* input, Sna
     BoostWrapper boost = car.GetBoostComponent();
     c.boost = boost.IsNull() ? 0.f : boost.GetCurrentBoostAmount() * 100.f;
     c.team = car.GetTeamNum2();
-    const Vec3 extent = sdk::toVec(car.GetLocalCollisionExtent());
+    Vec3 extent = sdk::toVec(car.GetLocalCollisionExtent());
     if (extent.x > 1.f && extent.y > 1.f && extent.z > 1.f) {
+        // The SDK returns half extents (HitboxPlugin draws corners at +-extent); store full sizes.
+        if (extent.x < 90.f) extent = extent * 2.f;
         c.hitboxExtent = extent;
         c.hitboxOffset = sdk::toVec(car.GetLocalCollisionOffset());
     }

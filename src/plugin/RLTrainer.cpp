@@ -1,5 +1,6 @@
 #include "plugin/RLTrainer.h"
 
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -23,6 +24,18 @@ struct OnHitBallParams {
     Vector hitLocation;
     Vector hitNormal;
 };
+
+// An exception escaping into the game crashes Rocket League: every callback runs through this.
+template <class Fn>
+void guarded(const std::shared_ptr<CVarManagerWrapper>& cvars, const char* where, Fn&& fn) {
+    try {
+        fn();
+    } catch (const std::exception& e) {
+        if (cvars) cvars->log(std::string("[RL Trainer] erreur dans ") + where + " : " + e.what());
+    } catch (...) {
+        if (cvars) cvars->log(std::string("[RL Trainer] erreur inconnue dans ") + where);
+    }
+}
 } // namespace
 
 // ---- Lifecycle -------------------------------------------------------------------------------------------
@@ -41,7 +54,7 @@ void RLTrainer::onLoad() {
     registerCommands();
 
     gameWrapper->RegisterDrawable([alive = alive_, this](CanvasWrapper canvas) {
-        if (*alive) onDraw(canvas);
+        if (*alive) guarded(cvarManager, "draw", [&] { onDraw(canvas); });
     });
 
     refreshContext();
@@ -52,6 +65,9 @@ void RLTrainer::onLoad() {
 
 void RLTrainer::onUnload() {
     *alive_ = false;
+    // Only cvars, notifiers and drawables are documented as auto-removed: unhook explicitly.
+    for (const auto& name : hookedPre_) gameWrapper->UnhookEvent(name);
+    for (const auto& name : hookedPost_) gameWrapper->UnhookEventPost(name);
     saveProgress();
     if (configDirty_) cvarManager->executeCommand("writeconfig", false);
     // Restore normal driving / game speed in case a drill was running.
@@ -69,7 +85,7 @@ void RLTrainer::registerCvars() {
                                                    d.maxValue, d.persist);
         const std::string name = d.cvar;
         cv.addOnValueChanged([alive = alive_, this, name](std::string, CVarWrapper c) {
-            if (*alive && engine_) engine_->applySetting(name, c.getStringValue());
+            if (*alive && engine_) guarded(cvarManager, "cvar", [&] { engine_->applySetting(name, c.getStringValue()); });
         });
         engine_->applySetting(name, cv.getStringValue());
     }
@@ -81,7 +97,7 @@ void RLTrainer::registerCommands() {
         [alive = alive_, this](std::vector<std::string> args) {
             if (!*alive) return;
             Command c;
-            if (Engine::parseCommandLine(args, c)) engine_->post(c);
+            if (Engine::parseCommandLine(args, c)) engine_->post(std::move(c));
             else cvarManager->log("Usage : rlt <module> <commande> [arguments]. Ex : rlt kickoff start");
         },
         "RL Trainer : rlt <module> <commande> [arguments]", PERMISSION_ALL);
@@ -91,46 +107,67 @@ void RLTrainer::registerCommands() {
 }
 
 // ---- Hooks -----------------------------------------------------------------------------------------------
+void RLTrainer::hookPre(const std::string& name, std::function<void(std::string)> fn) {
+    hookedPre_.push_back(name);
+    gameWrapper->HookEvent(name, [alive = alive_, this, name, fn = std::move(fn)](std::string ev) {
+        if (*alive) guarded(cvarManager, name.c_str(), [&] { fn(ev); });
+    });
+}
+
+void RLTrainer::hookPost(const std::string& name, std::function<void(std::string)> fn) {
+    hookedPost_.push_back(name);
+    gameWrapper->HookEventPost(name, [alive = alive_, this, name, fn = std::move(fn)](std::string ev) {
+        if (*alive) guarded(cvarManager, name.c_str(), [&] { fn(ev); });
+    });
+}
+
 void RLTrainer::registerHooks() {
     auto alive = alive_;
-    gameWrapper->HookEventWithCaller<CarWrapper>(
-        "Function TAGame.Car_TA.SetVehicleInput", [alive, this](CarWrapper car, void* params, std::string) {
-            if (*alive) onVehicleInput(car, params);
-        });
-    gameWrapper->HookEventWithCallerPost<CarWrapper>(
-        "Function TAGame.Car_TA.OnHitBall", [alive, this](CarWrapper car, void* params, std::string) {
-            if (*alive) onHitBall(car, params);
-        });
-    gameWrapper->HookEventPost("Function TAGame.GameEvent_TA.PlayerResetTraining", [alive, this](std::string) {
-        if (*alive) sendEvent(GameEventKind::ResetShot);
+    const std::string vehicleInput = "Function TAGame.Car_TA.SetVehicleInput";
+    hookedPre_.push_back(vehicleInput);
+    gameWrapper->HookEventWithCaller<CarWrapper>(vehicleInput, [alive, this](CarWrapper car, void* params, std::string) {
+        if (*alive) guarded(cvarManager, "SetVehicleInput", [&] { onVehicleInput(car, params); });
     });
-    gameWrapper->HookEvent("Function TAGame.Ball_TA.OnHitGoal", [alive, this](std::string) {
-        if (*alive) sendEvent(GameEventKind::Goal);
+    const std::string hitBall = "Function TAGame.Car_TA.OnHitBall";
+    hookedPost_.push_back(hitBall);
+    gameWrapper->HookEventWithCallerPost<CarWrapper>(hitBall, [alive, this](CarWrapper car, void* params, std::string) {
+        if (*alive) guarded(cvarManager, "OnHitBall", [&] { onHitBall(car, params); });
     });
-    gameWrapper->HookEventWithCallerPost<CarWrapper>(
-        "Function TAGame.Car_TA.EventPerformedFlipReset", [alive, this](CarWrapper car, void*, std::string) {
-            if (*alive && bridge_->isLocalCar(car)) sendEvent(GameEventKind::FlipReset, "sdk");
+    const std::string flipReset = "Function TAGame.Car_TA.EventPerformedFlipReset";
+    hookedPost_.push_back(flipReset);
+    gameWrapper->HookEventWithCallerPost<CarWrapper>(flipReset, [alive, this](CarWrapper car, void*, std::string) {
+        if (*alive) guarded(cvarManager, "FlipReset", [&] {
+            if (bridge_->isLocalCar(car)) sendEvent(GameEventKind::FlipReset, "sdk");
         });
+    });
+
+    // "Reset shot": freeplay uses FreeplayCommands_TA.ResetTraining, custom training PlayerResetTraining.
+    auto onReset = [this](std::string) {
+        const int64_t frame = bridge_->physicsFrame();
+        if (frame >= 0 && std::llabs(frame - lastResetFrame_) < 12) return;  // same reset seen by both hooks (0.1 s)
+        lastResetFrame_ = frame;
+        sendEvent(GameEventKind::ResetShot);
+    };
+    hookPost("Function TAGame.FreeplayCommands_TA.ResetTraining", onReset);
+    hookPost("Function TAGame.GameEvent_TA.PlayerResetTraining", onReset);
+    hookPre("Function TAGame.Ball_TA.OnHitGoal", [this](std::string) { sendEvent(GameEventKind::Goal); });
 
     // Context changes: refresh a little later, once the game finished setting things up.
     auto delayedRefresh = [alive, this](std::string) {
-        if (!*alive) return;
         gameWrapper->SetTimeout([alive, this](GameWrapper*) {
-            if (*alive) refreshContext();
+            if (*alive) guarded(cvarManager, "refreshContext", [&] { refreshContext(); });
         }, 0.3f);
     };
-    gameWrapper->HookEventPost("Function TAGame.Mutator_Freeplay_TA.Init", delayedRefresh);
-    gameWrapper->HookEventPost("Function TAGame.GameEvent_Soccar_TA.InitGame", delayedRefresh);
-    gameWrapper->HookEventPost("Function GameEvent_TrainingEditor_TA.WaitingToPlayTest.OnTrainingModeLoaded",
-                               delayedRefresh);
-    gameWrapper->HookEventPost("Function TAGame.GameInfo_Replay_TA.InitGame", delayedRefresh);
-    gameWrapper->HookEvent("Function TAGame.GameEvent_Soccar_TA.Destroyed", [alive, this](std::string) {
-        if (!*alive) return;
+    hookPost("Function TAGame.Mutator_Freeplay_TA.Init", delayedRefresh);
+    hookPost("Function TAGame.GameEvent_Soccar_TA.InitGame", delayedRefresh);
+    hookPost("Function GameEvent_TrainingEditor_TA.WaitingToPlayTest.OnTrainingModeLoaded", delayedRefresh);
+    hookPost("Function TAGame.GameInfo_Replay_TA.InitGame", delayedRefresh);
+    hookPre("Function TAGame.GameEvent_Soccar_TA.Destroyed", [alive, this](std::string) {
         sendEvent(GameEventKind::MapUnloaded);
         maps_->clearKismetCache();
         saveProgress();
         gameWrapper->SetTimeout([alive, this](GameWrapper*) {
-            if (*alive) refreshContext();
+            if (*alive) guarded(cvarManager, "refreshContext", [&] { refreshContext(); });
         }, 0.5f);
     });
 }
@@ -197,7 +234,7 @@ void RLTrainer::onDraw(CanvasWrapper canvas) {
 void RLTrainer::schedulePeriodic() {
     gameWrapper->SetTimeout([alive = alive_, this](GameWrapper*) {
         if (!*alive) return;
-        periodic();
+        guarded(cvarManager, "periodic", [&] { periodic(); });
         schedulePeriodic();
     }, kPeriod);
 }

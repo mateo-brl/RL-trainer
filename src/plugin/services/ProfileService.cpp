@@ -31,15 +31,17 @@ PlayerProfile ProfileService::read(const PlayerProfile& previous) const {
         p.camera.transitionSpeed = cam.TransitionSpeed;
     }
 
+    // The SDK returns (key, action) pairs (InputLogger, StreamAPIPlugin). KeyBinding is {action, key}.
     p.pcBindings.clear();
-    for (const auto& kv : settings.GetAllPCBindings()) p.pcBindings.push_back({kv.first, kv.second});
+    for (const auto& kv : settings.GetAllPCBindings()) p.pcBindings.push_back({kv.second, kv.first});
     p.gamepadBindings.clear();
-    for (const auto& kv : settings.GetAllGamepadBindings()) p.gamepadBindings.push_back({kv.first, kv.second});
+    for (const auto& kv : settings.GetAllGamepadBindings()) p.gamepadBindings.push_back({kv.second, kv.first});
 
     CarWrapper car = gw_->GetLocalCar();
     if (!car.IsNull()) {
-        const Vec3 extent = sdk::toVec(car.GetLocalCollisionExtent());
+        Vec3 extent = sdk::toVec(car.GetLocalCollisionExtent());
         if (extent.x > 1.f && extent.y > 1.f && extent.z > 1.f) {
+            if (extent.x < 90.f) extent = extent * 2.f;  // SDK gives half extents; profile stores full sizes
             p.hitboxExtent = extent;
             p.hitboxOffset = sdk::toVec(car.GetLocalCollisionOffset());
         }

@@ -39,6 +39,8 @@ public:
 private:
     void registerCvars();
     void registerHooks();
+    void hookPre(const std::string& name, std::function<void(std::string)> fn);
+    void hookPost(const std::string& name, std::function<void(std::string)> fn);
     void registerCommands();
     void schedulePeriodic();
     void periodic();
@@ -70,4 +72,7 @@ private:
     float profileTimer_ = 0.f;
     int kismetCounter_ = 0;
     bool lastPaused_ = false;
+    int64_t lastResetFrame_ = -1000;
+    std::vector<std::string> hookedPre_;
+    std::vector<std::string> hookedPost_;
 };

@@ -41,7 +41,7 @@ else()
 endif()
 
 # ---- Core ----------------------------------------------------------------------------------------
-set(RLT_MODULES overlay firsttouch prediction mechanics kickoff courses maps coach profile)
+set(RLT_MODULES overlay firsttouch prediction mechanics ballmech kickoff courses shooting maps coach profile)
 
 file(GLOB RLT_COMMON_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/core/common/*.cpp)
 add_library(rlt_common STATIC ${RLT_COMMON_SOURCES})

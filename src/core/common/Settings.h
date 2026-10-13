@@ -3,7 +3,7 @@
 // SettingsSchema (cvar name, type, default, range, French label/tooltip). The glue registers one BakkesMod
 // cvar per entry (saved to config.cfg) and the UI draws controls from the same schema.
 //
-// Cvar naming: rlt_<module>_<name>, e.g. rlt_ov_speed_enabled. Never rename a cvar once released
+// Cvar naming: rlt_<module>_<name>, e.g. rlt_ov_speed_enabled (prefixes in docs/ARCHITECTURE.md). Never rename a cvar once released
 // (it would reset the player's saved value).
 
 #include <functional>
@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/common/Color.h"
+#include "core/modules/ballmech/BallMechConfig.h"
 #include "core/modules/coach/CoachConfig.h"
 #include "core/modules/courses/CoursesConfig.h"
 #include "core/modules/firsttouch/FirstTouchConfig.h"
@@ -20,6 +21,7 @@
 #include "core/modules/overlay/OverlayConfig.h"
 #include "core/modules/prediction/PredictionConfig.h"
 #include "core/modules/profile/ProfileConfig.h"
+#include "core/modules/shooting/ShootingConfig.h"
 
 namespace rlt {
 
@@ -40,8 +42,10 @@ struct Settings {
     FirstTouchConfig firstTouch;
     PredictionConfig prediction;
     MechanicsConfig mechanics;
+    BallMechConfig ballmech;
     KickoffConfig kickoff;
     CoursesConfig courses;
+    ShootingConfig shooting;
     MapsConfig maps;
     CoachConfig coach;
     ProfileConfig profile;

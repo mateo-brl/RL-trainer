@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "core/modules/ballmech/BallMechModule.h"
 #include "core/modules/coach/CoachModule.h"
 #include "core/modules/courses/CoursesModule.h"
 #include "core/modules/firsttouch/FirstTouchModule.h"
@@ -11,6 +12,7 @@
 #include "core/modules/overlay/OverlayModule.h"
 #include "core/modules/prediction/PredictionModule.h"
 #include "core/modules/profile/ProfileModule.h"
+#include "core/modules/shooting/ShootingModule.h"
 
 namespace rlt {
 
@@ -25,11 +27,13 @@ Engine::Engine() {
     modules_.push_back(std::make_unique<ProfileModule>());
     modules_.push_back(std::make_unique<MapsModule>());
     modules_.push_back(std::make_unique<CoursesModule>());
+    modules_.push_back(std::make_unique<ShootingModule>());
     modules_.push_back(std::make_unique<KickoffModule>());
     modules_.push_back(std::make_unique<PredictionModule>());
     modules_.push_back(std::make_unique<OverlayModule>());
     modules_.push_back(std::make_unique<FirstTouchModule>());
     modules_.push_back(std::make_unique<MechanicsModule>());
+    modules_.push_back(std::make_unique<BallMechModule>());
     modules_.push_back(std::make_unique<CoachModule>());
     for (auto& m : modules_) m->attach(this);
 
@@ -38,8 +42,10 @@ Engine::Engine() {
     FirstTouchModule::describeSettings(schema_);
     PredictionModule::describeSettings(schema_);
     MechanicsModule::describeSettings(schema_);
+    BallMechModule::describeSettings(schema_);
     KickoffModule::describeSettings(schema_);
     CoursesModule::describeSettings(schema_);
+    ShootingModule::describeSettings(schema_);
     MapsModule::describeSettings(schema_);
     CoachModule::describeSettings(schema_);
     ProfileModule::describeSettings(schema_);
@@ -169,16 +175,18 @@ void Engine::resolveTouches(Actions& out) {
     std::vector<PendingTouch> still;
     for (const auto& p : pendingTouches_) {
         const Snapshot* pre = history_.atOrBefore(p.frame);
-        const Snapshot* post = history_.after(p.frame);
-        if (!post) {  // not resolvable yet (needs the next tick)
-            still.push_back(p);
+        const Snapshot* post1 = history_.after(p.frame);
+        const Snapshot* post2 = post1 ? history_.after(post1->frame) : nullptr;
+        if (!post2) {  // not resolvable yet (needs two more ticks)
+            if (history_.newest().frame - p.frame < 8) still.push_back(p);
             continue;
         }
         if (!pre || pre->frame != p.frame) continue;  // history cleared or gap: drop
         TouchEvent t;
         t.frame = pre->frame;
         t.pre = *pre;
-        t.post = *post;
+        t.post1 = *post1;
+        t.post = *post2;
         t.hasHitInfo = p.hasHit;
         t.hitLocation = p.loc;
         t.hitNormal = p.normal;

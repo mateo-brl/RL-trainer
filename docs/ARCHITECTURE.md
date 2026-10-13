@@ -46,8 +46,9 @@ Un module = `src/core/modules/<id>/` + `tests/<id>/` + `src/plugin/ui/tabs/<Id>T
 - Classe `XModule : public Module` avec `id()`, `title()` (français), `static void describeSettings(SettingsSchema&)`.
 - Réglages : struct `XConfig` dans `XConfig.h` (agrégée dans `Settings`). Chaque champ est déclaré **une fois**
   dans `describeSettings` (cvar, défaut, bornes, libellé et infobulle en français). Les cvars sont
-  `rlt_<préfixe>_<nom>` : `ov` overlay, `ft` firsttouch, `pr` prediction, `me` mechanics, `ko` kickoff,
-  `co` courses, `map` maps, `coach` coach, `pf` profile. Ne jamais renommer une cvar publiée.
+  `rlt_<préfixe>_<nom>` : `ov` overlay, `ft` firsttouch, `pr` prediction, `me` mechanics (mouvement),
+  `bm` ballmech (mécas balle), `ko` kickoff, `co` courses (anneaux, contrôle), `sh` shooting (flicks, tirs),
+  `map` maps, `coach` coach, `pf` profile. Ne jamais renommer une cvar publiée.
 - Données entrantes : uniquement les arguments des callbacks (`TickContext`, `TouchEvent`, `GameEvent`,
   `ViewContext`, `DrawContext`, `Command`, `KismetVar`). Jamais le SDK.
 - Données sortantes : `Actions` (placement balle/voiture, inputs, vitesse du jeu, chat, toasts, résultats,

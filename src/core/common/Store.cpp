@@ -47,6 +47,24 @@ void Store::setFloat(const std::string& key, float value) {
     data_[key] = buf;
 }
 
+void Store::setDouble(const std::string& key, double value) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.17g", value);
+    data_[key] = buf;
+}
+
+double Store::getDouble(const std::string& key, double def) const {
+    auto it = data_.find(key);
+    if (it == data_.end()) return def;
+    try {
+        size_t used = 0;
+        const double v = std::stod(it->second, &used);
+        return (used == it->second.size() && std::isfinite(v)) ? v : def;
+    } catch (...) {
+        return def;
+    }
+}
+
 void Store::setList(const std::string& key, const std::vector<std::string>& values) {
     erasePrefix(key + ".");
     data_[key + ".count"] = std::to_string(values.size());

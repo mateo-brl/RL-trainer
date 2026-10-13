@@ -1,6 +1,7 @@
 #pragma once
 // BakkesMod entry point: wires hooks, drawable, cvars, timers and the ImGui windows to the core Engine.
 
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -75,6 +76,8 @@ private:
     int kismetCounter_ = 0;
     bool lastPaused_ = false;
     int64_t lastResetFrame_ = -1000;
+    std::chrono::steady_clock::time_point lastDraw_{};
+    bool hasLastDraw_ = false;
     std::vector<std::string> hookedPre_;
     std::vector<std::string> hookedPost_;
 };

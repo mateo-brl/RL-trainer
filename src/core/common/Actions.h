@@ -70,10 +70,14 @@ struct Actions {
 
     bool requestSave = false;               // persist progress soon
 
+    // Reset settings to their schema defaults: module ids (only the emitting module's own id is honoured)
+    // or "<module>/<section>" for one section. Executed by the glue through cvars (so they are saved).
+    std::vector<std::string> resetSettings;
+
     bool empty() const {
         return !setBall && !setCar && !setBoost && !overrideInputs && !freezeCar && !setGameSpeed && !countdownMessage &&
                !goMessage && chat.empty() && toasts.empty() && results.empty() && events.empty() && consoleCommands.empty() &&
-               !requestSave;
+               !requestSave && resetSettings.empty();
     }
 
     void clearWorldControl() {
@@ -103,6 +107,7 @@ struct Actions {
         for (auto& e : o.events) events.push_back(std::move(e));
         for (auto& c : o.consoleCommands) consoleCommands.push_back(std::move(c));
         requestSave = requestSave || o.requestSave;
+        for (auto& r : o.resetSettings) resetSettings.push_back(std::move(r));
     }
 };
 

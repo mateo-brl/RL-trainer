@@ -74,21 +74,23 @@ static void tooltip(const SettingDef& def) {
     }
 }
 
-void settingWidget(const UiContext& ctx, const SettingDef& def, const Settings& current) {
+bool settingWidget(const UiContext& ctx, const SettingDef& def, const Settings& current) {
     const std::string label = def.label + "##" + def.cvar;
     const std::string value = def.read ? def.read(current) : def.defaultValue;
+    std::string newValue;
+    bool changed = false;
     switch (def.type) {
     case SettingType::Bool: {
         bool b = false;
         parseBoolValue(value, b);
-        if (ImGui::Checkbox(label.c_str(), &b)) ctx.setCvar(def.cvar, boolToCvar(b));
+        if ((changed = ImGui::Checkbox(label.c_str(), &b))) newValue = boolToCvar(b);
         break;
     }
     case SettingType::Int: {
         int i = 0;
         parseIntValue(value, i);
-        if (ImGui::SliderInt(label.c_str(), &i, static_cast<int>(def.minValue), static_cast<int>(def.maxValue)))
-            ctx.setCvar(def.cvar, intToCvar(i));
+        if ((changed = ImGui::SliderInt(label.c_str(), &i, static_cast<int>(def.minValue), static_cast<int>(def.maxValue))))
+            newValue = intToCvar(i);
         break;
     }
     case SettingType::Float: {
@@ -96,15 +98,15 @@ void settingWidget(const UiContext& ctx, const SettingDef& def, const Settings& 
         parseFloatValue(value, f);
         char fmt[16];
         std::snprintf(fmt, sizeof(fmt), "%%.%df", std::clamp(def.decimals, 0, 4));
-        if (ImGui::SliderFloat(label.c_str(), &f, def.minValue, def.maxValue, fmt)) ctx.setCvar(def.cvar, floatToCvar(f));
+        if ((changed = ImGui::SliderFloat(label.c_str(), &f, def.minValue, def.maxValue, fmt))) newValue = floatToCvar(f);
         break;
     }
     case SettingType::Color: {
         Color c;
         parseColor(value, c);
         float col[4] = {c.r / 255.f, c.g / 255.f, c.b / 255.f, c.a / 255.f};
-        if (ImGui::ColorEdit4(label.c_str(), col, ImGuiColorEditFlags_AlphaBar))
-            ctx.setCvar(def.cvar, toHex(Color(col[0] * 255.f, col[1] * 255.f, col[2] * 255.f, col[3] * 255.f)));
+        if ((changed = ImGui::ColorEdit4(label.c_str(), col, ImGuiColorEditFlags_AlphaBar)))
+            newValue = toHex(Color(col[0] * 255.f, col[1] * 255.f, col[2] * 255.f, col[3] * 255.f));
         break;
     }
     case SettingType::Choice: {
@@ -116,7 +118,10 @@ void settingWidget(const UiContext& ctx, const SettingDef& def, const Settings& 
         if (ImGui::BeginCombo(label.c_str(), def.choices[static_cast<size_t>(i)].c_str())) {
             for (int k = 0; k < n; ++k) {
                 const bool selected = k == i;
-                if (ImGui::Selectable(def.choices[static_cast<size_t>(k)].c_str(), selected)) ctx.setCvar(def.cvar, intToCvar(k));
+                if (ImGui::Selectable(def.choices[static_cast<size_t>(k)].c_str(), selected)) {
+                    changed = true;
+                    newValue = intToCvar(k);
+                }
                 if (selected) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
@@ -126,12 +131,14 @@ void settingWidget(const UiContext& ctx, const SettingDef& def, const Settings& 
     case SettingType::Text: {
         char buf[512];
         std::snprintf(buf, sizeof(buf), "%s", value.c_str());
-        if (ImGui::InputText(label.c_str(), buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue))
-            ctx.setCvar(def.cvar, buf);
+        if ((changed = ImGui::InputText(label.c_str(), buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)))
+            newValue = buf;
         break;
     }
     }
     tooltip(def);
+    if (changed) ctx.setCvar(def.cvar, newValue);
+    return changed;
 }
 
 void resetToDefaults(const UiContext& ctx, const std::string& module, const std::string& section) {

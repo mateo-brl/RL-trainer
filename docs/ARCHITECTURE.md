@@ -56,7 +56,11 @@ Un module = `src/core/modules/<id>/` + `tests/<id>/` + `src/plugin/ui/tabs/<Id>T
 - Un module ne dépend **d'aucun autre module** (bibliothèques séparées). Pour communiquer : émettre un
   `GameEvent` dans `Actions::events` ou un `AttemptResult` dans `Actions::results` (le coach les reçoit tous).
 - Persistance : `save(Store&)` / `load(const Store&)`, clés préfixées `<id>.`. Rester raisonnable en taille
-  (historiques bornés, par exemple 200 entrées max).
+  (historiques bornés, par exemple 200 entrées max). `Store::setDouble` pour les grands compteurs.
+- Remettre ses propres réglages par défaut depuis une commande : `Actions::resetSettings` (`"<id>"` ou
+  `"<id>/<section>"`), exécuté par la glue via les cvars.
+- `ViewContext::frameDt` donne le temps réel entre deux images (lissages dans les replays, sans tick).
+- `GameContext::paused` est tenu à jour par le moteur (événements Paused/Unpaused).
 
 ### Exercices et contrôle du monde
 

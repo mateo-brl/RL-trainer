@@ -1,5 +1,6 @@
 #include "plugin/RLTrainer.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -225,6 +226,18 @@ void RLTrainer::run(Actions& actions, void* params) {
         accents = engine_->settings().general.hudAccents;
     }
     bridge_->execute(actions, params, accents);
+    // Settings resets requested by a module (already filtered by the engine to the module's own settings).
+    for (const std::string& target : actions.resetSettings) {
+        const size_t slash = target.find('/');
+        const std::string module = target.substr(0, slash);
+        const std::string section = slash == std::string::npos ? std::string() : target.substr(slash + 1);
+        for (const SettingDef* d : engine_->schema().forModule(module)) {
+            if (!section.empty() && d->section != section) continue;
+            CVarWrapper cv = cvarManager->getCvar(d->cvar);
+            if (!cv.IsNull()) cv.setValue(d->defaultValue);
+        }
+        configDirty_ = true;
+    }
     if (actions.requestSave) saveTimer_ = 1e9f;  // save at the next periodic update
 }
 
@@ -238,6 +251,13 @@ void RLTrainer::onDraw(CanvasWrapper canvas) {
     }
     if (!general.enabled) return;
     ViewContext view = bridge_->buildView(canvas, general.hudScale);
+    const auto now = std::chrono::steady_clock::now();
+    if (hasLastDraw_) {
+        const float dt = std::chrono::duration<float>(now - lastDraw_).count();
+        view.frameDt = dt < 0.f ? 0.f : (dt > 0.25f ? 0.25f : dt);
+    }
+    lastDraw_ = now;
+    hasLastDraw_ = true;
     DrawList list;
     engine_->draw(view, list);
     if (!list.empty()) renderer_.render(canvas, list, view, general.hudAccents);

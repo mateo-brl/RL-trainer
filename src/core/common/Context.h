@@ -140,6 +140,7 @@ struct ViewContext {
     bool ballValid = false;
     float ballRadius = 91.25f;
     float uiScale = 1.f;       // user HUD scale (general settings) times display scale
+    float frameDt = 0.f;       // real seconds since the previous draw (0 on the first frame), capped at 0.25 s
 };
 
 // One named Kismet variable of the loaded map (read-only snapshot).

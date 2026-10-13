@@ -43,7 +43,8 @@ struct UiContext {
 namespace ui {
 
 // Draws the control for one schema entry (checkbox, slider, colour, combo, text) with its tooltip.
-void settingWidget(const UiContext& ctx, const SettingDef& def, const Settings& current);
+// Returns true when the user changed the value this frame (the cvar has been set).
+bool settingWidget(const UiContext& ctx, const SettingDef& def, const Settings& current);
 // Every entry of one module section, plus a "Réinitialiser" button resetting that section to defaults.
 void settingsSection(const UiContext& ctx, const std::string& module, const std::string& section, bool withReset = true);
 // Every section of a module as collapsing headers (the first one open by default).

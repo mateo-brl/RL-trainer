@@ -202,6 +202,8 @@ void Engine::resolveTouches(Actions& out) {
 void Engine::gameEvent(const GameEvent& ev, Actions& out) {
     auto lk = lock();
     if (context_.mode == GameMode::Online || !settings_.general.enabled) return;
+    if (ev.kind == GameEventKind::Paused) context_.paused = true;
+    if (ev.kind == GameEventKind::Unpaused) context_.paused = false;
     if (ev.kind == GameEventKind::MapUnloaded) {
         history_.clear();
         hasSnapshot_ = false;
@@ -353,6 +355,14 @@ void Engine::route(Module* source, Actions&& a, Actions& out, int depth) {
     if (!settings_.general.chatFeedback) a.chat.clear();
     if (!settings_.general.toastFeedback) a.toasts.clear();
     if (a.requestSave) saveRequested_ = true;
+    // A module may only reset its own settings.
+    if (!a.resetSettings.empty()) {
+        const std::string own = source ? source->id() : std::string();
+        std::vector<std::string> kept;
+        for (auto& r : a.resetSettings)
+            if (!own.empty() && (r == own || r.rfind(own + "/", 0) == 0)) kept.push_back(std::move(r));
+        a.resetSettings.swap(kept);
+    }
 
     std::vector<AttemptResult> results;
     results.swap(a.results);

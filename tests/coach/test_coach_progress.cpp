@@ -203,7 +203,7 @@ TEST(coach_goal_presets_are_valid) {
         CHECK(!g.label.empty());
         CHECK(g.target > 0);
         CHECK_EQ(g.preset, std::string(p.id));
-        CHECK(std::string(p.label).find("\xE2\x89\xA5") == std::string::npos);  // no "≥": the HUD cannot draw it
+        CHECK(std::string(p.label).find("\xE2\x89\xA5") == std::string::npos);  // no greater-or-equal sign: the HUD cannot draw it
     }
     Goal g;
     CHECK(!makePresetGoal("nope", g));

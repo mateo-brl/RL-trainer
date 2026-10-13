@@ -5,6 +5,7 @@
 
 #include "core/common/Text.h"
 #include "core/modules/coach/CoachCatalog.h"
+#include "core/modules/coach/CoachGoals.h"
 #include "core/modules/coach/CoachUtil.h"
 
 using namespace rlt;
@@ -239,4 +240,33 @@ TEST(coach_records_not_repeated_for_self_announcing_modules) {
     a = send(m, env, R("mech.speedflip", 95.f, true).module("mechanics").record(1.90f, true));
     CHECK(toastContains(a, "Speedflip : 1.90 s (avant 1.92 s)"));
     CHECK(chatContains(a, "Nouveau record : Speedflip 1.90 s (avant 1.92 s)"));
+}
+
+TEST(coach_goal_labels_rebuilt_on_load) {
+    Env env;
+    CoachModule m;
+    setup(m, env);
+    sendN(m, env, 4, R("ball.flick", 30.f, false).module("ballmech").title("Flick"));
+    command(m, env, "goal_add", {"focus"});
+    command(m, env, "goal_add", {"speedflip10"});
+    command(m, env, "goal_add", {"custom", "score", "kickoff.diagonal", "5", "75"});
+    CHECK_EQ(m.goals().size(), static_cast<size_t>(3));
+    const std::vector<std::string> expected = {"10 réussites : Flick", "10 speedflips réussis",
+                                               "5 essais notés 75 ou plus : Kickoff (diagonale)"};
+    for (size_t i = 0; i < expected.size() && i < m.goals().size(); ++i) CHECK_EQ(m.goals()[i].label, expected[i]);
+
+    // A file written before the fix kept the attempt headline in the labels.
+    Store st;
+    m.save(st);
+    std::vector<std::string> stale;
+    for (Goal g : m.goals()) {
+        g.label = g.label + " : raté";
+        stale.push_back(coach::encodeGoal(g));
+    }
+    st.setList("coach.goals", stale);
+    CoachModule l;
+    setup(l, env);
+    l.load(st);
+    CHECK_EQ(l.goals().size(), static_cast<size_t>(3));
+    for (size_t i = 0; i < expected.size() && i < l.goals().size(); ++i) CHECK_EQ(l.goals()[i].label, expected[i]);
 }

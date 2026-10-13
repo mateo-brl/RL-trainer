@@ -556,6 +556,15 @@ std::string CoachModule::titleFor(const std::string& scope) const {
     return coach::scopeLabel(scope);
 }
 
+std::string CoachModule::goalLabel(const Goal& g) const {
+    Goal preset;
+    if (coach::makePresetGoal(g.preset, preset) && preset.kind == g.kind && preset.scope == g.scope &&
+        preset.target == g.target)
+        return preset.label;
+    const bool any = g.scope.empty() || g.scope == "any" || g.scope == "*";
+    return coach::customGoalLabel(g.kind, g.scope, g.target, g.minScore, any ? std::string() : titleFor(g.scope));
+}
+
 Goal CoachModule::focusGoal() const {
     PlanItem item;
     if (!plan_.empty()) item = plan_.front();
@@ -565,7 +574,7 @@ Goal CoachModule::focusGoal() const {
     g.scope = focusScope(item.skill);
     g.target = 10;
     g.preset = "focus";
-    g.label = coach::customGoalLabel(g.kind, g.scope, g.target, 0.f, titleFor(g.scope));
+    g.label = goalLabel(g);
     return g;
 }
 
@@ -772,7 +781,11 @@ void CoachModule::load(const Store& store) {
     for (const auto& line : store.getList("coach.goals")) {
         if (goals_.size() >= coach::kMaxGoals) break;
         Goal g;
-        if (coach::decodeGoal(line, g)) goals_.push_back(g);
+        if (!coach::decodeGoal(line, g)) continue;
+        // Labels are rebuilt from the definition: older files could hold a per-attempt headline as skill name
+        // ("10 réussites : Flick : raté").
+        g.label = goalLabel(g);
+        goals_.push_back(g);
     }
     refreshDerived();
 }

@@ -77,6 +77,8 @@ private:
                    const std::string& goalLine);
     void addGoal(const Goal& g, Actions& out);
     Goal focusGoal() const;
+    // French label of a goal from its definition (preset label, else built from the stable skill names).
+    std::string goalLabel(const Goal& g) const;
     void resetProgress();
     void say(Actions& out, const std::string& text) const;
     void toast(Actions& out, const std::string& title, const std::string& text, ToastKind kind) const;

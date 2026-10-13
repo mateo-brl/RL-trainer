@@ -40,7 +40,8 @@ Paramètres Windows > Applications > « RL Trainer (plugin BakkesMod) ». Ta pro
   en freeplay. Codes de parcours à partager.
 - **Tirs & flicks** : balle posée sur le toit pour flicker, cibles dans le but (lucarnes, poteaux, centre),
   record de puissance.
-- **Prédiction** : trajectoire de la balle avec rebonds, point d'atterrissage, meilleur point pour l'intercepter.
+- **Prédiction** : trajectoire de la balle avec rebonds, point d'atterrissage, premier point où ta voiture
+  peut l'atteindre.
 - **Maps** : tes maps workshop installées, lancement en un clic, chronos sur les maps connues, stats par map.
 - **Progression** : records, historique, erreurs qui reviennent, objectifs de session, jours d'affilée,
   exercice conseillé.

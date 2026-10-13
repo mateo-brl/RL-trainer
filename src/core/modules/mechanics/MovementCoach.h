@@ -4,7 +4,8 @@
 // Arbitration (one report per dodge): a dodge claimed by the fast aerial detector (accidental flip) is not
 // graded again; otherwise the closed dodge record goes to the first detector that accepts it, in this order:
 // stall, wavedash family, speedflip, half-flip, flip cancel. A dash that ends a long aerial is reported inside
-// the recovery grade (unless the player trains dashes). Chains and combos are aggregates of graded parts.
+// the recovery grade (unless the player trains dashes). Chains and combos are aggregates of graded parts; a kickoff
+// speedflip waiting for the ball touch is handed to the combo detector as soon as it lands (speed zap).
 
 #include <vector>
 
@@ -28,7 +29,7 @@ public:
     // Local car touched the ball (game time of the touch).
     void onBallTouch(float time) { ko_.onTouch(time); }
     // Emits what is still pending (chain in progress, kickoff speedflip waiting for the ball; the boost window
-    // when `boostWindow` is set). Used when a drill attempt times out.
+    // when `boostWindow` is set). Used when a drill attempt times out and before a reset shot drops the state.
     void flushPending(const Snapshot& s, std::vector<MechGrade>& out, bool boostWindow);
 
     KickoffTracker& kickoff() { return ko_; }

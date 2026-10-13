@@ -501,7 +501,8 @@ TEST(mechanics_drill_below_level_explains) {
     for (const auto& x : rows)
         if (x.focus == Focus::Wavedash) row = &x;
     CHECK(row != nullptr);
-    if (row && !row->topErrorTip.empty()) CHECK(row->topErrorTip.find("Recommence en te concentrant") == std::string::npos);
+    if (row && !row->topErrorTip.empty())
+        CHECK(row->topErrorTip.find("Recommence en te concentrant") == std::string::npos);
 
     // Same level, a cleaner dash (83) passes.
     Rig ok;
@@ -797,10 +798,58 @@ TEST(mechanics_texts_have_no_em_dash) {
           "WALL_TAP_SLOW", "WALL_FELL_OFF", "CHAIN_NO_POWERSLIDE", "CHAIN_BOOST_USED", "SF_ANGLE_STRAIGHT",
           "SF_ANGLE_WIDE", "SF_BOOST_RELEASED", "SF_BAD_LANDING", "KO_NO_BOOST_AT_START", "HF_NO_ROLL",
           "FA_ACCIDENTAL_DODGE", "FA_GAP_SLOW", "FA_BOOST_LATE", "FA_STICK_NEAR_DEADZONE", "ST_YAW_ROLL_MISMATCH",
-          "RC_ON_ROOF", "PS_EXIT_SLIP", "SM_BOOST_AT_MAX", "SM_NO_THROTTLE", "HF_EARLY_CANCEL", "DRILL_NO_TOUCH"}) {
+          "RC_ON_ROOF", "PS_EXIT_SLIP", "SM_BOOST_AT_MAX", "SM_NO_THROTTLE", "HF_EARLY_CANCEL", "DRILL_NO_TOUCH",
+          "KO_FIRST_JUMP_EARLY", "KO_FIRST_JUMP_LATE", "DRILL_BELOW_LEVEL"}) {
         const std::string t = tipText(code, g, p, 0.5f);
         CHECK_MSG(!t.empty() && !hasEmDash(t), code);
         CHECK_MSG(t.find("Recommence en te concentrant") == std::string::npos, code);  // a dedicated line exists
     }
     CHECK(tipCode("SF_LATE_CANCEL") == "me.sf_late_cancel");
+}
+
+TEST(mechanics_score_sum_keeps_precision) {
+    // Boost windows alone add a result every 20 s: the sum of scores grows past what a float keeps exactly.
+    Store st;
+    st.setInt("mechanics.stats.boost.attempts", 200001);
+    st.setDouble("mechanics.stats.boost.scoreSum", 12345678.5);
+    MechanicsModule m;
+    m.load(st);
+    const MechStat& s = m.stats().get(Mech::BoostEfficiency);
+    CHECK(s.scoreSum == 12345678.5);
+    CHECK_NEAR(s.average(), 12345678.5 / 200001.0, 1e-3);
+    Store out;
+    m.save(out);
+    CHECK(out.getDouble("mechanics.stats.boost.scoreSum", 0.0) == 12345678.5);
+    // Accumulates in double: adding one more score is exact.
+    MechStats stats;
+    stats.load(st);
+    AttemptResult r;
+    r.score = 77.f;
+    stats.record(Mech::BoostEfficiency, r);
+    CHECK(stats.get(Mech::BoostEfficiency).scoreSum == 12345755.5);
+    // Corrupt sums are clamped to what the attempt count allows.
+    Store bad;
+    bad.setInt("mechanics.stats.wavedash.attempts", 2);
+    bad.setDouble("mechanics.stats.wavedash.scoreSum", 1e12);
+    MechanicsModule b;
+    b.load(bad);
+    CHECK(b.stats().get(Mech::Wavedash).scoreSum <= 200.0);
+    CHECK(b.stats().get(Mech::Wavedash).average() <= 100.f);
+}
+
+TEST(mechanics_tab_texts_in_french) {
+    // Variant labels are proper French, with hyphens where French needs them.
+    CHECK(variantLabel("u-turn") == "demi-tour");
+    CHECK(variantLabel("roll-left") == "air roll à gauche");
+    // Decimal comma in the HUD lines and the records.
+    CHECK(formatRecord(Mech::SpeedFlip, 2.41f, SpeedUnit::Uus) == "2,41 s");
+    MechGrade g;
+    g.mech = Mech::Stall;
+    g.add("sinceJumpTicks", 160.f);
+    const auto lines = metricLines(g, DetectConfig{}, SpeedUnit::Uus, 5);
+    CHECK(lines.size() == 1);
+    if (!lines.empty()) {
+        CHECK(lines[0].value == "1,33 s");
+        CHECK(lines[0].ideal == "<= 1,25 s");
+    }
 }

@@ -126,7 +126,7 @@ void MechanicsModule::onSettingsChanged(const Settings& settings) {
     // Slow motion turned on (or changed) while a focus runs without the activity: ask for it once, next tick.
     // Only on a change of this setting, never as a standing condition (that would steal other drills).
     if (std::fabs(cfg_.slowMotion - oldSlow) > 1e-4f && cfg_.slowMotion < 0.999f && focus_ != Focus::None &&
-        !drill_.active && !focusSpeedOwned_)
+        !drill_.active && !focusSpeedOwned_ && !focusSpeedLost_)
         focusSpeedWanted_ = true;
     applyDetectConfig();
 }
@@ -344,6 +344,7 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
 
 void MechanicsModule::setFocus(Focus f, const TickContext& ctx, Actions& out) {
     focusSpeedWanted_ = false;
+    focusSpeedLost_ = false;  // an explicit focus command may take the activity again
     if (f == Focus::None) {
         if (drill_.active || focusSpeedOwned_) stopWorld(ctx, out);
         focus_ = Focus::None;
@@ -424,6 +425,7 @@ void MechanicsModule::onActivityStopped() {
     // speed on stop / handover). appliedSpeed_ is kept so that the next activity of this module sends 1 first.
     if (appliedSpeed_ != 1.f) pendingSpeedRestore_ = true;
     focusSpeedWanted_ = false;
+    if (focusSpeedOwned_ || (drill_.active && !focusFromDrill_)) focusSpeedLost_ = true;
     if (drill_.active && focusFromDrill_) focus_ = Focus::None;
     focusFromDrill_ = false;
     drill_ = Drill{};
@@ -612,10 +614,10 @@ void MechanicsModule::emitAttempt(const MechGrade& g, const TickContext& ctx, Ac
             why.add("passScore", setup_.passScore);
             float w = std::max(1.f, setup_.passScore - r.score);
             if (!r.tips.empty()) w = std::min(w, r.tips.back().weight);
-            Tip t{mech::tipCode("DRILL_BELOW_LEVEL"), mech::tipText("DRILL_BELOW_LEVEL", why, ctx.profile, deadzone_, keyStyle_),
-                  w};
-            if (r.tips.size() >= 3) r.tips.back() = std::move(t);
-            else r.tips.push_back(std::move(t));
+            Tip tip{mech::tipCode("DRILL_BELOW_LEVEL"),
+                    mech::tipText("DRILL_BELOW_LEVEL", why, ctx.profile, deadzone_, keyStyle_), w};
+            if (r.tips.size() >= 3) r.tips.back() = std::move(tip);
+            else r.tips.push_back(std::move(tip));
         }
         if (!ok && (r.verdict == Verdict::Good || r.verdict == Verdict::Perfect)) r.verdict = Verdict::Ok;
         if (ok && r.verdict == Verdict::Fail) r.verdict = Verdict::Ok;

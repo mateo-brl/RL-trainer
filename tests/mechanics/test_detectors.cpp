@@ -6,6 +6,8 @@
 #include "tests/TestFramework.h"
 #include "tests/mechanics/MiniSim.h"
 
+#include "core/modules/mechanics/Presentation.h"
+
 using namespace rlt;
 using namespace rlt::mech;
 using namespace rlt_test_mech;
@@ -1081,4 +1083,326 @@ TEST(mech_catalog_ids_roundtrip) {
     CHECK(variantLabel("double-jump") == "double saut");
     CHECK(variantLabel("wall-diag-forward-right") == "mur diag. avant droite");
     CHECK(variantLabel("left+roll-right") == "gauche + air roll à droite");
+}
+
+// ---- Review fixes: speed zap at kickoffs, combo dedupe, 2-5 metrics everywhere, kickoff jump timing ----------
+namespace {
+
+// Kinematic speedflip (jump, diagonal dodge 30 deg left, cancel, landing) then a zap dash off the landing bounce.
+void speedflipThenZap(Kin& k) {
+    k.s.car.pos = {-2000.f, 0.f, 17.f};
+    k.s.car.vel = {1200.f, 0.f, 0.f};
+    k.s.car.wheelContacts = 4;
+    k.s.car.hasFlip = true;
+    k.s.in.throttle = 1.f;
+    k.s.in.boost = true;
+    k.tick(20);
+    k.s.in.jump = true;  // first jump
+    k.s.car.jumped = true;
+    k.s.car.wheelContacts = 0;
+    k.s.car.vel.z = 292.f;
+    k.tick(1);
+    k.tick(8);
+    k.s.in.jump = true;  // diagonal dodge, cancelled right after
+    k.s.in.pitch = -0.866f;
+    k.s.in.yaw = -0.5f;
+    k.s.car.dodging = true;
+    k.s.car.hasFlip = false;
+    k.s.car.dodgeDir = {0.866f, -0.5f, 0.f};
+    k.s.car.vel += Vec3{450.f, -100.f, 0.f};
+    k.tick(1);
+    k.s.in.yaw = 0.f;
+    k.s.in.pitch = 1.f;
+    k.s.car.vel.z = 0.f;  // the cancelled flip keeps the car low: about 0.4 s in the air before the landing
+    k.tick(4);
+    k.s.in.pitch = 0.f;
+    k.tick(30);
+    k.s.car.vel.z = -150.f;
+    k.tick(8);
+    k.s.car.wheelContacts = 4;  // landing on the wheels, nose straight
+    k.s.car.pos.z = 17.f;
+    k.s.car.vel.z = 0.f;
+    k.s.car.dodging = false;
+    k.s.car.hasFlip = true;
+    k.s.car.jumped = false;
+    k.tick(2);
+    k.s.car.wheelContacts = 2;  // bounce: front wheels lift without a jump
+    k.s.car.pos.z = 22.f;
+    k.tick(3);
+    k.s.in.jump = true;  // zap: forward dodge off the bounce
+    k.s.in.pitch = -1.f;
+    k.s.car.dodging = true;
+    k.s.car.hasFlip = false;
+    k.s.car.dodgeDir = {1.f, 0.f, 0.f};
+    k.s.car.vel += Vec3{500.f, 0.f, 0.f};
+    k.tick(1);
+    k.s.in.pitch = 0.f;
+    k.tick(2);
+    k.s.car.wheelContacts = 4;
+    k.s.car.pos.z = 17.f;
+    k.s.car.dodging = false;
+    k.s.car.hasFlip = true;
+    k.tick(20);
+}
+
+int countMech(const std::vector<MechGrade>& g, Mech m) {
+    int n = 0;
+    for (const auto& x : g) n += x.mech == m ? 1 : 0;
+    return n;
+}
+
+size_t metricCount(const MechGrade& g, const DetectConfig& cfg = {}) {
+    PlayerProfile p;
+    return buildResult(g, p, cfg, 0.f).metrics.size();
+}
+
+bool resultHasMetric(const MechGrade& g, const char* key) {
+    PlayerProfile p;
+    const AttemptResult r = buildResult(g, p, DetectConfig{}, 0.f);
+    for (const auto& m : r.metrics)
+        if (m.key == key) return true;
+    return false;
+}
+
+} // namespace
+
+TEST(mech_speed_zap_free_and_kickoff) {
+    {
+        Kin k;  // free play: speedflip, zap dash and the speed zap combo
+        speedflipThenZap(k);
+        CHECK_MSG(countMech(k.grades, Mech::SpeedFlip) == 1, describe(k.grades));
+        CHECK_MSG(countMech(k.grades, Mech::ZapDash) == 1, describe(k.grades));
+        CHECK_MSG(countMech(k.grades, Mech::SpeedZap) == 1, describe(k.grades));
+    }
+    {
+        Kin k;  // kickoff: the speedflip waits for the ball, the zap comes first, the combo is still found
+        Snapshot start = k.s;
+        start.car.pos = {-2000.f, 0.f, 17.f};
+        start.car.wheelContacts = 4;
+        k.coach.kickoff().setManual(true);
+        k.coach.kickoff().countdown();
+        k.coach.kickoff().go(start);
+        speedflipThenZap(k);
+        CHECK_MSG(countMech(k.grades, Mech::SpeedFlip) == 0, describe(k.grades));  // pending until the touch
+        CHECK_MSG(countMech(k.grades, Mech::ZapDash) == 1, describe(k.grades));
+        CHECK_MSG(countMech(k.grades, Mech::SpeedZap) == 1, describe(k.grades));
+        const MechGrade* sz = k.find(Mech::SpeedZap);
+        if (sz) CHECK(sz->variant.find("kickoff") != std::string::npos);
+        k.coach.onBallTouch(k.s.time);
+        k.tick(2);
+        CHECK_MSG(countMech(k.grades, Mech::SpeedFlip) == 1, describe(k.grades));
+        const MechGrade* sf = k.find(Mech::SpeedFlip);
+        if (sf) CHECK(sf->metric("timeToBall") >= 0.f);
+        k.coach.flushPending(k.s, k.grades, false);
+        CHECK_MSG(countMech(k.grades, Mech::SpeedZap) == 1, describe(k.grades));  // not built twice
+    }
+}
+
+TEST(mech_combo_ignores_second_copy_of_used_speedflip) {
+    ComboDetector combo;
+    std::vector<MechGrade> out;
+    MechGrade sf;
+    sf.mech = Mech::SpeedFlip;
+    sf.variant = "left-kickoff";
+    sf.success = true;
+    sf.score = 90.f;
+    sf.tickStart = 0;
+    sf.tickEnd = 140;
+    sf.dodgeTick = 60;
+    MechGrade zd;
+    zd.mech = Mech::ZapDash;
+    zd.variant = "forward";
+    zd.success = true;
+    zd.score = 85.f;
+    zd.tickStart = 145;
+    zd.tickEnd = 150;
+    combo.onGrade(sf, out);  // early copy (pending kickoff speedflip)
+    combo.onGrade(zd, out);
+    CHECK(out.size() == 1 && out[0].mech == Mech::SpeedZap);
+    sf.add("timeToBall", 2.1f);
+    combo.onGrade(sf, out);  // the same speedflip emitted at the touch
+    zd.tickStart = 160;
+    zd.tickEnd = 166;
+    combo.onGrade(zd, out);
+    CHECK(out.size() == 1);
+    sf.dodgeTick = 900;  // a new speedflip still combines
+    sf.tickEnd = 1000;
+    zd.tickStart = 1010;
+    combo.onGrade(sf, out);
+    combo.onGrade(zd, out);
+    CHECK(out.size() == 2);
+}
+
+TEST(mech_results_carry_at_least_two_metrics) {
+    {
+        Run r;  // stall without a flip left
+        r.go(200, stallScript(1.f, -1.f, true));
+        const MechGrade* g = r.find(Mech::Stall);
+        CHECK_MSG(g && g->hasError("ST_NO_FLIP"), describe(r.grades));
+        if (g) {
+            CHECK(metricCount(*g) >= 2 && metricCount(*g) <= 5);
+            CHECK(resultHasMetric(*g, "sinceJumpTicks"));
+        }
+    }
+    {
+        Run r(withFocus(Focus::FlipCancel));  // forward flip never cancelled
+        r.sim.vel = {1000.f, 0.f, 0.f};
+        r.go(300, [](int t, MiniSim&) {
+            Inputs in;
+            in.throttle = 1.f;
+            if (t >= 10 && t < 13) in.jump = true;
+            if (t >= 20 && t < 23) {
+                in.jump = true;
+                in.pitch = -1.f;
+            }
+            return in;
+        });
+        const MechGrade* g = r.find(Mech::FlipCancel);
+        CHECK_MSG(g && g->hasError("FC_NO_CANCEL"), describe(r.grades));
+        if (g) {
+            CHECK(metricCount(*g) >= 2 && metricCount(*g) <= 5);
+            PlayerProfile p;
+            const AttemptResult res = buildResult(*g, p, DetectConfig{}, 0.f);
+            for (const auto& m : res.metrics)
+                if (m.key == "landedOnWheels") CHECK(m.unit == "%" && m.hasIdeal && m.ideal == 100.f);
+            const auto lines = metricLines(*g, DetectConfig{}, SpeedUnit::Uus, 5);
+            bool yesNo = false;
+            for (const auto& l : lines)
+                if (l.label == "Réception sur les roues")
+                    yesNo = (l.value == "oui" || l.value == "non") && l.ideal == "oui";
+            CHECK(yesNo);
+        }
+    }
+    {
+        Run r(withFocus(Focus::Wavedash));  // centred stick: double jump instead of a dash
+        r.sim.pos = {0.f, 0.f, 120.f};
+        r.sim.vel = {900.f, 0.f, -100.f};
+        auto pressed = std::make_shared<bool>(false);
+        r.go(120, [pressed](int, MiniSim& c) {
+            Inputs in;
+            in.throttle = 1.f;
+            if (!*pressed && c.vel.z < 0.f && c.rearWheelZ() < 10.f) {
+                *pressed = true;
+                in.jump = true;
+            }
+            return in;
+        });
+        const MechGrade* g = r.find(Mech::Wavedash);
+        CHECK_MSG(g && g->variant == "nostick", describe(r.grades));
+        if (g) {
+            CHECK(metricCount(*g) >= 2);
+            DetectConfig cfg;
+            cfg.dodgeDeadzone = 0.5f;
+            const auto lines = metricLines(*g, cfg, SpeedUnit::Uus, 5);
+            bool stick = false;
+            for (const auto& l : lines)
+                if (l.label == "Stick au saut") stick = l.ideal == ">= 0,50" && l.quality < 0.5f;
+            CHECK(stick);
+        }
+    }
+    {
+        // Late press: wheels already down, the press made a jump.
+        Run r(withFocus(Focus::Wavedash));
+        r.sim.vel = {1000.f, 0.f, 0.f};
+        auto landT = std::make_shared<int>(-1);
+        r.go(160, [landT](int t, MiniSim& c) {
+            Inputs in;
+            in.throttle = 1.f;
+            if (t >= 10 && t < 13) in.jump = true;
+            if (t > 20 && *landT < 0 && c.wheelCount() >= 3) *landT = t;
+            if (*landT >= 0 && t >= *landT + 2 && t < *landT + 5) {
+                in.jump = true;
+                in.pitch = -1.f;
+            }
+            return in;
+        });
+        const MechGrade* g = r.find(Mech::Wavedash);
+        CHECK_MSG(g && g->variant == "late", describe(r.grades));
+        if (g) {
+            CHECK(metricCount(*g) >= 2);
+            CHECK(resultHasMetric(*g, "ticksAfterLanding") && resultHasMetric(*g, "hopHeight"));
+        }
+    }
+    {
+        Run r;  // thrown upside down: lands on the roof
+        r.sim.pos = {0.f, 0.f, 600.f};
+        r.sim.vel = {600.f, 0.f, 200.f};
+        r.sim.orient({1.f, 0.f, 0.f}, {0.f, 0.f, -1.f});
+        r.sim.hasJumped = true;
+        r.sim.airTimeSinceJump = 2.f;
+        r.go(400, [](int, MiniSim&) { return Inputs{}; });
+        const MechGrade* g = r.find(Mech::Recovery);
+        CHECK_MSG(g && g->variant == "crash", describe(r.grades));
+        if (g) CHECK(metricCount(*g) >= 2 && resultHasMetric(*g, "airTicks"));
+    }
+    {
+        Run r;  // a jumped wavedash shows the nose tilt at the dodge (the 15-25 deg of the advice)
+        r.sim.vel = {1000.f, 0.f, 0.f};
+        r.go(160, wavedashScript(6.f, 20.f, false));
+        const MechGrade* g = r.find(Mech::Wavedash);
+        CHECK_MSG(g != nullptr, describe(r.grades));
+        if (g) {
+            CHECK(metricCount(*g) >= 2 && metricCount(*g) <= 5);
+            const auto lines = metricLines(*g, DetectConfig{}, SpeedUnit::Uus, 5);
+            bool nose = false;
+            for (const auto& l : lines) {
+                CHECK(l.label != "Nez au contact");
+                if (l.label == "Nez cabré au flip") nose = l.ideal == "15 à 25°";
+            }
+            CHECK(nose);
+        }
+        const auto targets = targetLines(Focus::Wavedash, DetectConfig{}, SpeedUnit::Uus, 4);
+        bool target = false;
+        for (const auto& t : targets) target = target || t == "Nez cabré au flip : 15 à 25°";
+        CHECK(target);
+    }
+}
+
+TEST(mech_speedflip_shows_first_jump_metrics) {
+    // Free speedflip: the first-jump hold is shown (11 ticks ~ 92 ms for the reference bot).
+    Run f;
+    f.sim.vel = {1000.f, 0.f, 0.f};
+    f.go(300, speedflipScript(-26.f, 5, 100000));
+    const MechGrade* g = f.find(Mech::SpeedFlip);
+    CHECK_MSG(g != nullptr, describe(f.grades));
+    if (g) {
+        CHECK(resultHasMetric(*g, "firstJumpHoldTicks"));
+        CHECK(metricCount(*g) <= 5);
+        const auto lines = metricLines(*g, DetectConfig{}, SpeedUnit::Uus, 5);
+        for (const auto& l : lines) CHECK_MSG(l.value.find('.') == std::string::npos, l.value);  // "0,52 s" style
+    }
+    // Kickoff: time from GO to the first jump, graded against SpeedFlipTrainer's 55-70 ticks (decimal comma).
+    for (int offset : {0, 40, -30}) {
+        Run r;
+        r.ballInSnapshot = true;
+        r.ballPos = {0.f, 0.f, 92.75f};
+        r.sim.pos = {-2600.f, 0.f, k::kCarRestZ};
+        r.touchRadius = 450.f;
+        r.coach.kickoff().setManual(true);
+        r.coach.kickoff().countdown();
+        auto base = speedflipScript(-26.f, 5, 100000);
+        const int lead = offset < 0 ? -offset : 0;  // drive before GO (early jump after GO)
+        if (lead > 0) r.go(lead, [&](int t, MiniSim& c) { return base(t, c); });
+        r.coach.kickoff().go(r.sim.snap(r.tick - 1, {}));
+        if (offset > 0) r.go(offset, [](int, MiniSim&) { return Inputs{}; });  // wait after GO (late jump)
+        r.go(600, [&](int t, MiniSim& c) { return base(t + lead, c); });
+        r.flush();
+        const MechGrade* k = r.find(Mech::SpeedFlip);
+        CHECK_MSG(k != nullptr, describe(r.grades));
+        if (!k) continue;
+        const float fj = k->metric("kickoffFirstJumpTicks");
+        CHECK(resultHasMetric(*k, "kickoffFirstJumpTicks"));
+        if (offset == 0) {
+            CHECK(fj >= 55.f && fj <= 70.f);
+            CHECK(!k->hasError("KO_FIRST_JUMP_EARLY") && !k->hasError("KO_FIRST_JUMP_LATE"));
+            const auto lines = metricLines(*k, DetectConfig{}, SpeedUnit::Uus, 5);
+            bool jumpLine = false;
+            for (const auto& l : lines)
+                if (l.label == "1er saut après le GO")
+                    jumpLine = l.value.find(',') != std::string::npos && l.ideal == "0,46 à 0,58 s";
+            CHECK(jumpLine);
+        }
+        if (offset > 0) CHECK_MSG(k->hasError("KO_FIRST_JUMP_LATE"), describe(r.grades));
+        if (offset < 0) CHECK_MSG(k->hasError("KO_FIRST_JUMP_EARLY"), describe(r.grades));
+    }
 }

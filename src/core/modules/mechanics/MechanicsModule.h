@@ -3,9 +3,11 @@
 // flip cancel, wavedash, chain wavedash, zap dash, wall dash, fast aerial, stall, hélico, réception, powerslide,
 // gestion du boost), mode focus et exercices en freeplay avec difficulté adaptative.
 //
-// Flow: onTick feeds the MovementCoach (detection hub) with each snapshot; every grade passes the family toggles,
-// the map category and the focus filter, then becomes an AttemptResult (Actions::results), updates the stats and
-// the HUD panel. Drills own the world-control activity: placement, frozen countdown, slow motion, auto-reset.
+// Flow: onTick feeds the MovementCoach (detection hub) with each snapshot; every grade passes the family toggles
+// and the map category (both skipped for the family the player focuses on or drills) and the focus filter, then
+// becomes an AttemptResult (Actions::results), updates the stats and the HUD panel. Drills own the world-control
+// activity: placement, frozen countdown, slow motion, auto-reset. The game speed is only restored while owning the
+// activity (the engine drops it otherwise): a restore that could not be routed stays pending (see appliedSpeed_).
 
 #include <array>
 #include <optional>
@@ -159,6 +161,7 @@ private:
 
     bool focusSpeedOwned_ = false;   // activity held only for the focus slow motion
     bool focusSpeedWanted_ = false;  // slow motion turned on while a focus runs: ask for the activity once
+    bool focusSpeedLost_ = false;    // another module took the focus slow motion: a slider change does not take it back
     bool focusFromDrill_ = false;    // focus_ was set by the running drill (cleared when the drill stops)
     // Game speed bookkeeping. The engine drops world control (game speed included) from a module that does not
     // own the activity, so a restore only counts once it was routed as the owner:

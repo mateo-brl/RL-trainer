@@ -22,13 +22,23 @@ void tooltipText(const std::string& text) {
     ImGui::EndTooltip();
 }
 
+// French decimal separator ("2,5 s").
+std::string frNum(float v, int decimals) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.*f", decimals, static_cast<double>(v));
+    std::string s = buf;
+    for (char& c : s)
+        if (c == '.') c = ',';
+    return s;
+}
+
 std::string pct(float ratio) {
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%d %%", static_cast<int>(ratio * 100.f + 0.5f));
     return buf;
 }
 
-void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, bool worldControl) {
+void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, bool worldControl, bool activityRunning) {
     ui::separatorText("Statut");
     if (!st.enabled) {
         ui::textColored(colors::Orange, "Module désactivé : active-le dans les réglages plus bas.");
@@ -50,12 +60,13 @@ void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, bool worldC
         }
         ImGui::Text("Niveau %d/10  |  essais réussis : %d/%d", static_cast<int>(st.level * 10.f + 0.5f), st.drillSuccesses,
                     st.drillAttempts);
-        if (st.timeLeft > 0.f) ImGui::Text("Temps restant : %.1f s", static_cast<double>(st.timeLeft));
+        if (st.timeLeft > 0.f) ImGui::Text("Temps restant : %s s", frNum(st.timeLeft, 1).c_str());
         if (!st.goal.empty()) ImGui::TextWrapped("Objectif : %s", st.goal.c_str());
         if (!st.message.empty()) ui::textColored(Color(255, 210, 60, 255), st.message);
     }
-    if (st.gameSpeed < 0.999f) ImGui::Text("Ralenti : x%.2f", static_cast<double>(st.gameSpeed));
-    if (st.chainDashes > 0) ImGui::Text("Chaîne de wavedash en cours : %d dashes", st.chainDashes);
+    if (st.gameSpeed < 0.999f) ImGui::Text("Ralenti : x%s", frNum(st.gameSpeed, 2).c_str());
+    if (st.chainDashes > 0)
+        ImGui::Text("Chaîne de wavedash en cours : %d %s", st.chainDashes, st.chainDashes > 1 ? "dashes" : "dash");
     if (st.sessionAttempts > 0) ImGui::Text("Mécas notées pendant la session : %d", st.sessionAttempts);
 
     if (st.drillActive || st.focus != mech::Focus::None) {
@@ -67,6 +78,13 @@ void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, bool worldC
     }
     if (!worldControl)
         ui::textColored(colors::Grey, "Exercices indisponibles ici (freeplay uniquement). Le focus et l'analyse marchent partout.");
+    // The slowed-down drill was stopped from outside (Home stop button, another exercise, map change): the game
+    // may still run slowly. Offered only when no exercise runs (taking the activity would stop it).
+    if (st.speedRestorePending && worldControl && !activityRunning) {
+        ui::textColored(Color(255, 210, 60, 255), "Le jeu est peut-être resté au ralenti après l'arrêt de l'exercice.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remettre la vitesse normale")) ctx.post("mechanics", "restore_speed");
+    }
 }
 
 void renderLastAttempt(const MechanicsModule::LastAttempt& last) {
@@ -141,8 +159,10 @@ void renderGrid(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& row
         }
         ImGui::PushID(r.id.c_str());
         if (r.enabled) ImGui::TextUnformatted(r.title.c_str());
-        else ImGui::TextDisabled("%s (off)", r.title.c_str());
-        tooltipText(r.what + "\n" + r.key + (r.topErrorTip.empty() ? "" : "\n\nTon erreur la plus fréquente : " + r.topErrorTip));
+        else ImGui::TextDisabled("%s (désactivé)", r.title.c_str());
+        const char* offNote = "\n\nNon notée en mode libre (réglage désactivé). Le focus et l'exercice la notent quand même.";
+        tooltipText(r.what + "\n" + r.key + (r.enabled ? "" : offNote) +
+                    (r.topErrorTip.empty() ? "" : "\n\nTon erreur la plus fréquente : " + r.topErrorTip));
         ImGui::NextColumn();
         ImGui::Text("%d", r.attempts);
         if (r.sessionAttempts > 0) tooltipText("Cette session : " + std::to_string(r.sessionSuccesses) + "/" +
@@ -212,6 +232,7 @@ void renderCommands(UiContext& ctx) {
     ImGui::BulletText("rlt mechanics retry : replacer la voiture pour un nouvel essai");
     ImGui::BulletText("rlt mechanics stop : arrêter le focus et l'exercice (vitesse du jeu remise à 1)");
     ImGui::BulletText("rlt mechanics reset_stats [méca] : remettre les stats à zéro");
+    ImGui::BulletText("rlt mechanics restore_speed : remettre la vitesse du jeu à 1 si elle est restée au ralenti");
     ImGui::TextWrapped("Mécas : %s", mech::focusIdList().c_str());
     ImGui::Spacing();
     if (ImGui::Button("Remettre toutes les stats à zéro")) ImGui::OpenPopup("##mech_reset_confirm");
@@ -236,6 +257,7 @@ void renderMechanicsTab(UiContext& ctx) {
     MechanicsModule::LastAttempt last;
     bool found = false;
     bool worldControl = false;
+    bool activityRunning = false;
     {
         auto lk = ctx.engine.lock();
         auto* mod = ctx.engine.get<MechanicsModule>();
@@ -246,6 +268,7 @@ void renderMechanicsTab(UiContext& ctx) {
             last = mod->lastAttempt();
         }
         worldControl = ctx.engine.worldControlAllowed();
+        activityRunning = !ctx.engine.activityOwner().empty();
     }
     if (!found) {
         ImGui::TextDisabled("Module Mécas mouvement indisponible.");
@@ -254,7 +277,7 @@ void renderMechanicsTab(UiContext& ctx) {
     ImGui::TextWrapped("Joue normalement : speedflips, wavedashes, half-flips, fast aerials, réceptions... sont détectés et "
                        "notés automatiquement, avec tes vrais boutons dans les conseils. Choisis une méca pour le focus ou "
                        "lance un exercice pour t'entraîner à fond.");
-    renderStatus(ctx, st, worldControl);
+    renderStatus(ctx, st, worldControl, activityRunning);
     renderLastAttempt(last);
     renderGrid(ctx, rows, st, worldControl);
     renderExplanations(rows);

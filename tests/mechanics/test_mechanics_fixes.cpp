@@ -52,14 +52,6 @@ Script kickoffSpeedflip(float angleDeg) {
     };
 }
 
-Script throttle() {
-    return [](int, MiniSim&) {
-        Inputs in;
-        in.throttle = 1.f;
-        return in;
-    };
-}
-
 int countSpeed(const std::vector<float>& speeds, float v) {
     int n = 0;
     for (float s : speeds) n += std::fabs(s - v) < 1e-6f ? 1 : 0;
@@ -260,10 +252,16 @@ TEST(mechanics_slowmo_after_focus_requests_once) {
     CHECK(other.start("Kickoff"));
     CHECK(rig.mod.focus() == Focus::Stall);
     rig.run(20, idle());
-    rig.set("rlt_me_hud_x", "0.02");  // ...not even when an unrelated setting changes
+    rig.set("rlt_me_hud_x", "0.02");  // ...not when an unrelated setting changes...
+    rig.run(5, idle());
+    rig.set("rlt_me_slowmo", "0.5");  // ...nor when the slider moves again (that would stop the other drill)
     rig.run(5, idle());
     CHECK(rig.host.requests == 2);  // only the other module's request
     CHECK(rig.host.ownsActivity(&other));
+    rig.command("focus", {"stall"});  // an explicit focus command takes it again
+    rig.run(2, idle());
+    CHECK(rig.host.ownsActivity(&rig.mod));
+    CHECK(!rig.speeds.empty() && rig.speeds.back() == 0.5f);
 
     // Slow motion back to 1 while owning: the activity is given back after the restore.
     Rig back;
@@ -336,13 +334,12 @@ TEST(mechanics_speedflip_drill_needs_the_ball) {
     CHECK(rig.mod.status().drillAttempts == 1 && rig.mod.status().drillSuccesses == 0);
 }
 
-TEST(mechanics_halfflip_drill_waits_for_the_ball) {
-    Rig rig;
-    rig.command("drill", {"halfflip"});
-    rig.tick(Inputs{});
+namespace {
+// Half-flip of the drill (back dodge, cancel after 24 ticks, air roll once inverted), then drive (or not) to the ball.
+Script drillHalfFlip(bool driveToBall) {
     auto inverted = std::make_shared<bool>(false);
     auto landed = std::make_shared<int>(-1);
-    rig.run(260, [=](int t, MiniSim& c) {  // half-flip (roll after the cancel), then drive back to the ball
+    return [=](int t, MiniSim& c) {
         Inputs in;
         in.throttle = -1.f;
         const int J = 10, D = 20;
@@ -362,23 +359,52 @@ TEST(mechanics_halfflip_drill_waits_for_the_ball) {
             if (*landed >= 0) {
                 in.pitch = 0.f;
                 in.roll = 0.f;
-                in.throttle = 1.f;
-                in.boost = true;
+                in.throttle = driveToBall ? 1.f : -1.f;  // brake / reverse away from the ball
+                in.boost = driveToBall;
             }
         }
         return in;
-    });
-    // Graded at the landing but held until the ball is reached (or 2.5 s).
-    const AttemptResult* r = rig.result("mech.halfflip");
-    if (r) {
-        bool ttb = false;
-        for (const auto& m : r->metrics) ttb = ttb || m.key == "timeToBall";
-        CHECK_MSG(ttb || !r->success, "a successful half-flip drill attempt reached the ball");
-        CHECK(rig.touched || !r->success);
+    };
+}
+} // namespace
+
+TEST(mechanics_halfflip_drill_waits_for_the_ball) {
+    {
+        Rig rig;
+        rig.command("drill", {"halfflip"});
+        rig.tick(Inputs{});
+        auto script = drillHalfFlip(true);
+        int t = 0;
+        for (; t < 400 && rig.results.empty(); ++t) {
+            rig.tick(script(t, rig.sim));
+            if (rig.results.empty()) CHECK(!rig.touched);  // graded at the landing, held until the ball
+        }
+        const AttemptResult* r = rig.result("mech.halfflip");
+        CHECK_MSG(r != nullptr, "no half-flip graded in the drill");
+        if (r) {
+            CHECK(rig.touched);
+            CHECK(r->success);
+            bool ttb = false;
+            for (const auto& m : r->metrics) ttb = ttb || (m.key == "timeToBall" && m.value > 0.5f && m.value < 3.5f);
+            CHECK(ttb);
+        }
+        CHECK(rig.mod.status().drillSuccesses == 1);
     }
-    rig.run(400, throttle());
-    CHECK(rig.count("mech.halfflip") >= 1);
-    CHECK(rig.mod.status().drillAttempts >= 1);
+    {
+        Rig rig;  // same half-flip, then the car never reaches the ball: a miss after 2.5 s
+        rig.command("drill", {"halfflip"});
+        rig.tick(Inputs{});
+        auto script = drillHalfFlip(false);
+        for (int t = 0; t < 900 && rig.results.empty(); ++t) rig.tick(script(t, rig.sim));
+        const AttemptResult* r = rig.result("mech.halfflip");
+        CHECK_MSG(r != nullptr, "no half-flip graded in the drill");
+        if (r) {
+            CHECK(!rig.touched);
+            CHECK(!r->success);
+            CHECK(!r->tips.empty() && r->tips.front().code == "me.drill_no_touch");
+        }
+        CHECK(rig.mod.status().drillAttempts == 1 && rig.mod.status().drillSuccesses == 0);
+    }
 }
 
 // ---- HUD wording -----------------------------------------------------------------------------------------

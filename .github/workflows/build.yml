@@ -1,0 +1,83 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-linux:
+    name: Core tests + SDK syntax check (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build clang
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Plugin sources vs BakkesMod SDK headers (clang -fsyntax-only)
+        run: tools/sdk_syntax_check.sh
+
+  plugin-windows:
+    name: Plugin DLL (Windows, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch BakkesMod SDK (pinned commit)
+        shell: pwsh
+        run: |
+          $commit = (Get-Content tools/bakkesmod_sdk_commit.txt).Trim()
+          git clone --quiet https://github.com/bakkesmodorg/BakkesModSDK.git "$env:RUNNER_TEMP/BakkesModSDK"
+          git -C "$env:RUNNER_TEMP/BakkesModSDK" checkout --quiet $commit
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -A x64 "-DBAKKESMOD_SDK_DIR=$env:RUNNER_TEMP/BakkesModSDK"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests (MSVC)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Verify DLL (x64, exports, static CRT)
+        run: python scripts/verify_dll.py build/Release/rltrainer.dll
+
+      - name: Build the installer (validates installer/RLTrainer.iss on every push)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/Release/rltrainer.dll dist/
+          & $iscc /Q "/DSourceDir=$PWD\dist" installer\RLTrainer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC a échoué" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item build/Release/rltrainer.pdb, scripts/install.ps1, scripts/install.bat, README.md dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rltrainer-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

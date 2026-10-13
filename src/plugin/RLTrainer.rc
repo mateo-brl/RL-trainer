@@ -1,0 +1,41 @@
+#include <winver.h>
+
+#ifndef RLT_VERSION_MAJOR
+#define RLT_VERSION_MAJOR 1
+#endif
+#ifndef RLT_VERSION_MINOR
+#define RLT_VERSION_MINOR 0
+#endif
+#ifndef RLT_VERSION_PATCH
+#define RLT_VERSION_PATCH 0
+#endif
+#define RLT_RC_STR2(x) #x
+#define RLT_RC_STR(x) RLT_RC_STR2(x)
+#define RLT_RC_VERSION RLT_RC_STR(RLT_VERSION_MAJOR) "." RLT_RC_STR(RLT_VERSION_MINOR) "." RLT_RC_STR(RLT_VERSION_PATCH)
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION RLT_VERSION_MAJOR,RLT_VERSION_MINOR,RLT_VERSION_PATCH,0
+ PRODUCTVERSION RLT_VERSION_MAJOR,RLT_VERSION_MINOR,RLT_VERSION_PATCH,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040c04b0"
+        BEGIN
+            VALUE "FileDescription", "RL Trainer - plugin BakkesMod"
+            VALUE "FileVersion", RLT_RC_VERSION
+            VALUE "InternalName", "rltrainer"
+            VALUE "OriginalFilename", "rltrainer.dll"
+            VALUE "ProductName", "RL Trainer"
+            VALUE "ProductVersion", RLT_RC_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x40c, 1200
+    END
+END

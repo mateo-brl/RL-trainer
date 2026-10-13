@@ -38,7 +38,7 @@ private:
 
     State state_ = State::Idle;
     float tStart_ = 0.f, tReset_ = 0.f, tDodge_ = 0.f, tNearMiss_ = 0.f, lastAcquireT_ = -1e9f, lastDodgeT_ = -1e9f;
-    int source_ = 0, chain_ = 0, acquiredSource_ = 0;
+    int source_ = 0, chain_ = 0, acquiredSource_ = 0, nmWheels_ = 0;
     int64_t evalAt_ = 0;
     float alignment_ = 0.f, relSpeed_ = 0.f, nmAlign_ = 0.f, nmRel_ = 0.f, ballSpeedAfter_ = 0.f;
     bool usedDoubleJump_ = false, viaJump_ = false, touchSeen_ = false, nearMissArmed_ = false, prevActive_ = false;
@@ -93,10 +93,11 @@ private:
     State state_ = State::Idle;
     float tCarry_ = 0.f, lastGeo_ = 0.f, tJump_ = 0.f, tDodge_ = -1.f, tTouch_ = 0.f;
     int nCarry_ = 0, airTicks_ = 0, airRollTicks_ = 0, keptTicks_ = 0, farTicks_ = 0;
+    int airNewTouches_ = 0, noFlipTicks_ = 0;
     int64_t evalAt_ = 0;
     float sumVz_ = 0.f, avgVz_ = 0.f, roofZ_ = 130.f, carryTime_ = 0.f, relHAtJump_ = 0.f, rollAccum_ = 0.f;
     float pitchDeg_ = 0.f, yawDeg_ = 0.f, underside_ = 0.f;
-    bool supersonicStart_ = false, touchSeen_ = false, lost_ = false;
+    bool supersonicStart_ = false, touchSeen_ = false, lost_ = false, flipSeen_ = false;
     Vec3 heading0_, travel0_, dodge_, vBefore_;
 };
 

@@ -20,6 +20,13 @@ constexpr float kSeparatedDist = 170.f; // ball centre to hitbox centre once the
 constexpr float kInferredDv = 350.f; // uu/s: ball velocity change that proves a contact
 
 float stickMag(const Inputs& in) { return std::fabs(in.pitch) + std::fabs(in.yaw) + std::fabs(in.roll); }
+// Dodge direction the game derives from the input (DodgeForward/DodgeStrafe, else the raw stick), car-local.
+Vec3 inputDodgeDir(const Inputs& in) {
+    Vec3 d{in.dodgeForward, in.dodgeStrafe, 0.f};
+    if (length(d) < 0.1f) d = {-in.pitch, in.yaw + in.roll, 0.f};
+    return d;
+}
+constexpr float kDirAgreeDot = 0.5f; // engine vs stick direction: below this (60 degrees apart) they disagree
 bool groundedCar(const CarState& c) { return c.onGround || c.wheelContacts >= 3; }
 bool closeTo(float v, float edge, float margin) { return std::fabs(v - edge) < margin; }
 } // namespace
@@ -175,6 +182,7 @@ void FlickAnalyzer::enterIdle() {
     contact_ = false;
     lost_ = false;
     lostAtDodge_ = false;
+    dodgePending_ = false;
     spinCount_ = 0;
     spinHead_ = 0;
 }
@@ -215,6 +223,8 @@ std::optional<FlickReport> FlickAnalyzer::update(const Snapshot& s) {
             hasPrev_ = false;
         }
     }
+    const bool jumpPress = hasPrev_ && s.in.jump && !prev_.in.jump;
+    if (jumpPress) lastJumpPress_ = s.frame;
     const Hitbox hb = hitboxOf(s.car);
     const Vec3 hbCenter = hitboxCenter(s.car);
     onRoof_ = ballOnRoof(s.ball.pos, s.car.pos, s.car.basis, hb, s.ball.radius);
@@ -244,8 +254,10 @@ std::optional<FlickReport> FlickAnalyzer::update(const Snapshot& s) {
         const bool jumpEvidence = s.car.jumped || s.in.jump || (hasPrev_ && prev_.in.jump);
         if (phase_ == FlickPhase::Carry && prevGrounded && !grounded && jumpEvidence && s.frame - lastOnRoof_ <= 6) {
             phase_ = FlickPhase::Air;
-            jumpFrame_ = s.frame;
-            carryAtJump_ = static_cast<float>(std::max<int64_t>(0, prev_.frame - carryStart_)) * kTickDt;
+            // The press precedes the take-off by a tick or two (flags lag the input): time the jump from it.
+            const bool recentPress = lastJumpPress_ >= carryStart_ && s.frame - lastJumpPress_ <= 6;
+            jumpFrame_ = recentPress ? lastJumpPress_ : s.frame;
+            carryAtJump_ = static_cast<float>(std::max<int64_t>(0, jumpFrame_ - carryStart_)) * kTickDt;
             offsetAtJump_ = offsetAvg_;
             relSpeedAtJump_ = relSpeedAvg_;
             const Vec3 h = flat(prev_.car.basis.fwd);
@@ -276,47 +288,12 @@ std::optional<FlickReport> FlickAnalyzer::update(const Snapshot& s) {
         spinCount_ = std::min(spinCount_ + 1, static_cast<int>(spin_.size()));
 
         const bool flagEdge = s.car.dodging && hasPrev_ && !prev_.car.dodging;
-        const bool inputEdge = !flagEdge && hasPrev_ && s.in.jump && !prev_.in.jump && prev_.car.hasFlip &&
-                               !s.car.dodging && !prev_.car.dodging && stickMag(s.in) >= deadzone_;
+        // In game the press tick always comes first (flags lag the input by one tick): provisional dodge.
+        const bool inputEdge = !flagEdge && jumpPress && prev_.car.hasFlip && !s.car.dodging && !prev_.car.dodging &&
+                               !s.car.doubleJumped && stickMag(s.in) >= deadzone_;
         const bool doubleJumpEdge = hasPrev_ && s.car.doubleJumped && !prev_.car.doubleJumped && !s.car.dodging;
         if (flagEdge || inputEdge) {
-            Vec3 dir{s.car.dodgeDir.x, s.car.dodgeDir.y, 0.f};
-            dodgeFromInput_ = false;
-            if (length(dir) < 0.1f) {
-                dodgeFromInput_ = true;
-                dir = {s.in.dodgeForward, s.in.dodgeStrafe, 0.f};
-                if (length(dir) < 0.1f) dir = {-s.in.pitch, s.in.yaw + s.in.roll, 0.f};
-            }
-            if (length(dir) < 0.1f) { // double jump (no stick): a pop, not a flick
-                enterIdle();
-                break;
-            }
-            dir = normalize(dir);
-            phase_ = FlickPhase::Dodged;
-            dodgeFrame_ = s.frame;
-            contact_ = false;
-            firstTouch_ = lastTouch_ = launchFrame_ = 0;
-            feat_ = FlickFeatures{};
-            feat_.dodgeFwd = dir.x;
-            feat_.dodgeSide = dir.y;
-            const Vec3& fwd = s.car.basis.fwd;
-            feat_.pitchDeg = std::asin(clampf(fwd.z, -1.f, 1.f)) * kRadToDeg;
-            const Vec3 h = flat(fwd);
-            if (length(h) > 0.3f) {
-                const Vec3 nh = normalize(h);
-                feat_.yawTurnDeg = std::atan2(cross(heading0_, nh).z, dot(heading0_, nh)) * kRadToDeg;
-            }
-            feat_.underside = -s.car.basis.right.z;
-            float maxSpin = 0.f;
-            for (int i = 0; i < spinCount_; ++i) maxSpin = std::max(maxSpin, spin_[static_cast<size_t>(i)]);
-            feat_.spinRate = maxSpin;
-            feat_.rollDeg = std::fabs(rollAccum_) * kRadToDeg;
-            feat_.airRollFrac = airTicks_ > 0 ? static_cast<float>(airRollTicks_) / static_cast<float>(airTicks_) : 0.f;
-            feat_.delay = static_cast<float>(s.frame - jumpFrame_) * kTickDt;
-            feat_.keptFrac = airTicks_ > 0 ? static_cast<float>(keptTicks_) / static_cast<float>(airTicks_) : 1.f;
-            vBallBefore_ = hasPrev_ ? prev_.ball.vel : s.ball.vel;
-            carSpeedAtDodge_ = length(s.car.vel);
-            lostAtDodge_ = lost_ || (distToCar > th_.roofReach && s.frame - lastOnRoof_ > kRoofRecentTicks);
+            startDodge(s, distToCar, flagEdge);
         } else if (doubleJumpEdge) {
             enterIdle();
         } else if (grounded) {
@@ -338,6 +315,11 @@ std::optional<FlickReport> FlickAnalyzer::update(const Snapshot& s) {
     }
     case FlickPhase::Dodged: {
         const int64_t since = s.frame - dodgeFrame_;
+        if (dodgePending_ && !confirmDodge(s)) {
+            enterIdle(); // the game turned the press into a double jump: a pop, not a flick
+            break;
+        }
+        if (dodgePending_) break; // never report before the engine had its say
         if (contact_) {
             if ((s.frame >= lastTouch_ + kEvalAfterTouch && distToCar > kSeparatedDist) ||
                 s.frame >= lastTouch_ + kMaxAfterTouch || since >= kDodgedTimeout) {
@@ -362,6 +344,77 @@ std::optional<FlickReport> FlickAnalyzer::update(const Snapshot& s) {
     return out;
 }
 
+void FlickAnalyzer::startDodge(const Snapshot& s, float distToCar, bool confirmed) {
+    // Stick direction: the input of this tick, or of the press tick when the engine flag is what we saw first.
+    Vec3 stick = inputDodgeDir(s.in);
+    if (length(stick) < 0.1f && confirmed && hasPrev_) stick = inputDodgeDir(prev_.in);
+    inputDir_ = length(stick) >= 0.1f ? normalize(stick) : Vec3{};
+    Vec3 dir = inputDir_;
+    dodgeFromInput_ = true;
+    dirMismatch_ = false;
+    if (confirmed) {
+        const Vec3 engine{s.car.dodgeDir.x, s.car.dodgeDir.y, 0.f};
+        if (length(engine) >= 0.1f) {
+            dir = normalize(engine);
+            dodgeFromInput_ = false;
+            dirMismatch_ = length(inputDir_) > 0.5f && dot(dir, inputDir_) < kDirAgreeDot;
+        }
+    }
+    if (length(dir) < 0.1f) { // no direction at all (double jump, stall): not a flick
+        enterIdle();
+        return;
+    }
+    phase_ = FlickPhase::Dodged;
+    // Engine flag seen first: the press was the previous tick when the button rose there.
+    dodgeFrame_ = confirmed && s.frame - lastJumpPress_ <= 1 && lastJumpPress_ > jumpFrame_ ? lastJumpPress_ : s.frame;
+    dodgeConfirmed_ = confirmed;
+    dodgePending_ = !confirmed;
+    contact_ = false;
+    firstTouch_ = lastTouch_ = launchFrame_ = 0;
+    feat_ = FlickFeatures{};
+    feat_.dodgeFwd = dir.x;
+    feat_.dodgeSide = dir.y;
+    const Vec3& fwd = s.car.basis.fwd;
+    feat_.pitchDeg = std::asin(clampf(fwd.z, -1.f, 1.f)) * kRadToDeg;
+    const Vec3 h = flat(fwd);
+    if (length(h) > 0.3f) {
+        const Vec3 nh = normalize(h);
+        feat_.yawTurnDeg = std::atan2(cross(heading0_, nh).z, dot(heading0_, nh)) * kRadToDeg;
+    }
+    feat_.underside = -s.car.basis.right.z;
+    float maxSpin = 0.f;
+    for (int i = 0; i < spinCount_; ++i) maxSpin = std::max(maxSpin, spin_[static_cast<size_t>(i)]);
+    feat_.spinRate = maxSpin;
+    feat_.rollDeg = std::fabs(rollAccum_) * kRadToDeg;
+    feat_.airRollFrac = airTicks_ > 0 ? static_cast<float>(airRollTicks_) / static_cast<float>(airTicks_) : 0.f;
+    feat_.delay = static_cast<float>(std::max<int64_t>(0, dodgeFrame_ - jumpFrame_)) * kTickDt;
+    feat_.keptFrac = airTicks_ > 0 ? static_cast<float>(keptTicks_) / static_cast<float>(airTicks_) : 1.f;
+    vBallBefore_ = hasPrev_ ? prev_.ball.vel : s.ball.vel;
+    carSpeedAtDodge_ = length(s.car.vel);
+    lostAtDodge_ = lost_ || (distToCar > th_.roofReach && s.frame - lastOnRoof_ > kRoofRecentTicks);
+}
+
+bool FlickAnalyzer::confirmDodge(const Snapshot& s) {
+    const bool doubleJumpEdge = hasPrev_ && s.car.doubleJumped && !prev_.car.doubleJumped && !s.car.dodging;
+    if (doubleJumpEdge) return false;
+    if (s.car.dodging) {
+        dodgePending_ = false;
+        dodgeConfirmed_ = true;
+        const Vec3 engine{s.car.dodgeDir.x, s.car.dodgeDir.y, 0.f};
+        if (length(engine) >= 0.1f) {
+            const Vec3 dir = normalize(engine);
+            feat_.dodgeFwd = dir.x;
+            feat_.dodgeSide = dir.y;
+            dodgeFromInput_ = false;
+            dirMismatch_ = length(inputDir_) > 0.5f && dot(dir, inputDir_) < kDirAgreeDot;
+        }
+        return true;
+    }
+    // Neither a dodge nor a double jump reported in time: keep the stick direction (flagged uncertain).
+    if (s.frame - dodgeFrame_ >= kConfirmTicks) dodgePending_ = false;
+    return true;
+}
+
 FlickReport FlickAnalyzer::buildReport(const Snapshot& s, bool inferred) {
     FlickReport r;
     r.f = feat_;
@@ -376,7 +429,11 @@ FlickReport FlickAnalyzer::buildReport(const Snapshot& s, bool inferred) {
     r.f.vertFrac = il > 1.f ? impulse.z / il : 0.f;
     r.cls = classifyFlick(r.f, th_);
     r.dodgeFromInput = dodgeFromInput_;
-    if (dodgeFromInput_) r.cls.uncertain = true;
+    r.dodgeConfirmed = dodgeConfirmed_;
+    r.dirMismatch = dirMismatch_;
+    // The stick direction is the one the game uses for the dodge: only an unconfirmed dodge (or an engine
+    // direction contradicting the stick) makes the classification doubtful.
+    if (!dodgeConfirmed_ || dirMismatch_) r.cls.uncertain = true;
     r.category = categoryOf(r.cls);
     r.lostBall = lostAtDodge_ && !r.contact;
     r.power = r.contact ? length(launch) : 0.f;

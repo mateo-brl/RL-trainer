@@ -137,7 +137,8 @@ void CoursesModule::describeSettings(SettingsSchema& schema) {
 
     auto c = schema.section(&Settings::courses, "courses", "Contrôle");
     c.number("rlt_co_roof_tolerance", &CoursesConfig::roofTolerance, 0.3f, 0.1f, 1.5f, "Tolérance hors du toit (s)",
-             "Dribble : temps pendant lequel la balle peut quitter le toit (petit rebond) avant d'être perdue.", 2);
+             "Dribble et slalom : temps pendant lequel la balle peut quitter le toit (petit rebond) avant d'être "
+             "perdue.", 2);
     c.number("rlt_co_catch_hold", &CoursesConfig::catchHold, 1.f, 0.3f, 3.f, "Temps sur le toit pour valider (s)",
              "Rattrapage : la balle doit rester sur le toit ce temps-là, sans interruption.", 1);
     c.choice("rlt_co_catch_type", &CoursesConfig::catchType, 0, {"Mélange", "Chute du ciel", "Sortie de mur"},
@@ -170,7 +171,8 @@ void CoursesModule::describeSettings(SettingsSchema& schema) {
     auto a = schema.section(&Settings::courses, "courses", "Avancé");
     a.advanced();
     a.toggle("rlt_co_graze_counts", &CoursesConfig::grazeCounts, true, "Frôler le bord compte",
-             "Un passage qui touche le bord de l'anneau est validé. Désactivé : il compte comme raté.");
+             "Un passage qui touche le bord de l'anneau est validé. Désactivé : il compte comme raté. Le slalom "
+             "demande toujours un passage propre entre les poteaux.");
     a.number("rlt_co_timeout_factor", &CoursesConfig::timeoutFactor, 2.5f, 1.5f, 5.f, "Limite de temps",
              "Temps maximum d'un essai = ce facteur x le temps cible + 10 s.", 1);
     a.number("rlt_co_result_hold", &CoursesConfig::resultHold, 1.5f, 0.5f, 5.f, "Pause après un essai (s)",
@@ -266,13 +268,27 @@ void CoursesModule::prepareControl(const TickContext& ctx) {
     (void)ctx;
 }
 
-void CoursesModule::startExercise(CoursesKind kind, const std::string& codeText, const TickContext& ctx, Actions& out) {
+bool CoursesModule::acquireActivity(CoursesKind kind, const TickContext& ctx, Actions& out) {
     if (!cfg_.enabled) {
         say(out, "Le module Parcours est désactivé (onglet Parcours).");
-        return;
+        return false;
     }
     if (workshopCourseMap(ctx.game.category)) {
         say(out, "Tu es sur une map workshop de parcours : le module Parcours reste en pause, profite de la map !");
+        return false;
+    }
+    const char* activity = kindIsRings(kind) ? "Anneaux" : "Contrôle";
+    if (!ctx.worldControlAllowed || !requestActivity(activity)) {
+        say(out, "Exercice indisponible ici : lance le freeplay (ou autorise les exercices sur cette map dans "
+                 "Réglages > Avancé).");
+        return false;
+    }
+    return true;
+}
+
+void CoursesModule::startExercise(CoursesKind kind, const std::string& codeText, const TickContext& ctx, Actions& out) {
+    if (!cfg_.enabled || workshopCourseMap(ctx.game.category)) {
+        acquireActivity(kind, ctx, out);  // says why
         return;
     }
     std::optional<courses::DecodedCode> decoded;
@@ -284,12 +300,7 @@ void CoursesModule::startExercise(CoursesKind kind, const std::string& codeText,
         }
         kind = kindForType(decoded->type);
     }
-    const char* activity = kindIsRings(kind) ? "Anneaux" : "Contrôle";
-    if (!ctx.worldControlAllowed || !requestActivity(activity)) {
-        say(out, "Exercice indisponible ici : lance le freeplay (ou autorise les exercices sur cette map dans "
-                 "Réglages > Avancé).");
-        return;
-    }
+    if (!acquireActivity(kind, ctx, out)) return;
     resetTransient();
     kind_ = kind;
     if (kindUsesCourse(kind)) {
@@ -316,17 +327,43 @@ void CoursesModule::startExercise(CoursesKind kind, const std::string& codeText,
     restartAttempt();
 }
 
+void CoursesModule::replayLast(const TickContext& ctx, Actions& out) {
+    const CoursesKind kind = kind_;
+    const bool haveCourse = kindUsesCourse(kind) && !course_.rings.empty() && !code_.empty();
+    if (kindUsesCourse(kind) && !haveCourse) {
+        // Nothing built yet (fresh start, or only the last code restored from the save): play that code.
+        startExercise(kind, code_, ctx, out);
+        return;
+    }
+    if (!acquireActivity(kind, ctx, out)) return;
+    resetTransient();
+    // Same course or drill, same origin: a generated course stays generated (the staircase keeps adapting and the
+    // smart chain still moves on after a success), a course played from a code stays fixed.
+    if (haveCourse) {
+        if (PbEntry* pb = findPb(code_)) pb->lastUse = ++useSeq_;
+        say(out, std::string(kindTitle(kind)) + " - même parcours - code " + code_);
+    } else {
+        prepareControl(ctx);  // same seed and difficulty: the catch replays the same ball
+        say(out, std::string(kindTitle(kind)) + " - difficulté " + std::to_string(difficulty_));
+    }
+    restartAttempt();
+}
+
 void CoursesModule::restartAttempt() {
     phase_ = CoursesPhase::Setup;
     phaseTicks_ = 0;
     countdownTotal_ = 0;
     lastCountdownMsg_ = 0;
-    run_.reset(kindUsesCourse(kind_) ? &course_ : nullptr, missPolicy(), cfg_.grazeCounts, cfg_.missPenalty);
+    // The slalom always needs a clean pass between the posts: the straight lane line grazes every gate of the
+    // easy courses (the weave there is small), so counting grazes would let a straight drive finish.
+    const bool grazeCounts = cfg_.grazeCounts && kind_ != CoursesKind::Slalom;
+    run_.reset(kindUsesCourse(kind_) ? &course_ : nullptr, missPolicy(), grazeCounts, cfg_.missPenalty);
     havePrev_ = false;
     prevT_ = 0.0;
     runTime_ = 0.f;
     lastBoost_ = -1.f;
     boostUsed_ = 0.f;
+    hadBoost_ = false;
     boostEmptied_ = false;
     speedSum_ = 0.0;
     speedSamples_ = 0;
@@ -341,7 +378,9 @@ void CoursesModule::restartAttempt() {
     catchOnRoof_ = 0.f;
     touches_ = 0;
     haveFirstTouch_ = false;
-    firstTouchRel_ = 0.f;
+    firstTouchFlat_ = 0.f;
+    firstTouchJump_ = 0.f;
+    firstTouchOffset_ = 0.f;
     ballOnRoofNow_ = false;
     flashTicks_ = 0;
 }
@@ -386,8 +425,14 @@ void CoursesModule::onTouch(const TouchEvent& touch, const TickContext& ctx, Act
     if (phase_ != CoursesPhase::Running) return;
     ++touches_;
     if (!haveFirstTouch_ && touch.pre.ball.valid && touch.pre.car.valid) {
+        const CarState& car = touch.pre.car;
+        const Vec3 rel = touch.pre.ball.vel - car.vel;
         haveFirstTouch_ = true;
-        firstTouchRel_ = length(touch.pre.ball.vel - touch.pre.car.vel);
+        firstTouchFlat_ = std::sqrt(rel.x * rel.x + rel.y * rel.y);
+        // Car moving up into the falling ball (a jump, or driving up a wall): closing speed the player added.
+        firstTouchJump_ = std::max(0.f, car.vel.z);
+        const Vec3 local = car.basis.toLocal(touch.pre.ball.pos - hitboxCenter(car));
+        firstTouchOffset_ = std::sqrt(local.x * local.x + local.y * local.y);
     }
 }
 
@@ -417,9 +462,10 @@ void CoursesModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, Act
     case GameEventKind::Goal:
         if (phase_ == CoursesPhase::Running && kind_ != CoursesKind::RingsAir && kind_ != CoursesKind::RingsGround) {
             if (kind_ == CoursesKind::Dribble) endDribble(ctx, out);
-            else if (kind_ == CoursesKind::Catch) endCatch(ctx, out, false, "La balle est entrée dans un but");
-            else failRun(ctx, out, "La balle est entrée dans un but", "courses.ball_goal",
-                         "Garde la balle dans le parcours : vise le centre des anneaux.");
+            else if (kind_ == CoursesKind::Catch) endCatch(ctx, out, false, "la balle est entrée dans un but");
+            else failRun(ctx, out, "la balle est entrée dans un but", "courses.ball_goal",
+                         gateCourse() ? "Garde la balle dans le parcours : vise le centre des portes."
+                                      : "Garde la balle dans le parcours : vise le centre des anneaux.");
         }
         break;
     default: break;
@@ -467,8 +513,7 @@ void CoursesModule::onCommand(const Command& cmd, const TickContext& ctx, Action
         else say(out, "Code du parcours : " + code_ + " (bouton Copier dans l'onglet Parcours).");
     } else if (name == "restart") {
         if (phase_ == CoursesPhase::Idle) {
-            // Replays the last course (by its code) or the last control drill.
-            startExercise(kind_, kindUsesCourse(kind_) ? code_ : std::string(), ctx, out);
+            replayLast(ctx, out);  // the last course or control drill, keeping its origin (generated or code)
         } else {
             restartAttempt();
         }

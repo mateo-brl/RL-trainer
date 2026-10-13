@@ -273,7 +273,8 @@ TEST(ko_grade_weights_exact) {
     CHECK_NEAR(g.sExec, 0.2f * 100 + 0.2f * 100 + 0.2f * 100 + 0.4f * 60, 1e-3);
     const float expect = 0.40f * 100.f + 0.15f * (50.f + 50.f + 55.f + 84.f);
     CHECK_EQ(g.total, static_cast<int>(std::lround(expect)));
-    // The biggest losses are the tips: low speed (7.5), centring (7.5 + half the outcome loss), flip into ball / try speedflip.
+    // The biggest losses are the tips: low speed (7.5), centring (7.5 + half the outcome loss), flip into ball /
+    // try speedflip.
     CHECK(!g.tips.empty() && g.tips.size() <= 3);
     CHECK(hasTip(g, KickoffTip::OffCenterContact) || hasTip(g, KickoffTip::LowContactSpeed));
     // Outcome variants.

@@ -385,6 +385,45 @@ std::vector<SimTick> airDribbleScenario(AD kind) {
     return sim.out;
 }
 
+std::vector<SimTick> airDribbleFlipFinish(int bumps) {
+    Sim sim;
+    Snapshot& s = sim.s;
+    setGround(s.car);
+    orient(s.car, PI / 2, 0, 0);
+    s.car.pos = {0, -3000, bm::arena::kCarRestZ};
+    s.car.vel = {0, 900, 0};
+    s.car.boost = 100;
+    sim.attached = true;
+    sim.attachOffset = {0, 20, 125};
+    s.ball.pos = s.car.pos + sim.attachOffset;
+    s.ball.vel = s.car.vel;
+    sim.step(60, [&](Snapshot&, int) { sim.touchNow = true; });  // 0.5 s carry: the game reports every tick
+    // Pop: jump with the ball on the roof (still the same contact).
+    sim.step(1, [&](Snapshot& x, int) {
+        setAir(x.car);
+        x.car.jumped = true;
+        x.in.jump = true;
+        x.car.vel = {0, 900, 650};
+        sim.touchNow = true;
+    });
+    sim.step(1, [&](Snapshot& x, int) { x.in.jump = false; });
+    orient(sim.s.car, PI / 2, 0.5f, 0);
+    sim.attachOffset = {0, 60, 115};
+    // Separate bumps in the air (12 ticks apart: new contacts).
+    for (int b = 0; b < bumps; ++b) {
+        sim.step(11, [&](Snapshot& x, int) { x.car.boost = std::max(0.f, x.car.boost - 0.3f); });
+        sim.step(1, [&](Snapshot&, int) { sim.touchNow = true; });
+    }
+    // Front dodge into the ball.
+    sim.step(4);
+    sim.dodge(1.f, 0.f);
+    sim.attached = false;
+    sim.hit(sim.s.ball.vel + Vec3{0, 1500, 300});
+    sim.ballGravity = true;
+    sim.step(240);
+    return sim.out;
+}
+
 std::vector<SimTick> aerialScenario(AE kind, int team) {
     Sim sim;
     Snapshot& s = sim.s;

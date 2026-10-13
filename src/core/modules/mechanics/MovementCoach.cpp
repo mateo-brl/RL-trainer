@@ -62,6 +62,9 @@ void MovementCoach::step(const Snapshot& s, std::vector<MechGrade>& out) {
         chain_.onGrade(g, c, out);
         combo_.onGrade(g, out);
     }
+    // A kickoff speedflip waits for the ball touch: the combo detector gets it now (after the older grades of this
+    // tick), so that a zap dash done before the touch still makes a speed zap.
+    if (const MechGrade* fresh = sf_.takeFreshPending()) combo_.onGrade(*fresh, out);
     chain_.onTick(c, out);
 
     // Recovery arbitration: a dash that ended a long aerial phase is part of the recovery.

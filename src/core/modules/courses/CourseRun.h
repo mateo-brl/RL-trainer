@@ -5,7 +5,8 @@
 // Miss policies (setting "Anneau raté"):
 //   Penalty  - crossing the next ring's plane close to it but outside (or skipping it) gives the ring up,
 //              adds a time penalty and the run goes on with the following ring (ring-map speedrun feel);
-//   ComeBack - the miss is counted, the player must go back through the ring;
+//   ComeBack - the miss is counted, the player must go back through the ring (flying back through the missed
+//              ring the wrong way to get behind it is the natural way back: it is not a wrong-way pass);
 //   Strict   - any miss or skip fails the attempt (time attack).
 
 #include <cstdint>
@@ -44,6 +45,8 @@ public:
     int misses() const { return misses_; }
     int grazes() const { return grazes_; }
     int wrongWays() const { return wrongWays_; }
+    // ComeBack policy: the next ring was missed or skipped and the player has to come back for it.
+    bool awaitingComeBack() const { return comeBack_; }
     int ringsPassed() const;  // passed without being given up
     double penaltyTime() const { return penalty_; }
     // Final time (last split) once finished, otherwise 0.
@@ -64,6 +67,7 @@ private:
     int next_ = 0, misses_ = 0, grazes_ = 0, wrongWays_ = 0;
     double penalty_ = 0;
     bool finished_ = false, failed_ = false;
+    bool comeBack_ = false;
     std::vector<RunSplit> splits_;
     PassResult last_;
 };

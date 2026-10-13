@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/common/Settings.h"
+#include "core/modules/courses/ControlDrills.h"
 #include "core/modules/courses/CoursesModule.h"
 
 namespace ct {
@@ -151,10 +152,29 @@ struct Harness {
     }
     Vec3 carCentre() const { return hitboxCenter(snap.car); }
 
+    // What a path moves: the car hitbox centre, the ball (car kept valid 150 uu under it, not touching), or the
+    // ball resting on the roof of the car right under it (roof dribble).
+    enum class Carry { Car, Ball, BallOnRoof };
+
     // Moves the object (car hitbox centre, or ball when `ball`) along a polyline at constant speed,
     // one tick per step, until the module leaves the Running phase or the path ends.
     // Returns the number of ticks.
     int followPath(const std::vector<Vec3>& pts, float speedUus, bool ball, int maxTicks = 20000) {
+        return followPathCarry(pts, speedUus, ball ? Carry::Ball : Carry::Car, maxTicks);
+    }
+
+    // Car under the ball that rests on its roof (current car basis), both moving along the polyline.
+    void ballOnRoofAt(const Vec3& ballPos, const Vec3& v) {
+        const Basis& b = snap.car.basis;
+        snap.ball.pos = ballPos;
+        snap.ball.vel = v;
+        const Vec3 spawnFromOrigin = courses::roofSpawn({0.f, 0.f, 0.f}, b, snap.car.hitboxOffset, snap.car.hitboxExtent,
+                                                        snap.ball.radius);
+        snap.car.pos = ballPos - spawnFromOrigin;
+        snap.car.vel = v;
+    }
+
+    int followPathCarry(const std::vector<Vec3>& pts, float speedUus, Carry carry, int maxTicks = 20000) {
         if (pts.size() < 2) return 0;
         const float step = speedUus / 120.f;
         size_t seg = 0;
@@ -181,11 +201,13 @@ struct Harness {
                 }
             }
             if (seg + 1 >= pts.size() && left > 0.f) break;
-            if (ball) {
+            if (carry == Carry::Ball) {
                 snap.ball.pos = pos;
                 snap.ball.vel = dir * speedUus;
                 // The car follows under the ball (kept valid, far enough not to matter).
                 carAt(pos - Vec3{0.f, 0.f, 150.f}, dir * speedUus);
+            } else if (carry == Carry::BallOnRoof) {
+                ballOnRoofAt(pos, dir * speedUus);
             } else {
                 carAt(pos, dir * speedUus);
             }

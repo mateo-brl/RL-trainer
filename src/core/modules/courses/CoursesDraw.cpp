@@ -193,6 +193,7 @@ void CoursesModule::drawHud(const ViewContext& view, const DrawContext& ctx, Dra
                 const float boost = std::clamp(ctx.snap.car.boost, 0.f, 100.f);
                 line("Boost " + std::to_string(static_cast<int>(std::lround(boost))), colors::White, boost / 100.f, colors::Orange);
             }
+            if (kind_ == CoursesKind::Slalom && !ballOnRoofNow_) line("Balle hors du toit !", colors::Orange);
             if (run_.misses() > 0) line("Ratés : " + std::to_string(run_.misses()), colors::Red);
             const float left = timeLimit() - runTime_;
             if (left < 10.f) line("Temps restant " + formatNumber(std::max(0.f, left), 1) + " s", colors::Orange);

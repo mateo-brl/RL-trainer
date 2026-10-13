@@ -91,7 +91,7 @@ std::vector<float> kickoffDownsample(const std::vector<float>& along, float arri
     return out;
 }
 
-bool KickoffStats::record(const KickoffMetrics& m, int score, const KickoffDuelResult* duel) {
+bool KickoffStats::record(const KickoffMetrics& m, int score, const KickoffDuelResult* duel, bool allowRecord) {
     KickoffSpawnStats& s = of(m.spawn);
     ++s.attempts;
     ++s.typeCounts[static_cast<size_t>(std::clamp(static_cast<int>(m.type), 0, kKoTypeCount - 1))];
@@ -105,6 +105,7 @@ bool KickoffStats::record(const KickoffMetrics& m, int score, const KickoffDuelR
     }
     if (!m.touched) return false;
     ++s.touches;
+    if (!allowRecord) return false;
     pushBounded(s.recentTimes, m.timeToTouch, kKoRecentCount);
     if (s.bestTime <= 0.f || m.timeToTouch < s.bestTime) {
         s.bestTime = m.timeToTouch;

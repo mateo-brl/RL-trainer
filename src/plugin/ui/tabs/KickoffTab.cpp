@@ -20,7 +20,8 @@ struct KickoffUiData {
     std::array<KickoffSpawnStats, kKoSpawnCount> stats{};
     KickoffConfig cfg;
     bool worldControl = false;
-    std::string activityOwner;
+    std::string activityOwner;  // module id of the running drill ("shooting")
+    std::string activityName;   // its French name ("Tirs"), shown to the player
 };
 
 const Color kOk{90, 230, 120, 255};
@@ -98,8 +99,8 @@ void statusBlock(const KickoffUiData& d) {
             mode += "  (" + std::to_string(s.sequenceIndex) + "/" + std::to_string(s.sequenceTotal) + ")";
         ImGui::TextUnformatted(mode.c_str());
     } else if (!d.activityOwner.empty()) {
-        ImGui::TextDisabled("Un autre exercice est en cours (%s) : lancer le kickoff l'arrêtera.",
-                            d.activityOwner.c_str());
+        const std::string& other = d.activityName.empty() ? d.activityOwner : d.activityName;
+        ImGui::TextDisabled("Un autre exercice est en cours (%s) : lancer le kickoff l'arrêtera.", other.c_str());
     } else {
         ImGui::TextDisabled("Aucun exercice kickoff en cours.");
     }
@@ -222,7 +223,9 @@ void lastResultBlock(const KickoffUiData& d) {
         ImGui::Text("Boost utilisé : %.0f, restant : %.0f, maintenu %.0f %% du temps", static_cast<double>(m.boostUsed),
                     static_cast<double>(m.boostAtTouch), static_cast<double>(m.boostHeldRatio * 100.f));
         if (m.boostLooksUnlimited)
-            ui::textColored(kWarn, "Boost illimité détecté : coupe-le dans le freeplay pour un kickoff réaliste.");
+            ui::textColored(kWarn,
+                            "Boost illimité détecté : record non compté. Coupe-le dans le freeplay pour un "
+                            "kickoff réaliste.");
         ImGui::Text("Écart moyen à la ligne droite : %.0f uu (max %.0f)", static_cast<double>(m.pathDevRms),
                     static_cast<double>(m.pathDevMax));
         if (m.hasBallExit)
@@ -300,6 +303,8 @@ void guideBlock() {
         ImGui::BulletText("Annule tout de suite : stick à fond en arrière en moins de 0,1 s.");
         ImGui::BulletText("Finis la vrille avec l'air roll du même côté pour retomber vite sur les roues.");
         ImGui::BulletText("Garde le boost jusqu'à la panne : le petit boost sur ta route te redonne +12.");
+        ImGui::BulletText("Coupe le boost illimité du freeplay : avec, tes essais sont notés mais ne comptent pas "
+                          "comme records.");
         ImGui::TextWrapped(
             "Gain attendu : 0,1 à 0,2 s par rapport à un front flip classique, ce qui suffit à gagner "
             "la plupart des kickoffs.");
@@ -345,6 +350,7 @@ void renderKickoffTab(UiContext& ctx) {
         }
         d.worldControl = ctx.engine.worldControlAllowed();
         d.activityOwner = ctx.engine.activityOwner();
+        d.activityName = ctx.engine.activityName();
     }
     if (!d.found) {
         ImGui::TextDisabled("Module Kickoff indisponible.");

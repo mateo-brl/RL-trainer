@@ -31,6 +31,7 @@ void KickoffRecorder::begin(KickoffSpawn spawn, KickoffTeam team, int64_t goFram
     m_ = KickoffMetrics{};
     m_.spawn = spawn;
     m_.team = team;
+    m_.padsMaybeOnCooldown = prm_.padsBusyUntilFrame >= 0 && goFrame < prm_.padsBusyUntilFrame;
     m_.along.reserve(static_cast<size_t>(std::max(0, prm_.maxSamples)));
     path_ = kickoffPath(spawn, team);
     prev_ = Snapshot{};
@@ -91,6 +92,7 @@ void KickoffRecorder::feed(const Snapshot& sn) {
         if (db > 5.f) {
             m_.boostPicked += db;
             ++m_.padsPicked;
+            m_.lastPadFrame = sn.frame;
         } else if (db < 0.f) {
             m_.boostUsed += -db;
         }
@@ -155,7 +157,14 @@ void KickoffRecorder::touch(const Snapshot& pre, const Snapshot& post) {
         // Horizontal speed toward the ball: the ball centre sits ~76 uu above the car origin, so the 3D direction
         // would count only ~90 % of a perfect head-on approach (benchmarks and the ghost use horizontal speeds).
         m_.speedToBall = dot(flat(c.vel), normalize(flat(toBall)));
-        m_.lateralOffset = dot(toBall, c.basis.right);
+        // Lateral offset in the horizontal plane, against the car heading. basis.right would mix in the height of
+        // the ball centre (~40-76 uu above the car origin) as soon as the car is rolled (diagonal flip into the
+        // ball, speedflip landing). Nose almost vertical (front flip): the velocity gives the heading.
+        Vec3 heading = flat(c.basis.fwd);
+        if (length(heading) < 0.3f) heading = flat(c.vel);
+        heading = normalize(heading, path_.dir);
+        const Vec3 right2D{-heading.y, heading.x, 0.f};  // same convention as basisFromRot (yaw 90 -> -X)
+        m_.lateralOffset = dot(flat(toBall), right2D);
         m_.contactHeight = dot(toBall, c.basis.up);
         m_.boostAtTouch = c.boost;
     }

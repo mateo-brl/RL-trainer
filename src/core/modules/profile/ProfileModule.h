@@ -43,7 +43,8 @@ struct ProfileReport {
     std::string dodgeExplanation;
     std::vector<pf::BindingRow> bindings;
     std::vector<pf::AuditItem> audit;
-    std::vector<pf::MechanicReadiness> mechanics;
+    std::vector<pf::MechanicReadiness> mechanics;   // empty when deviceBindingsReadable is false
+    bool deviceBindingsReadable = false;         // keys of the device in use known (pf::deviceBindingsReadable)
     bool showCameraAdvice = true, showControllerAdvice = true, showBindingAdvice = true;
     int adviceCount = 0;                         // "Conseil" lines in the enabled categories
 

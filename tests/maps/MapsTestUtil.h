@@ -106,6 +106,8 @@ struct Harness {
 
     Actions setContext(GameMode mode, bool custom, const std::string& mapName, const std::string& workshopId = "",
                        const std::string& title = "", MapCategory cat = MapCategory::Standard) {
+        // Like Engine::setContext: a map change drops the tick history, so the module gets no snapshot.
+        if (mode != game.mode || mapName != game.mapName) hasSnapshot = false;
         game.mode = mode;
         game.isCustomMap = custom;
         game.mapName = mapName;

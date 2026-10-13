@@ -39,7 +39,9 @@ struct KickoffSpawnStats {
 class KickoffStats {
 public:
     // Records a finished attempt. Returns true when it is a new best time for that spawn.
-    bool record(const KickoffMetrics& m, int score, const KickoffDuelResult* duel);
+    // `allowRecord` false (unrealistic run, e.g. unlimited boost): attempts, touches, scores, types and duels still
+    // count, but the time is kept out of the best time, the personal-best ghost profile and the recent times.
+    bool record(const KickoffMetrics& m, int score, const KickoffDuelResult* duel, bool allowRecord = true);
     const KickoffSpawnStats& of(KickoffSpawn s) const { return per_[static_cast<size_t>(kickoffIndex(s))]; }
     KickoffSpawnStats& of(KickoffSpawn s) { return per_[static_cast<size_t>(kickoffIndex(s))]; }
     void reset();

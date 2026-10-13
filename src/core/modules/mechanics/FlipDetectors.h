@@ -52,10 +52,18 @@ public:
     void onTick(const Ctx& c, const KickoffTracker& ko, std::vector<MechGrade>& out);
     void flush(std::vector<MechGrade>& out);
     bool hasPending() const { return hasPending_; }
+    // Kickoff speedflip stored as pending during the last onDodge, handed out once so that the combo detector
+    // sees it before the zap dash that may follow it (the grade itself is emitted at the ball touch).
+    const MechGrade* takeFreshPending() {
+        if (!fresh_ || !hasPending_) return nullptr;
+        fresh_ = false;
+        return &pending_;
+    }
 
 private:
     MechGrade pending_;
     bool hasPending_ = false;
+    bool fresh_ = false;
 };
 
 class HalfFlipDetector {
@@ -70,16 +78,23 @@ public:
     bool onDodge(const DodgeRecord& r, const Ctx& c, std::vector<MechGrade>& out);
 };
 
+// A kickoff speedflip can reach onGrade twice: early (pending, see SpeedFlipDetector::takeFreshPending) and when
+// it is emitted after the ball touch. The second copy of a speedflip already used by a speed zap is ignored.
 class ComboDetector {
 public:
     static constexpr int kMaxGapTicks = 45;  // UNVERIFIED
     void onGrade(const MechGrade& g, std::vector<MechGrade>& out);
-    void reset() { haveSF_ = haveHF_ = false; }
+    void reset() {
+        haveSF_ = haveHF_ = false;
+        usedSF_ = false;
+    }
 
 private:
     static MechGrade combine(Mech m, const MechGrade& a, const MechGrade& b);
     MechGrade lastSpeedflip_, lastHalfFlip_;
     bool haveSF_ = false, haveHF_ = false;
+    bool usedSF_ = false;          // usedSFDodgeTick_ is valid
+    int64_t usedSFDodgeTick_ = 0;  // dodge of the speedflip of the last speed zap
 };
 
 } // namespace rlt::mech

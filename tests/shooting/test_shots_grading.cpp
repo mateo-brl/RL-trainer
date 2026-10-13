@@ -353,6 +353,26 @@ TEST(shooting_grade_flick_wrong_type_is_capped) {
 
     p.requested = static_cast<int>(FlickType::Delayed);
     CHECK(hasTip(gradeFlick(goodReport(), aimInGoal(), p, PlayerProfile{}), "shooting.flick_not_delayed"));
+    // The delayed tip quotes the configured threshold (rlt_sh_delayed_sec), French decimal comma.
+    p.delayedSec = 0.75f;
+    {
+        const AttemptResult d = gradeFlick(goodReport(), aimInGoal(), p, PlayerProfile{});
+        bool quoted = false;
+        for (const auto& t : d.tips)
+            if (t.code == "shooting.flick_not_delayed") quoted = t.text.find("(0,75 s ou plus)") != std::string::npos;
+        CHECK(quoted);
+    }
+    p.delayedSec = 0.6f;
+
+    // The diagonal dodge tip points the dodge at the target, not at the ball.
+    p.requested = static_cast<int>(FlickType::Flick45);
+    {
+        FlickReport f = goodReport();
+        f.f.dodgeSide = 0.f;
+        const AttemptResult d = gradeFlick(f, aimInGoal(), p, PlayerProfile{});
+        CHECK(hasTip(d, "shooting.flick_diagonal_dodge"));
+        for (const auto& t : d.tips) CHECK(t.text.find("vers la balle") == std::string::npos);
+    }
 
     // The requested type performed: success.
     p.requested = static_cast<int>(FlickType::Front);
@@ -464,25 +484,53 @@ TEST(shooting_howto_uses_player_buttons) {
     pad.valid = true;
     pad.usingGamepad = true;
     pad.gamepadBindings = {{"Jump", "XboxTypeS_A"}, {"AirRollLeft", "XboxTypeS_LeftShoulder"}};
-    const std::string h = flickHowTo(FlickType::Flick45, pad);
+    const KeyStyle xb = KeyStyle::Auto;
+    const std::string h = flickHowTo(FlickType::Flick45, pad, xb, 0.6f);
     CHECK(h.find("Saute (A)") != std::string::npos);
     // Only the directional air roll is bound: that is the one shown.
-    CHECK(airRollPrompt(pad) == actionPrompt(pad, GameAction::AirRollLeft));
-    CHECK(airRollPrompt(pad).find("Air roll gauche (") == 0);
-    CHECK(h.find(airRollPrompt(pad)) != std::string::npos);
-    CHECK(flickCue(FlickType::Musty, pad) == actionPrompt(pad, GameAction::Jump) + ", nez en bas, puis backflip");
-    CHECK(flickCue(FlickType::Breezi, pad).find(airRollPrompt(pad)) != std::string::npos);
-    for (int i = 0; i < kFlickTypeCount; ++i) CHECK(flickCue(static_cast<FlickType>(i), pad).size() < 80);
+    CHECK(airRollPrompt(pad, xb) == actionPrompt(pad, GameAction::AirRollLeft));
+    CHECK(airRollPrompt(pad, xb).find("Air roll gauche (") == 0);
+    CHECK(h.find(airRollPrompt(pad, xb)) != std::string::npos);
+    CHECK(flickCue(FlickType::Musty, pad, xb, 0.6f) ==
+          actionPrompt(pad, GameAction::Jump) + ", nez en bas, puis backflip");
+    CHECK(flickCue(FlickType::Breezi, pad, xb, 0.6f).find(airRollPrompt(pad, xb)) != std::string::npos);
+    for (int i = 0; i < kFlickTypeCount; ++i) CHECK(flickCue(static_cast<FlickType>(i), pad, xb, 0.6f).size() < 80);
     const PlayerProfile none;
-    CHECK(flickCue(FlickType::Front, none) == "Saut, puis dodge avant");
-    const std::string n = flickHowTo(FlickType::Musty, none);
+    CHECK(flickCue(FlickType::Front, none, xb, 0.6f) == "Saut, puis dodge avant");
+    const std::string n = flickHowTo(FlickType::Musty, none, xb, 0.6f);
     CHECK(n.find("Saute,") != std::string::npos);
     CHECK(n.find("()") == std::string::npos);
     for (int i = 0; i < kFlickTypeCount; ++i) {
-        const std::string t = flickHowTo(static_cast<FlickType>(i), pad);
+        const std::string t = flickHowTo(static_cast<FlickType>(i), pad, xb, 0.6f);
         CHECK(!t.empty());
         CHECK(t.find("\xE2\x80\x94") == std::string::npos); // no em dash
+        // With the ball on the roof the dodge direction decides where the ball goes: never "vers la balle".
+        CHECK_MSG(t.find("vers la balle") == std::string::npos, t);
     }
+    // The delayed threshold is quoted from the setting.
+    CHECK(flickCue(FlickType::Delayed, pad, xb, 0.8f).find("garde la balle 0,8 s") != std::string::npos);
+    CHECK(flickHowTo(FlickType::Delayed, pad, xb, 0.75f).find("au moins 0,75 s") != std::string::npos);
+    CHECK(frenchDecimal(0.6f) == "0,6");
+    CHECK(frenchDecimal(1.f) == "1");
+    CHECK(frenchDecimal(1.25f) == "1,25");
+    CHECK(frenchDecimal(-0.001f) == "0");
+}
+
+TEST(shooting_howto_honours_playstation_style) {
+    PlayerProfile pad;
+    pad.valid = true;
+    pad.usingGamepad = true;
+    pad.gamepadBindings = {{"Jump", "XboxTypeS_A"}, {"AirRoll", "XboxTypeS_LeftShoulder"}};
+    const KeyStyle ps = KeyStyle::PlayStation;
+    const std::string cue = flickCue(FlickType::Musty, pad, ps, 0.6f);
+    CHECK_MSG(cue == actionPrompt(pad, GameAction::Jump, ps) + ", nez en bas, puis backflip", cue);
+    CHECK_MSG(cue.find("(A)") == std::string::npos, cue);
+    CHECK(actionPrompt(pad, GameAction::Jump, ps) != actionPrompt(pad, GameAction::Jump, KeyStyle::Xbox));
+    const std::string how = flickHowTo(FlickType::Breezi, pad, ps, 0.6f);
+    CHECK(how.find(airRollPrompt(pad, ps)) != std::string::npos);
+    CHECK(airRollPrompt(pad, ps) == actionPrompt(pad, GameAction::AirRoll, ps));
+    CHECK(how.find("(LB)") == std::string::npos);
+    CHECK(flickCue(FlickType::Breezi, pad, ps, 0.6f).find(airRollPrompt(pad, ps)) != std::string::npos);
 }
 
 // ---- Statistics ---------------------------------------------------------------------------------------------

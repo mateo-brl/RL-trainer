@@ -231,6 +231,7 @@ void ProfileModule::rebuild() {
     r.bindings = pf::bindingRows(profile_, r.style);
     r.audit = pf::auditBindings(profile_, r.style);
     r.mechanics = pf::mechanicsReadiness(profile_, r.style);
+    r.deviceBindingsReadable = pf::deviceBindingsReadable(profile_);
     r.showCameraAdvice = cfg_.cameraAdvice;
     r.showControllerAdvice = cfg_.deadzoneAdvice;
     r.showBindingAdvice = cfg_.bindingAdvice;

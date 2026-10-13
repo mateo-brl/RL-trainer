@@ -63,9 +63,11 @@ SettingCheck rangeCheck(const char* id, const char* label, float value, float lo
     c.hi = hi;
     c.decimals = decimals;
     c.valueText = formatValue(value, decimals);
-    c.rangeText = formatValue(lo, decimals) + " à " + formatValue(hi, decimals);
+    c.rangeText = hi > lo ? formatValue(lo, decimals) + " à " + formatValue(hi, decimals) : formatValue(lo, decimals);
     const float shown = roundTo(value, decimals);
-    const float widen = std::max(0.f, margin) * (hi - lo);
+    // A single-value range (FOV 110) widens as if it were 5 % of its value wide.
+    const float span = hi > lo ? hi - lo : std::max(1.f, std::fabs(hi) * 0.05f);
+    const float widen = std::max(0.f, margin) * span;
     const float eps = 1e-4f;
     if (!std::isfinite(value)) {
         c.status = CheckStatus::Info;
@@ -238,7 +240,7 @@ std::string carLabel(const HitboxMatch& m) {
 std::vector<SettingCheck> analyzeCamera(const CameraProfile& cam, float margin) {
     std::vector<SettingCheck> out;
     out.reserve(8);
-    out.push_back(rangeCheck("camera.fov", "FOV", cam.fov, 108.f, 110.f, 0, margin,
+    out.push_back(rangeCheck("camera.fov", "FOV", cam.fov, 110.f, 110.f, 0, margin,
                              "FOV réduit : presque tous les pros jouent à 110, tu verrais plus de terrain autour de toi.",
                              "FOV au-dessus de 110 : valeur inhabituelle."));
     out.push_back(rangeCheck("camera.distance", "Distance", cam.distance, 260.f, 290.f, 0, margin,
@@ -332,11 +334,26 @@ std::vector<BindingRow> bindingRows(const PlayerProfile& p, KeyStyle style) {
     return rows;
 }
 
+bool deviceBindingsReadable(const PlayerProfile& p) {
+    const bool pad = p.usingGamepad;
+    return !actionKeys(p, GameAction::Jump, pad).empty() || !actionKeys(p, GameAction::Boost, pad).empty() ||
+           !actionKeys(p, GameAction::Throttle, pad).empty();
+}
+
 std::vector<AuditItem> auditBindings(const PlayerProfile& p, KeyStyle style) {
     std::vector<AuditItem> out;
     if (p.pcBindings.empty() && p.gamepadBindings.empty()) {
         out.push_back({"pf.bindings_unknown", CheckStatus::Info, "Touches",
                        "Tes touches ne sont pas encore lues. Lance le freeplay ou clique sur Relire ma config."});
+        return out;
+    }
+    if (!deviceBindingsReadable(p)) {
+        // The lists only hold keys of the other device (older BakkesMod reads no keyboard binding, some setups
+        // report an empty gamepad list): judging them would only produce false advice.
+        out.push_back({"pf.device_bindings_unknown", CheckStatus::Info, "Touches",
+                       std::string("Les touches de ton appareil actuel (") +
+                           (p.usingGamepad ? "manette" : "clavier et souris") +
+                           ") ne sont pas lisibles : rien n'est conseillé sur tes touches pour l'instant."});
         return out;
     }
     const bool pad = p.usingGamepad;
@@ -416,6 +433,7 @@ std::vector<AuditItem> auditBindings(const PlayerProfile& p, KeyStyle style) {
 }
 
 std::vector<MechanicReadiness> mechanicsReadiness(const PlayerProfile& p, KeyStyle style) {
+    if (!deviceBindingsReadable(p)) return {};  // keys of the device in use unknown: nothing can be judged
     const bool pad = p.usingGamepad;
     const auto keys = [&](GameAction a) { return actionKeys(p, a, pad); };
     const auto left = keys(GameAction::AirRollLeft), right = keys(GameAction::AirRollRight);
@@ -427,9 +445,13 @@ std::vector<MechanicReadiness> mechanicsReadiness(const PlayerProfile& p, KeySty
                   joinLabels(!left.empty() ? left : right, style) + ")"
             : std::string();
     const std::string camText = cam.empty() ? std::string() : joinLabels(cam, style);
+    // Any air roll (free first, else directional) to roll back onto the wheels after a half-flip.
+    const bool anyRoll = dir || !roll.empty();
+    const std::string rollText =
+        !roll.empty() ? joinLabels(roll, style) : (dir ? joinLabels(!left.empty() ? left : right, style) : std::string());
 
     std::vector<MechanicReadiness> out;
-    out.reserve(8);
+    out.reserve(9);
     out.push_back({"Tornado spin", dir,
                    dir ? dirText + " : tu as ce qu'il faut." : "Assigne un air roll directionnel (gauche ou droit)."});
     out.push_back({"Stall", dir,
@@ -447,7 +469,12 @@ std::vector<MechanicReadiness> mechanicsReadiness(const PlayerProfile& p, KeySty
     out.push_back({"Speedflip", jump && boost,
                    dir ? "Saut, boost et " + dirText + " : tout est là."
                        : "Saut et boost suffisent ; un air roll directionnel aide à l'annuler proprement."});
-    out.push_back({"Wavedash et half-flip", jump, jump ? "Seulement le saut et le stick." : "Il faut une touche de saut."});
+    out.push_back({"Wavedash", jump, jump ? "Seulement le saut et le stick." : "Il faut une touche de saut."});
+    out.push_back({"Half-flip", jump && anyRoll,
+                   !jump ? std::string("Il faut une touche de saut.")
+                         : (anyRoll ? "Saut, puis air roll (" + rollText + ") pour te remettre sur les roues."
+                                    : std::string("Assigne un air roll (libre ou directionnel) pour finir le "
+                                                  "half-flip sur les roues."))});
     out.push_back({"Musty flick", jump, jump ? "Saut et stick vers l'arrière, rien de spécial à assigner."
                                              : "Il faut une touche de saut."});
     return out;

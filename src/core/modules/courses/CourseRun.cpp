@@ -12,6 +12,7 @@ void CourseRun::reset(const Course* course, MissPolicy policy, bool grazeCounts,
     next_ = misses_ = grazes_ = wrongWays_ = 0;
     penalty_ = 0;
     finished_ = failed_ = false;
+    comeBack_ = false;
     splits_.clear();
     if (course_) splits_.reserve(course_->rings.size());
     last_ = {};
@@ -39,6 +40,7 @@ RunEvent CourseRun::pass(int ring, double tCross, const PassResult& pr) {
     sp.centring = r.radius > 0 ? pr.radial / r.radius : 0.0;
     splits_.push_back(sp);
     if (pr.kind == PassKind::Grazed) ++grazes_;
+    comeBack_ = false;
     next_ = ring + 1;
     if (next_ >= ringCount()) {
         finished_ = true;
@@ -78,6 +80,8 @@ RunEvent CourseRun::step(const DVec3& p0, const DVec3& p1, double t0, double t1,
     const bool counted = pr.kind == PassKind::Clean || (grazeCounts_ && pr.kind == PassKind::Grazed);
     if (counted) return pass(next_, tCross, pr);
     if (pr.kind == PassKind::Backward) {
+        // Going back through the missed ring to take it again (ComeBack) is the way back, not a mistake.
+        if (comeBack_) return RunEvent::None;
         ++wrongWays_;
         return RunEvent::WrongWay;
     }
@@ -86,7 +90,7 @@ RunEvent CourseRun::step(const DVec3& p0, const DVec3& p1, double t0, double t1,
         ++misses_;
         switch (policy_) {
         case MissPolicy::Strict: failed_ = true; return RunEvent::Failed;
-        case MissPolicy::ComeBack: return RunEvent::Missed;
+        case MissPolicy::ComeBack: comeBack_ = true; return RunEvent::Missed;
         case MissPolicy::Penalty: return giveUp(next_, tCross, pr);
         }
         return RunEvent::Missed;
@@ -100,7 +104,7 @@ RunEvent CourseRun::step(const DVec3& p0, const DVec3& p1, double t0, double t1,
             const double t2 = t0 + p2.t * dt;
             switch (policy_) {
             case MissPolicy::Strict: failed_ = true; return RunEvent::Failed;
-            case MissPolicy::ComeBack: return RunEvent::Skipped;
+            case MissPolicy::ComeBack: comeBack_ = true; return RunEvent::Skipped;
             case MissPolicy::Penalty: {
                 PassResult skipped;
                 skipped.kind = PassKind::None;

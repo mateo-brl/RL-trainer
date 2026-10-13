@@ -151,7 +151,7 @@ std::vector<CatalogMap> buildCatalog() {
     v.push_back(entry("Aerial Training", "thanrek", C::Obstacle, {"814164094"}, {"aerialtraining"}, 12,
                       "12 niveaux de contrôle de la voiture en l'air."));
     v.push_back(entry("The Wall", "French Fries", C::Obstacle, {"814263405"}, {"thewall"}, 0,
-                      "Course d'obstacles poursuivi par un mur."));
+                      "Course d'obstacles poursuivie par un mur."));
     v.push_back(entry("Lethamyr's Egyptian Tomb", "Lethamyr", C::Obstacle, {},
                       {"egyptiantomb", "lethsegyptiantomb", "lethamyrsegyptiantomb"}, 0,
                       "Parcours d'exploration avec des ankhs à ramasser.", "egyptian_tomb"));

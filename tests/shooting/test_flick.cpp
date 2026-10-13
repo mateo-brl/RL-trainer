@@ -2,6 +2,7 @@
 // (good and bad executions, timing, power measurement, edge cases).
 
 #include <cmath>
+#include <vector>
 
 #include "tests/shooting/ShootingTestUtil.h"
 
@@ -174,7 +175,12 @@ TEST(shooting_analyzer_front_flick_from_standstill) {
     CHECK_NEAR(r.roofOffset.x, 10.f, 1.f);
     CHECK_NEAR(r.roofOffset.y, 0.f, 1.f);
     CHECK(r.dodgeToTouch >= 0.f && r.dodgeToTouch < 0.05f);
+    // Realistic timing (press at D, IsDodging from D+1): the engine confirms the dodge and its direction.
     CHECK(!r.cls.uncertain);
+    CHECK(r.dodgeConfirmed);
+    CHECK(!r.dodgeFromInput);
+    CHECK(!r.dirMismatch);
+    CHECK_EQ(r.dodgeFrame, run.snaps[run.dodgeIndex].frame); // timed from the press, not from the flag
 }
 
 TEST(shooting_analyzer_45_flick_driving) {
@@ -186,6 +192,7 @@ TEST(shooting_analyzer_45_flick_driving) {
     s.launch = {2000.f, 300.f, 450.f};
     const FlickReport r = single(s);
     CHECK(r.cls.base == FlickType::Flick45);
+    CHECK(!r.cls.uncertain && r.dodgeConfirmed && !r.dodgeFromInput);
     CHECK_NEAR(std::fabs(r.f.yawTurnDeg), 45.f, 1.5f);
     CHECK_NEAR(r.carSpeedAtJump, 900.f, 1.f);
     CHECK(r.power > 2500.f); // the car speed adds to the flick
@@ -209,7 +216,9 @@ TEST(shooting_analyzer_musty_vs_backflip) {
     musty.launch = {1500.f, 0.f, 900.f};
     const FlickReport m = single(musty);
     CHECK(m.cls.base == FlickType::Musty);
+    CHECK(!m.cls.uncertain && m.dodgeConfirmed);
     CHECK_NEAR(m.f.pitchDeg, -70.f, 1.f);
+    CHECK_NEAR(m.f.delay, 0.35f + 1.f / 120.f, 0.005f); // from the first press (J-1) to the dodge press (D)
 
     FlickScript back = musty;
     back.pitchDeg = 0.f;
@@ -258,13 +267,81 @@ TEST(shooting_analyzer_delayed_flick) {
     CHECK(r.roofTime > 1.1f); // 0.4 s carry + 0.8 s in the air with the ball
 }
 
-TEST(shooting_analyzer_dodge_direction_from_stick_is_uncertain) {
+TEST(shooting_analyzer_stick_direction_confirmed_by_engine_is_certain) {
+    // IsDodging rises at D+1 but the dodge component gives no direction: the stick direction (what the game
+    // derives the dodge from) is used and the result is NOT uncertain.
     FlickScript s;
     s.engineDodgeDir = false;
     const FlickReport r = single(s);
     CHECK(r.cls.base == FlickType::Front);
     CHECK(r.dodgeFromInput);
+    CHECK(r.dodgeConfirmed);
+    CHECK(!r.cls.uncertain);
+    // Same for a musty (backflip direction from the stick pulled back).
+    FlickScript m;
+    m.engineDodgeDir = false;
+    m.pitchDeg = -70.f;
+    m.dodgeDir = {-1.f, 0.f, 0.f};
+    m.delay = 0.35f;
+    m.launch = {1500.f, 0.f, 900.f};
+    const FlickReport mr = single(m);
+    CHECK(mr.cls.base == FlickType::Musty);
+    CHECK(!mr.cls.uncertain);
+}
+
+TEST(shooting_analyzer_dodge_never_confirmed_is_uncertain) {
+    // The engine never reports IsDodging (nor a double jump): the stick direction is kept, flagged uncertain.
+    FlickScript s;
+    s.engineReportsDodge = false;
+    const FlickReport r = single(s);
+    CHECK(r.cls.base == FlickType::Front);
+    CHECK(r.dodgeFromInput);
+    CHECK(!r.dodgeConfirmed);
     CHECK(r.cls.uncertain);
+    CHECK(r.contact && r.power > 1700.f); // still measured and graded
+}
+
+TEST(shooting_analyzer_engine_direction_replaces_the_stick) {
+    // Stick straight forward, engine reports a slightly diagonal dodge: the engine direction wins.
+    FlickScript s;
+    s.engineDirOverride = {0.8f, 0.6f, 0.f};
+    const FlickReport r = single(s);
+    CHECK(!r.dodgeFromInput && r.dodgeConfirmed && !r.dirMismatch);
+    CHECK_NEAR(r.f.dodgeFwd, 0.8f, 1e-3f);
+    CHECK_NEAR(r.f.dodgeSide, 0.6f, 1e-3f);
+    CHECK(!r.cls.uncertain);
+    // Engine direction opposite to the stick (wrong frame for GetDodgeDirection?): kept but flagged uncertain.
+    FlickScript bad;
+    bad.engineDirOverride = {-1.f, 0.f, 0.f};
+    bad.launch = {150.f, 0.f, 1300.f};
+    const FlickReport b = single(bad);
+    CHECK(b.dirMismatch);
+    CHECK(b.cls.base == FlickType::Backflip);
+    CHECK(b.cls.uncertain);
+}
+
+TEST(shooting_analyzer_dodge_seen_from_engine_flag_first) {
+    // Stick below the dodge deadzone used by the analyzer (profile not read yet): no input edge, the engine
+    // flag at D+1 opens the dodge, still timed from the press at D.
+    FlickScript s;
+    s.dodgeDir = {0.45f, 0.f, 0.f};
+    s.engineDirOverride = {1.f, 0.f, 0.f};
+    const ScriptRun run = buildFlick(s);
+    FlickAnalyzer a;
+    const auto reps = runAnalyzer(a, run);
+    CHECK_EQ(reps.size(), static_cast<size_t>(1));
+    if (!reps.empty()) {
+        CHECK(reps[0].cls.base == FlickType::Front);
+        CHECK(reps[0].dodgeConfirmed && !reps[0].cls.uncertain);
+        CHECK_EQ(reps[0].dodgeFrame, run.snaps[run.dodgeIndex].frame);
+        CHECK_NEAR(reps[0].f.delay, 0.2f + 1.f / 120.f, 0.005f);
+    }
+    // Legacy glue timing (IsDodging already set at the press tick) is still handled.
+    FlickScript legacy;
+    legacy.sameTickFlags = true;
+    const FlickReport l = single(legacy);
+    CHECK(l.cls.base == FlickType::Front);
+    CHECK(l.dodgeConfirmed && !l.cls.uncertain);
 }
 
 TEST(shooting_analyzer_no_contact_and_lost_ball) {
@@ -294,13 +371,34 @@ TEST(shooting_analyzer_inferred_contact_without_touch_event) {
 }
 
 TEST(shooting_analyzer_double_jump_and_landing_are_not_flicks) {
-    // Double jump with the ball: no stick, no engine direction.
+    // Real double jump with the ball: no stick at the press, bDoubleJumped rises at D+1, no dodge.
     FlickScript dj;
-    dj.engineDodgeDir = false;
+    dj.doubleJump = true;
     dj.dodgeDir = {0.f, 0.f, 0.f};
     dj.contact = false;
     FlickAnalyzer a;
     CHECK(runAnalyzer(a, buildFlick(dj)).empty());
+    CHECK(a.phase() == FlickPhase::Idle);
+
+    // The stick passed the analyzer deadzone but the game made a double jump (its own deadzone is higher):
+    // the provisional dodge is dropped, even when the pop then hits the ball.
+    FlickScript dj2;
+    dj2.doubleJump = true;
+    dj2.dodgeDir = {0.6f, 0.f, 0.f};
+    dj2.contact = true;
+    FlickAnalyzer a2;
+    const ScriptRun run2 = buildFlick(dj2);
+    bool sawDodged = false;
+    std::vector<FlickReport> reps;
+    for (size_t i = 0; i < run2.snaps.size(); ++i) {
+        for (const auto& t : run2.touches)
+            if (t.first == i) a2.onTouch(t.second);
+        if (auto r = a2.update(run2.snaps[i])) reps.push_back(*r);
+        if (i == run2.dodgeIndex) sawDodged = a2.phase() == FlickPhase::Dodged; // provisional at the press
+    }
+    CHECK(sawDodged);
+    CHECK(reps.empty());
+    CHECK(a2.phase() == FlickPhase::Idle);
 
     // Jump and land without dodging: a pop, not graded.
     FlickAnalyzer b;

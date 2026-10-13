@@ -39,6 +39,9 @@ struct RunSummary {
     bool valid = false;
     bool finished = false;
     bool recordEligible = true;   // clean start, no skipped levels
+    bool cleanStart = true;       // the start was seen (false: armed late, profile changed after moving...)
+    bool partialSplits = false;   // the timing profile changed during the run: splits are not comparable
+    bool endedByReset = false;    // own timing, "goal or reset" mode: finished by a reset (never a record)
     RunSource source = RunSource::None;
     float time = 0.f;             // seconds
     float endedAt = 0.f;          // game time
@@ -56,6 +59,7 @@ struct RunOptions {
     float startSpeed = 100.f;       // uu/s: own timing starts when the car goes faster than this
     bool resetFinishes = false;     // own timing: a reset ends the run as finished (not aborted)
     float armGrace = 0.5f;          // s: car never at rest after arming -> the run starts at the arm time
+    float armAnchorGap = 0.25f;     // s: arm older than this at the first tick = armed while not watching
     float teleportDistance = 500.f; // uu between two consecutive ticks = teleport / respawn
 };
 
@@ -72,13 +76,16 @@ public:
     bool hasProfile() const { return hasProfile_; }
     const KismetProfile& profile() const { return profile_; }
 
-    // Personal best of the current map, for split deltas.
+    // Personal best of the current map, for split deltas (by split index; partial runs get no deltas).
     void setPersonalBest(const std::vector<float>& splits, float total, bool hasTotal);
 
     // Map changed: idle, no profile, no values.
     void clear();
 
     // Ready for an own-timed run (after a reset / map load). No effect when the map gives the start.
+    // The arm time is anchored on the first tick that follows: an arm made while no tick was flowing (map
+    // entry, module re-enabled) never starts a run in the past, and if the car is already moving at that
+    // first tick the start was not seen, so the run cannot be a record.
     void arm(float now, bool clean = true);
     void onTick(const Snapshot& s);
     void onKismet(const std::vector<KismetVar>& vars, float now);
@@ -97,6 +104,7 @@ public:
     float startTime() const { return start_; }
     float elapsed(float now) const { return running() ? std::max(0.f, now - start_) : 0.f; }
     bool recordEligible() const { return eligible_; }
+    bool partialSplits() const { return partialSplits_; }
 
     bool hasLevel() const { return hasLevel_; }
     int level() const { return level_; }
@@ -117,7 +125,7 @@ public:
 
 private:
     void beginRun(float startAt, RunSource src, bool clean);
-    void endRun(float now, bool finished, bool cancelled = false);
+    void endRun(float now, bool finished, bool cancelled = false, bool byReset = false);
     void addSplit(int level, float now, bool skipped);
     bool finishOnLevel(int lvl, int prev) const;
 
@@ -129,6 +137,8 @@ private:
     RunSource source_ = RunSource::None;
     float start_ = 0.f;
     bool eligible_ = true;
+    bool cleanStart_ = true;
+    bool partialSplits_ = false;
     std::vector<RunSplit> splits_;
     int resets_ = 0;
     int respawns_ = 0;
@@ -137,6 +147,7 @@ private:
     // Arming (own timing)
     float armTime_ = 0.f;
     bool armClean_ = true;
+    bool armAnchored_ = false;
     bool sawRest_ = false;
 
     // Teleport detection
@@ -154,6 +165,7 @@ private:
     bool hasPrevTimer_ = false;
     std::string prevTimer_;
     float prevTimerSeconds_ = -1.f;
+    bool timerAnchorPending_ = false;  // run started on the map timer's zero: re-anchor on its first tick
 
     bool hasLevel_ = false;
     int level_ = 0;

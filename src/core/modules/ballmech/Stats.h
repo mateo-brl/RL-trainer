@@ -16,14 +16,14 @@ struct MechStats {
     static constexpr size_t kRecent = 30;
     int attempts = 0;
     int successes = 0;
-    float scoreSum = 0.f;
+    double scoreSum = 0.0;      // large accumulator: persisted with Store::setDouble
     float best = 0.f;
     std::vector<float> recent;  // last scores, oldest first (<= kRecent)
     int sessionAttempts = 0;
     int sessionSuccesses = 0;
 
     void record(float score, bool success);
-    float average() const { return attempts > 0 ? scoreSum / static_cast<float>(attempts) : 0.f; }
+    float average() const { return attempts > 0 ? static_cast<float>(scoreSum / static_cast<double>(attempts)) : 0.f; }
     float rate() const { return attempts > 0 ? static_cast<float>(successes) / static_cast<float>(attempts) : 0.f; }
 };
 

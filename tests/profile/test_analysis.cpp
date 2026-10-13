@@ -141,9 +141,11 @@ TEST(analysis_camera_boundaries) {
     CHECK(cameraStatus("camera.distance", with([](CameraProfile& c) { c.distance = 259.f; })) == CheckStatus::Advice);
     CHECK(cameraStatus("camera.distance", with([](CameraProfile& c) { c.distance = 291.f; })) == CheckStatus::Advice);
     CHECK(cameraStatus("camera.distance", with([](CameraProfile& c) { c.distance = 259.6f; })) == CheckStatus::Ok);  // shows 260
-    // FOV 108..110.
-    CHECK(cameraStatus("camera.fov", with([](CameraProfile& c) { c.fov = 108.f; })) == CheckStatus::Ok);
-    CHECK(cameraStatus("camera.fov", with([](CameraProfile& c) { c.fov = 107.f; })) == CheckStatus::Advice);
+    // FOV 110 (single value).
+    CHECK(cameraStatus("camera.fov", with([](CameraProfile& c) { c.fov = 110.f; })) == CheckStatus::Ok);
+    CHECK(cameraStatus("camera.fov", with([](CameraProfile& c) { c.fov = 109.6f; })) == CheckStatus::Ok);  // shows 110
+    CHECK(cameraStatus("camera.fov", with([](CameraProfile& c) { c.fov = 109.f; })) == CheckStatus::Advice);
+    CHECK(cameraStatus("camera.fov", with([](CameraProfile& c) { c.fov = 108.f; })) == CheckStatus::Advice);
     // Height 90..110.
     CHECK(cameraStatus("camera.height", with([](CameraProfile& c) { c.height = 90.f; })) == CheckStatus::Ok);
     CHECK(cameraStatus("camera.height", with([](CameraProfile& c) { c.height = 110.f; })) == CheckStatus::Ok);
@@ -297,7 +299,7 @@ TEST(analysis_audit_missing_things) {
 
 TEST(analysis_mechanics_readiness) {
     const auto def = mechanicsReadiness(gamepadProfile(), KeyStyle::Auto);
-    CHECK_EQ(def.size(), static_cast<size_t>(8));
+    CHECK_EQ(def.size(), static_cast<size_t>(9));
     CHECK_EQ(def[0].name, "Tornado spin");
     CHECK(!def[0].ready);
     CHECK(def[2].ready);  // flip reset possible with the free air roll

@@ -1,6 +1,7 @@
 #pragma once
 // Installed custom maps scan (standard library only, no SDK): <root>/<folder>/<file>.udk|.upk (and files
 // directly in <root>), .udk preferred over .upk, texture packages skipped, numeric folder = workshop id.
+// A folder holding several .udk files is a collection: one map per .udk, identified by its file name.
 // Runs on a worker thread in the plugin (MapsService); every function here is thread-safe (no shared state).
 //
 // Paths: keep std::filesystem::path end to end and convert with pathToUtf8 / pathFromUtf8. Never call

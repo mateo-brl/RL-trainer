@@ -251,6 +251,10 @@ void renderBindings(const ProfileReport& r) {
     wrapped("Toutes les consignes du plugin utilisent tes vrais boutons, par exemple \"" +
             actionPrompt(r.profile, GameAction::Jump, r.style) + "\".");
     const bool pad = r.profile.usingGamepad;
+    if (r.valid && !r.deviceBindingsReadable)
+        wrappedColored(kInfo, std::string("Les touches de ") + (pad ? "ta manette" : "ton clavier et ta souris") +
+                                  " ne sont pas lisibles pour l'instant : les consignes affichent le nom de l'action "
+                                  "sans bouton.");
     ImGui::Columns(3, "##pf_binds", false);
     ImGui::SetColumnWidth(0, 170.f);
     ImGui::SetColumnWidth(1, 170.f);
@@ -264,7 +268,7 @@ void renderBindings(const ProfileReport& r) {
         ImGui::TextUnformatted(row.name.c_str());
         ImGui::NextColumn();
         if (row.bound) ui::textColored(colors::White, row.keys);
-        else ImGui::TextDisabled("non assigné");
+        else ImGui::TextDisabled("%s", r.deviceBindingsReadable ? "non assigné" : "non lu");
         ImGui::NextColumn();
         if (row.otherKeys.empty()) ImGui::TextDisabled("-");
         else ImGui::TextDisabled("%s", row.otherKeys.c_str());
@@ -312,6 +316,9 @@ void renderAdvice(const ProfileReport& r) {
     }
 
     ui::separatorText("Mécaniques : ta config est-elle prête ?");
+    if (r.mechanics.empty())
+        wrappedColored(kInfo, "Les touches de ton appareil actuel ne sont pas lisibles : impossible de dire ce qui "
+                              "est prêt pour l'instant.");
     for (const auto& m : r.mechanics) {
         ImGui::Bullet();
         ui::textColored(m.ready ? kOk : kAdvice, m.ready ? "Prêt" : "À préparer");

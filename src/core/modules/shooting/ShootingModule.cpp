@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/common/Controls.h"
 #include "core/common/Text.h"
 #include "core/common/Units.h"
 #include "core/modules/shooting/ShootingGrading.h"
@@ -186,6 +187,13 @@ void ShootingModule::describeSettings(SettingsSchema& schema) {
 }
 
 void ShootingModule::onSettingsChanged(const Settings& settings) {
+    // Zone / setup selections follow their cvars when those change (any module's change calls this); the
+    // "targets", "zone" and "setup" commands override them in between.
+    if (!settingsSeen_ || settings.shooting.targetZone != cfg_.targetZone)
+        zoneSel_ = std::clamp(settings.shooting.targetZone, 0, kZoneRandom);
+    if (!settingsSeen_ || settings.shooting.targetSetup != cfg_.targetSetup)
+        setupSel_ = std::clamp(settings.shooting.targetSetup, 0, kTargetSetupCount - 1);
+    settingsSeen_ = true;
     cfg_ = settings.shooting;
     thresholds_.mustyPitchDeg = cfg_.mustyPitchDeg;
     thresholds_.breeziRollDeg = cfg_.breeziRollDeg;
@@ -216,9 +224,9 @@ ShootingStatus ShootingModule::status() const {
     st.mode = mode_;
     st.phase = phase_;
     st.requestedFlick = mode_ == ShootMode::Flick ? requested_ : cfg_.flickRequested - 1;
-    st.zoneSelection = mode_ == ShootMode::Targets ? zoneSel_ : cfg_.targetZone;
+    st.zoneSelection = zoneSel_;
     st.currentZone = static_cast<int>(zone_);
-    st.setupSelection = mode_ == ShootMode::Targets ? setupSel_ : cfg_.targetSetup;
+    st.setupSelection = setupSel_;
     st.currentSetup = static_cast<int>(setup_);
     st.flickZoneActive = flickZoneActive_;
     st.flickZone = static_cast<int>(flickZone_);
@@ -274,19 +282,20 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
         int req = cfg_.flickRequested - 1;
         if (!cmd.args.empty()) {
             int t = -1;
-            if (!parseFlickType(cmd.args[0], t)) {
+            // Diagonal / side are recognised flicks but not drills: refuse them rather than grade anything.
+            if (!parseFlickType(cmd.args[0], t) || t >= kRequestableFlickCount) {
                 warn("Flick inconnu : " + cmd.args[0] +
                      ". Choix : front, 45, 90, backflip, delayed, musty, breezi, reverse, any.");
                 return;
             }
             req = t;
         }
-        requested_ = std::clamp(req, -1, kFlickTypeCount - 2);
+        requested_ = std::clamp(req, -1, kRequestableFlickCount - 1);
         startDrill(ShootMode::Flick, ctx, out);
         return;
     }
     if (n == "targets" || n == "target" || n == "cibles") {
-        int zsel = cfg_.targetZone, ssel = cfg_.targetSetup;
+        int zsel = zoneSel_, ssel = setupSel_;
         for (const auto& arg : cmd.args) {
             int v = 0;
             if (parseZone(arg, v))
@@ -317,9 +326,14 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
             warn("Mise en place inconnue. Choix : mix, rolling, bouncing, pass, roof.");
             return;
         }
-        setupSel_ = v;
-        if (mode_ == ShootMode::Targets)
-            newAttemptLater(std::string("Mise en place : ") + setupLabel(static_cast<TargetSetup>(v)) + ".");
+        setupSel_ = std::clamp(v, 0, kTargetSetupCount - 1);
+        const std::string text = std::string("Mise en place : ") + setupLabel(static_cast<TargetSetup>(setupSel_));
+        if (mode_ == ShootMode::Targets) {
+            newAttemptLater(text + ".");
+        } else {
+            message_ = text + " (pour le prochain exercice Cibles).";
+            out.toasts.push_back(ToastMessage{kToastTitle, message_, ToastKind::Info, 3.f});
+        }
         return;
     }
     if (n == "zone") {
@@ -328,8 +342,16 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
             warn("Zone inconnue. Choix : tl, tr, bl, br, center, random.");
             return;
         }
-        zoneSel_ = v;
-        if (mode_ == ShootMode::Targets) newAttemptLater("Nouvelle cible.");
+        zoneSel_ = std::clamp(v, 0, kZoneRandom);
+        const std::string label = zoneSel_ == kZoneRandom ? std::string("aléatoire")
+                                                          : std::string(zoneLabel(static_cast<Zone>(zoneSel_)));
+        if (mode_ == ShootMode::Targets) {
+            newAttemptLater("Nouvelle cible : " + label + ".");
+        } else {
+            // Also the flick target when "Cible des flicks" is "Zone choisie dans Cibles".
+            message_ = "Cible choisie : " + label + " (pour le prochain exercice Cibles).";
+            out.toasts.push_back(ToastMessage{kToastTitle, message_, ToastKind::Info, 3.f});
+        }
         return;
     }
     warn("Commande inconnue : " + n + ". Essaie flick, targets, power, stop ou reset_stats.");
@@ -514,7 +536,7 @@ void ShootingModule::prepareAttempt(const TickContext& ctx) {
         spawn_ = flickSpawn(attemptLevel_, moving, cfg_.flickAdaptive ? -1.f : cfg_.flickCarSpeed, goal_, roof, rng_);
         flickZoneActive_ = cfg_.flickTarget != 0;
         if (cfg_.flickTarget == 1)
-            flickZone_ = pickZone(cfg_.targetZone);
+            flickZone_ = pickZone(zoneSel_);
         else if (cfg_.flickTarget == 2)
             flickZone_ = pickZone(kZoneRandom);
         break;
@@ -614,6 +636,7 @@ void ShootingModule::onFlickReport(const FlickReport& rep, const TickContext& ct
     p.minPower = flickMinPower(attemptLevel_);
     p.requireOnTarget = cfg_.flickRequireOnTarget;
     p.aimErrorDeg = angleBetweenDeg(flat(rep.launchVel), flat(targetWorld - rep.ballPos));
+    p.delayedSec = cfg_.delayedSec;
     p.time = s.time;
     AttemptResult res = gradeFlick(rep, aim, p, ctx.profile);
 
@@ -989,7 +1012,9 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
         line(requested_ >= 0 ? std::string("Demandé : ") + flickTypeLabel(static_cast<FlickType>(requested_))
                              : "Flick libre (tous types)");
         if (requested_ >= 0 && phase_ != ShootPhase::Result)
-            line(flickCue(static_cast<FlickType>(requested_), ctx.profile), colors::Cyan, -1.f, colors::Green, 0.9f);
+            line(flickCue(static_cast<FlickType>(requested_), ctx.profile,
+                          keyStyleFromIndex(ctx.settings.profile.buttonStyle), cfg_.delayedSec),
+                 colors::Cyan, -1.f, colors::Green, 0.9f);
         line(std::string("Cible : ") + (flickZoneActive_ ? zoneLabel(flickZone_) : "but entier"), cfg_.targetColor);
         if (phase_ == ShootPhase::Live && flick_.phase() == FlickPhase::Carry) {
             const float settled = flick_.settledTime(ctx.snap.frame);

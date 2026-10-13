@@ -74,7 +74,7 @@ const TipDef kTips[] = {
     {"DRILL_TIMEOUT", "Temps écoulé : lance-toi plus tôt.", 30.f},
     {"DRILL_LANDED", "Tu es retombé avant de réussir : reste en l'air plus longtemps.", 30.f},
     {"DRILL_BALL_LOST", "La balle t'a échappé : garde-la près de la voiture.", 30.f},
-    {"DRILL_WRONG_MECH", "Ce n'était pas la méca demandée : relis la consigne de l'exercice.", 30.f},
+    {"DRILL_WRONG_MECH", "Ce n'était pas la méca demandée : relis la consigne de l'exercice.", 40.f},
     {"DRILL_NEED_POWER", "Bonne base ! Pour valider ce niveau, frappe plus fort.", 18.f},
     {"DRILL_NEED_TARGET", "Bonne base ! Pour valider ce niveau, cadre ton tir.", 18.f},
     {"DRILL_NEED_DURATION", "Bonne base ! Pour valider ce niveau, garde la balle en l'air plus longtemps.", 18.f},

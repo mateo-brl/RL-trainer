@@ -24,11 +24,15 @@ void RunTracker::setProfile(const KismetProfile* p) {
     hasPrevStart_ = hasPrevLevel_ = hasPrevCounter_ = hasPrevTimer_ = false;
     prevTimer_.clear();
     prevTimerSeconds_ = -1.f;
+    timerAnchorPending_ = false;
     hasLevel_ = false;
     hasMapTimer_ = false;
     mapTimer_.clear();
     hasDeaths_ = false;
     if (running() && source_ == RunSource::Own && !ownStartActive()) endRun(now_, false, true);
+    // A run that goes on under a new profile missed the splits before this point: its split indices no
+    // longer line up with the personal best (and must not become the record's splits).
+    if (running()) partialSplits_ = true;
     if (phase_ == RunPhase::Armed && !ownStartActive()) phase_ = RunPhase::Idle;
 }
 
@@ -53,6 +57,7 @@ void RunTracker::arm(float now, bool clean) {
     phase_ = RunPhase::Armed;
     armTime_ = now;
     armClean_ = clean;
+    armAnchored_ = false;
     sawRest_ = false;
 }
 
@@ -62,6 +67,9 @@ void RunTracker::beginRun(float startAt, RunSource src, bool clean) {
     source_ = src;
     start_ = startAt;
     eligible_ = clean;
+    cleanStart_ = clean;
+    partialSplits_ = false;
+    timerAnchorPending_ = false;
     splits_.clear();
     resets_ = 0;
     respawns_ = 0;
@@ -73,13 +81,16 @@ void RunTracker::beginRun(float startAt, RunSource src, bool clean) {
     events_.push_back(e);
 }
 
-void RunTracker::endRun(float now, bool finished, bool cancelled) {
+void RunTracker::endRun(float now, bool finished, bool cancelled, bool byReset) {
     if (!running()) return;
     const float t = std::max(0.f, now - start_);
     if (!cancelled) {
         last_.valid = true;
         last_.finished = finished;
         last_.recordEligible = eligible_;
+        last_.cleanStart = cleanStart_;
+        last_.partialSplits = partialSplits_;
+        last_.endedByReset = byReset;
         last_.source = source_;
         last_.time = t;
         last_.endedAt = now;
@@ -105,7 +116,7 @@ void RunTracker::addSplit(int level, float now, bool skipped) {
     s.index = static_cast<int>(splits_.size()) + 1;
     s.level = level;
     s.time = std::max(0.f, now - start_);
-    if (static_cast<size_t>(s.index) <= pbSplits_.size()) {
+    if (!partialSplits_ && static_cast<size_t>(s.index) <= pbSplits_.size()) {
         s.delta = s.time - pbSplits_[static_cast<size_t>(s.index) - 1];
         s.hasDelta = true;
     }
@@ -146,8 +157,17 @@ void RunTracker::onTick(const Snapshot& s) {
     if (s.paused) return;
 
     if (phase_ == RunPhase::Armed && ownStartActive()) {
-        if (now < armTime_) armTime_ = now;  // time base restarted (new level): re-anchor the grace period
         const float spd = speed(s.car);
+        if (!armAnchored_) {
+            // First tick since arming. An arm time from before the ticks resumed (map entry: the engine has no
+            // snapshot yet, module re-enabled) or from another time base (new level) is anchored here, so a
+            // run never starts in the past. A car already moving at that point started unseen: no record.
+            if (now < armTime_ || now - armTime_ > opt_.armAnchorGap) {
+                armTime_ = now;
+                if (spd >= opt_.startSpeed) armClean_ = false;
+            }
+            armAnchored_ = true;
+        }
         if (spd < opt_.startSpeed) sawRest_ = true;
         else if (sawRest_) beginRun(now, RunSource::Own, armClean_);
         else if (now - armTime_ >= opt_.armGrace) beginRun(armTime_, RunSource::Own, armClean_);
@@ -179,6 +199,7 @@ void RunTracker::onKismet(const std::vector<KismetVar>& vars, float now) {
     if (kismetInt(vars, p.deathsInt, deaths)) {
         mapDeaths_ = deaths;
         if (!hasDeaths_) deathsAtStart_ = deaths;
+        if (running() && mapDeaths_ < deathsAtStart_) deathsAtStart_ = mapDeaths_;  // counter reset by the map
         hasDeaths_ = true;
     }
     if (hasLvl) {
@@ -211,9 +232,15 @@ void RunTracker::onKismet(const std::vector<KismetVar>& vars, float now) {
             if (hasPrevTimer_ && parsed) {
                 if (secs < kTimerZero) {
                     beginRun(now, RunSource::Kismet, true);
+                    timerAnchorPending_ = true;
                 } else if (running() && source_ == RunSource::Kismet && prevTimerSeconds_ >= 0.f &&
                            secs + 1.f < prevTimerSeconds_) {
                     endRun(now, false);  // the map's timer went backwards without passing zero: reset
+                } else if (timerAnchorPending_ && running() && source_ == RunSource::Kismet) {
+                    // First change after the zero: the map may hold 0:00 until the player crosses its start
+                    // line, so the run really started `secs` ago (never earlier than the zero itself).
+                    timerAnchorPending_ = false;
+                    if (splits_.empty()) start_ = std::max(start_, now - secs);
                 }
             }
             prevTimerSeconds_ = parsed ? secs : -1.f;
@@ -240,7 +267,7 @@ void RunTracker::onKismet(const std::vector<KismetVar>& vars, float now) {
 
     // (3) Start signal dropped.
     if (hasStart && hasPrevStart_ && !start && prevStart_ && running() && source_ == RunSource::Kismet) {
-        const bool atEnd = p.finalLevel > 0 && hasLevel_ && level_ >= p.finalLevel;
+        const bool atEnd = p.finishOnFall || (p.finalLevel > 0 && hasLevel_ && level_ >= p.finalLevel);
         endRun(now, atEnd);
     }
 
@@ -265,7 +292,9 @@ void RunTracker::onReset(float now) {
     hasLastPos_ = false;  // the reset teleports the car: not a respawn
     if (running()) {
         if (source_ == RunSource::Own) {
-            endRun(now, opt_.resetFinishes);
+            // "Goal or reset" mode: the reset ends the attempt (counted as finished) but the time cannot be a
+            // record, otherwise the shortest attempt the player gave up on would become it.
+            endRun(now, opt_.resetFinishes, false, opt_.resetFinishes);
             arm(now, true);
         } else {
             ++resets_;  // Kismet-timed: the map respawns the player at its checkpoint, the run goes on
@@ -293,6 +322,7 @@ void RunTracker::onUnload(float now) {
     hasPrevStart_ = hasPrevLevel_ = hasPrevCounter_ = hasPrevTimer_ = false;
     prevTimer_.clear();
     prevTimerSeconds_ = -1.f;
+    timerAnchorPending_ = false;
     hasLevel_ = false;
     hasMapTimer_ = false;
     mapTimer_.clear();
@@ -304,7 +334,7 @@ bool RunTracker::liveDelta(float now, float& delta) const {
     if (!running()) return false;
     const float e = elapsed(now);
     const size_t next = splits_.size();
-    if (next < pbSplits_.size()) {
+    if (!partialSplits_ && next < pbSplits_.size()) {
         if (e > pbSplits_[next]) {
             delta = e - pbSplits_[next];
             return true;

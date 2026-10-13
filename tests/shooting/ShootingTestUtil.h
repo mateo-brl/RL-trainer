@@ -2,6 +2,7 @@
 // Test helpers of the shooting module: fake activity host, a harness that drives the module like the engine
 // does, a tiny world that applies placements, and a scripted flick generator (snapshots + touch events).
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -236,6 +237,10 @@ struct World {
 };
 
 // Scripted flick: carry on the roof, jump, air phase (rotation), dodge, touch, flight.
+// Timing follows the game (snapshots built in the SetVehicleInput pre-hook: `in` is the new input of the tick,
+// the car flags are the state before its physics step): the first jump is pressed at J-1 and the car is
+// airborne from J; the dodge is pressed at D (in.jump rises, hasFlip still true) and IsDodging / the engine
+// dodge direction / hasFlip=false only show from D+1.
 struct FlickScript {
     Vec3 start{0.f, -2000.f, 17.f};
     float yawDeg = 90.f; // heading at the jump (90 = +Y, blue attacking)
@@ -247,8 +252,12 @@ struct FlickScript {
     float pitchDeg = 0.f; // reached at the dodge
     float rollDeg = 0.f; // reached at the dodge
     bool airRollInput = false;
-    Vec3 dodgeDir{1.f, 0.f, 0.f}; // car-local (x fwd, y right)
-    bool engineDodgeDir = true; // false: the engine gives no direction (stick fallback)
+    Vec3 dodgeDir{1.f, 0.f, 0.f}; // car-local (x fwd, y right), also the stick at the press
+    bool engineDodgeDir = true; // false: IsDodging rises but the engine gives no direction (stick fallback)
+    bool engineReportsDodge = true; // false: IsDodging never rises (engine never confirms the dodge)
+    Vec3 engineDirOverride; // non-zero: direction reported by the engine instead of dodgeDir
+    bool doubleJump = false; // the game turns the press into a double jump (bDoubleJumped rises at D+1)
+    bool sameTickFlags = false; // legacy glue timing: IsDodging already true at the press tick D
     Vec3 launch{1800.f, 0.f, 600.f}; // ball velocity added by the flick, heading frame (x heading, y right, z up)
     bool contact = true;
     bool deliverTouch = true;
@@ -301,11 +310,15 @@ inline ScriptRun buildFlick(const FlickScript& f) {
         c.onGround = !air;
         c.wheelContacts = air ? 0 : 4;
         c.jumped = air;
-        c.hasFlip = i < D;
-        c.dodging = i >= D;
-        if (i >= D && f.engineDodgeDir) c.dodgeDir = f.dodgeDir;
+        const int flagsFrom = f.sameTickFlags ? D : D + 1; // the engine flags lag the press by one tick
+        c.hasFlip = i < flagsFrom;
+        c.dodging = !f.doubleJump && f.engineReportsDodge && i >= flagsFrom;
+        c.doubleJumped = f.doubleJump && i >= flagsFrom;
+        if (c.dodging && f.engineDodgeDir)
+            c.dodgeDir = length(f.engineDirOverride) > 0.1f ? f.engineDirOverride : f.dodgeDir;
         Inputs& in = s.in;
-        in.jump = (i >= J && i < J + 3) || (i >= D && i < D + 3);
+        const int firstEnd = std::min(J + 2, D - 1); // release the button before the second press
+        in.jump = (i >= J - 1 && i < firstEnd) || (i >= D && i < D + 3);
         if (air && i < D && f.airRollInput) in.roll = 1.f;
         if (i >= D && i < D + 3) {
             in.pitch = -f.dodgeDir.x;

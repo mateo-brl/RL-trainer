@@ -100,8 +100,10 @@ void appendResult(DrawPanel& p, const KickoffResultView& r, const DrawContext& c
         for (const auto& l : wrap(kickoffTipText(t.tip), 58)) addLine(p, l, kTip, accents, 0.9f);
         ++shown;
     }
-    if (m.boostLooksUnlimited)
-        addLine(p, "Boost illimité détecté : coupe-le pour un kickoff réaliste.", colors::Orange, accents, 0.85f);
+    if (m.boostLooksUnlimited) {
+        addLine(p, "Boost illimité détecté : record non compté.", colors::Orange, accents, 0.85f);
+        addLine(p, "Coupe-le pour un kickoff réaliste.", colors::Orange, accents, 0.85f);
+    }
 }
 
 } // namespace
@@ -168,6 +170,7 @@ void KickoffModule::drawWorld(const ViewContext& view, const DrawContext& ctx, D
 
 void KickoffModule::drawDrillHud(const ViewContext& view, const DrawContext& ctx, DrawList& out) const {
     const bool acc = ctx.settings.general.hudAccents;
+    const KeyStyle style = keyStyleFromIndex(ctx.settings.profile.buttonStyle);  // Xbox or PlayStation names
     const float s = ctx.hudScale;
     const int64_t frame = ctx.hasSnapshot ? std::max<int64_t>(ctx.snap.frame, lastTickFrame_) : lastTickFrame_;
     const KickoffSpawnInfo& info = kickoffSpawnInfo(spawn_);
@@ -199,8 +202,8 @@ void KickoffModule::drawDrillHud(const ViewContext& view, const DrawContext& ctx
         const int n = std::clamp(static_cast<int>((left + 119) / 120), 1, countdownSecs);
         addLine(p, "Décompte : " + std::to_string(n), colors::White, acc, 1.2f);
         addLine(p,
-                "Pré-appuie " + actionPrompt(ctx.profile, GameAction::Boost) + " + " +
-                    actionPrompt(ctx.profile, GameAction::Throttle),
+                "Pré-appuie " + actionPrompt(ctx.profile, GameAction::Boost, style) + " + " +
+                    actionPrompt(ctx.profile, GameAction::Throttle, style),
                 kTip, acc, 0.9f);
         if (cfg_.bigCountdown)
             out.text({view.screenW * 0.5f, view.screenH * cfg_.countdownY}, std::to_string(n), colors::White, 6.f * s,
@@ -225,8 +228,8 @@ void KickoffModule::drawDrillHud(const ViewContext& view, const DrawContext& ctx
     if (phase_ == KickoffPhase::Done && last_.valid && !last_.passive) {
         appendResult(p, last_, ctx, acc, 2);
         if (waitingForNext_) {
-            addLine(p, "Appuie sur " + actionPrompt(ctx.profile, GameAction::ResetShot) + " pour relancer.", kGrey, acc,
-                    0.9f);
+            const std::string reset = actionPrompt(ctx.profile, GameAction::ResetShot, style);
+            addLine(p, "Appuie sur " + reset + " pour relancer.", kGrey, acc, 0.9f);
         } else {
             const float wait = cfg_.resetDelay - static_cast<float>(frame - doneFrame_) * kTickDt;
             if (wait > 0.f) addLine(p, "Essai suivant dans " + formatNumber(wait, 1) + " s", kGrey, acc, 0.9f);

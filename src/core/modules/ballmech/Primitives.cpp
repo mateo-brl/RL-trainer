@@ -100,23 +100,41 @@ GoalProjection projectToGoal(const Vec3& p, const Vec3& v, int team, float r, bo
     Vec3 pos = p, vel = v;
     g.points[0] = pos;
     g.pointCount = 1;
+    // A ball on the floor without a real vertical speed rolls: no bounce, no impact friction, only the rolling drag
+    // (spin is not tracked, so applying the impact friction on every micro bounce would stop it far too early).
+    bool rolling = pos.z <= r + 2.f && std::fabs(vel.z) < kBallRollVz;
     for (int i = 1; i <= steps; ++i) {
-        vel.z += kGravityZ * dt;
-        vel *= (1.f - kBallDrag * dt);
-        pos += vel * dt;
-        if (pos.z < r) {
+        if (rolling) {
+            const float k = 1.f - kBallRollDrag * dt;
+            vel.x *= k;
+            vel.y *= k;
+            vel.z = 0.f;
+            pos += vel * dt;
+            pos.z = r;
+        } else {
+            vel.z += kGravityZ * dt;
+            vel *= (1.f - kBallDrag * dt);
+            pos += vel * dt;
+        }
+        if (!rolling && pos.z < r) {
             pos.z = r;
             if (vel.z < 0.f) {
-                // Friction impulse bounded by mu (1 + e) |vn| (mu 0.35) and by the slide-to-roll change (2/7 of vt).
                 const float vn = -vel.z;
-                const float vt = length2D(vel);
-                if (vt > 1.f) {
-                    const float loss = std::min(0.35f * (1.f + kBallRestitution) * vn, vt * (2.f / 7.f));
-                    const float k = (vt - loss) / vt;
-                    vel.x *= k;
-                    vel.y *= k;
+                if (vn <= kBallRollVz) {
+                    vel.z = 0.f;  // too slow to bounce: the ball starts rolling
+                    rolling = true;
+                } else {
+                    // Real impact. Friction impulse bounded by mu (1 + e) |vn| (mu 0.35) and by the slide-to-roll
+                    // change (2/7 of vt).
+                    const float vt = length2D(vel);
+                    if (vt > 1.f) {
+                        const float loss = std::min(0.35f * (1.f + kBallRestitution) * vn, vt * (2.f / 7.f));
+                        const float k = (vt - loss) / vt;
+                        vel.x *= k;
+                        vel.y *= k;
+                    }
+                    vel.z = vn * kBallRestitution;
                 }
-                vel.z = vn * kBallRestitution;
             }
         }
         if (pos.z > kCeilingZ - r) {

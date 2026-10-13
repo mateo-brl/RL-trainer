@@ -20,6 +20,7 @@ void FlipResetDetector::reset() {
     lastDodgeT_ = -1e9f;
     prevActive_ = false;
     nearMissArmed_ = false;
+    nmWheels_ = 0;
     acquiredSource_ = 0;
     clearAttempt();
 }
@@ -95,8 +96,11 @@ std::optional<MechGrade> FlipResetDetector::update(const Frame& prev, const Fram
             tNearMiss_ = cur.t;
             nmAlign_ = under;
             nmRel_ = std::max(length(c.vel - b.vel), length(prev.s.car.vel - prev.s.ball.vel));
+            nmWheels_ = 0;
         }
     }
+    // Wheels on the ball during the near-miss window (read at the contact, not when the grade is emitted).
+    if (nearMissArmed_ && airWorld) nmWheels_ = std::max(nmWheels_, std::max(cur.ballWheels, c.wheelContacts));
 
     if (state_ == State::Idle && nearMissArmed_ && cur.t - tNearMiss_ > 0.10f) {
         nearMissArmed_ = false;
@@ -109,7 +113,7 @@ std::optional<MechGrade> FlipResetDetector::update(const Frame& prev, const Fram
         const float alignDeg = std::acos(clampf(nmAlign_, -1.f, 1.f)) * kRadToDeg;
         g.metrics = {makeMetric("alignment_deg", "Angle roues / balle", alignDeg, "°", 15.f),
                      makeMetric("rel_speed", "Vitesse d'approche", nmRel_, "uu/s", 400.f),
-                     makeMetric("wheels_on_ball", "Roues sur la balle", static_cast<float>(c.wheelContacts), "", 4.f)};
+                     makeMetric("wheels_on_ball", "Roues sur la balle", static_cast<float>(nmWheels_), "", 4.f)};
         g.errors.push_back("FR_NO_RESET");
         if (nmAlign_ < 0.8f) g.errors.push_back("FR_POOR_ALIGNMENT");
         if (nmRel_ > 900.f) g.errors.push_back("FR_TOO_FAST_CONTACT");

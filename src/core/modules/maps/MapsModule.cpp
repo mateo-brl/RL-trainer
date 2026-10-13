@@ -169,11 +169,9 @@ MapCategory MapsModule::resolvedCategory(std::string* source) const {
     return MapCategory::Other;
 }
 
-int MapsModule::resolvedFinalLevel() const {
-    if (run_.finalLevel() > 0) return run_.finalLevel();
-    if (catalog_ && catalog_->levels > 0 && profileSource_ != ProfileSource::None) return catalog_->levels;
-    return 0;
-}
+// Only the last level the run timer really uses (the catalogue's count is folded into the profile by
+// withCatalogFinal): showing "k/N" while no run can ever finish at N would be a lie.
+int MapsModule::resolvedFinalLevel() const { return run_.finalLevel(); }
 
 void MapsModule::refreshIdentity(const GameContext& game) {
     ctxTitle_ = bounded(game.mapTitle, 256);
@@ -313,13 +311,26 @@ void MapsModule::applyProfile(const KismetProfile* p, ProfileSource src) {
                       (!p || (p->key == run_.profile().key && p->startBool == run_.profile().startBool &&
                               p->levelInt == run_.profile().levelInt && p->counterInt == run_.profile().counterInt &&
                               p->timerString == run_.profile().timerString &&
-                              p->finalLevel == run_.profile().finalLevel));
+                              p->finalLevel == run_.profile().finalLevel &&
+                              p->finishOnWrap == run_.profile().finishOnWrap &&
+                              p->finishOnGoal == run_.profile().finishOnGoal &&
+                              p->finishOnFall == run_.profile().finishOnFall));
     if (same) return;
     run_.setProfile(p);
     profileSource_ = p ? src : ProfileSource::None;
     // Profile changed on the map: an own-timed run armed now is only record-eligible while the player has
     // not moved yet (otherwise it would start somewhere in the middle of the course).
     if (!run_.running()) run_.arm(now_, !movedSinceEnter_);
+}
+
+KismetProfile MapsModule::withCatalogFinal(const KismetProfile& p) const {
+    KismetProfile c = p;
+    if (!c.levelInt.empty() && c.finalLevel <= 0 && catalog_ && catalog_->levels > 0) {
+        c.finalLevel = catalog_->levels;
+        c.finishOnWrap = true;  // back to level 1 after the last level
+        c.finishOnGoal = true;  // goal on the last level
+    }
+    return c;
 }
 
 void MapsModule::resolveProfile(const std::vector<KismetVar>* vars) {
@@ -329,6 +340,14 @@ void MapsModule::resolveProfile(const std::vector<KismetVar>* vars) {
         profileVerified_ = true;
         return;
     }
+    auto apply = [&](const KismetProfile* p, ProfileSource src) {
+        if (!p) {
+            applyProfile(nullptr, ProfileSource::None);
+            return;
+        }
+        const KismetProfile c = withCatalogFinal(*p);
+        applyProfile(&c, src);
+    };
     const MapStats* st = book_.find(key_);
     if (st && st->hasPins()) {
         KismetProfile pin;
@@ -338,17 +357,21 @@ void MapsModule::resolveProfile(const std::vector<KismetVar>* vars) {
         pin.startBool = st->pinStart;
         pin.levelInt = st->pinLevel;
         pin.timerString = st->pinTimer;
-        pin.finalLevel = st->pinFinal;
-        pin.finishOnWrap = st->pinFinal > 0;
-        pin.finishOnGoal = st->pinFinal > 0;
-        applyProfile(&pin, ProfileSource::Pins);
+        const bool noLevel = st->pinLevel.empty();
+        // A final level means nothing without a level variable: then the start variable going back to false
+        // (or a goal) is the only possible end of the run.
+        pin.finalLevel = noLevel ? 0 : st->pinFinal;
+        pin.finishOnWrap = pin.finalLevel > 0;
+        pin.finishOnGoal = pin.finalLevel > 0 || noLevel;
+        pin.finishOnFall = noLevel;
+        apply(&pin, ProfileSource::Pins);
         profileVerified_ = true;
         return;
     }
     const KismetProfile* byId = kismetProfileById(workshopId_);
     if (!byId && catalog_ && !catalog_->profile.empty()) byId = findKismetProfile(catalog_->profile);
     if (!vars) {
-        applyProfile(byId, byId ? ProfileSource::WorkshopId : ProfileSource::None);
+        apply(byId, ProfileSource::WorkshopId);
         profileVerified_ = false;
         return;
     }
@@ -357,12 +380,12 @@ void MapsModule::resolveProfile(const std::vector<KismetVar>* vars) {
         KismetProfile timingOnly = *byId;
         timingOnly.extraSignature.clear();
         if (kismetSignatureMatches(timingOnly, *vars)) {
-            applyProfile(byId, ProfileSource::WorkshopId);
+            apply(byId, ProfileSource::WorkshopId);
             return;
         }
     }
     if (const KismetProfile* sig = kismetProfileBySignature(*vars)) {
-        applyProfile(sig, ProfileSource::Signature);
+        apply(sig, ProfileSource::Signature);
         return;
     }
     if (cfg_.autoLevel) {
@@ -371,9 +394,7 @@ void MapsModule::resolveProfile(const std::vector<KismetVar>* vars) {
             p.key = "auto";
             p.label = "Compteur " + c->name;
             p.levelInt = c->name;
-            p.finalLevel = catalog_ ? catalog_->levels : 0;
-            p.finishOnWrap = p.finalLevel > 0;
-            applyProfile(&p, ProfileSource::Auto);
+            apply(&p, ProfileSource::Auto);
             return;
         }
     }
@@ -490,7 +511,7 @@ void MapsModule::onRunFinished(float now, Actions& out) {
     const bool hadPb = st->hasBest;
     const float prevPb = st->best;
     const std::vector<float> prevSplits = st->bestSplits;
-    const bool isPb = r.recordEligible && (!hadPb || r.time < prevPb - 1e-3f);
+    const bool isPb = r.recordEligible && !r.endedByReset && (!hadPb || r.time < prevPb - 1e-3f);
     MapStatsBook::addRun(*st, r.time);
     if (r.hasLevel) st->maxLevel = std::max(st->maxLevel, r.level);
 
@@ -504,8 +525,10 @@ void MapsModule::onRunFinished(float now, Actions& out) {
         st->hasBest = true;
         st->best = r.time;
         st->bestSplits.clear();
+        // Splits of a run whose profile changed midway are shifted (the first checkpoints were missed):
+        // a record without splits is better than deltas against the wrong segments.
         for (const auto& s : r.splits) {
-            if (st->bestSplits.size() >= MapStatsBook::kMaxSplits) break;
+            if (r.partialSplits || st->bestSplits.size() >= MapStatsBook::kMaxSplits) break;
             st->bestSplits.push_back(s.time);
         }
         syncPersonalBest();
@@ -536,15 +559,18 @@ AttemptResult makeMapRunResult(const std::string& key, const std::string& title,
     r.time = gameTime;
     r.valueForRecord = run.time;
     r.lowerIsBetter = true;
-    r.hasRecordValue = run.finished && run.recordEligible;
+    // A run ended by a reset ("goal or reset" mode) counts as an attempt, never as a record: the shortest
+    // attempt the player gave up on would otherwise become one.
+    const bool recordable = run.finished && run.recordEligible && !run.endedByReset;
+    r.hasRecordValue = recordable;
 
-    const bool isPb = run.finished && run.recordEligible && (!hadPb || run.time < prevPb - 1e-3f);
+    const bool isPb = recordable && (!hadPb || run.time < prevPb - 1e-3f);
     float score = 0.f;
     if (!run.finished) score = 0.f;
     else if (isPb) score = hadPb ? 100.f : 80.f;
     else if (hadPb && prevPb > 0.f) score = clampf(100.f - (run.time / prevPb - 1.f) * 250.f, 0.f, 99.f);
     else score = 70.f;
-    if (!run.recordEligible) score = std::min(score, 60.f);
+    if (!run.recordEligible || run.endedByReset) score = std::min(score, 60.f);
     r.score = score;
     r.verdict = verdictFromScore(score);
 
@@ -567,7 +593,7 @@ AttemptResult makeMapRunResult(const std::string& key, const std::string& title,
 
     // Tips: biggest time loss on one segment vs the record, deaths / resets, then a category reminder.
     char buf[200];
-    if (hadPb && !run.splits.empty() && !prevPbSplits.empty()) {
+    if (hadPb && !run.partialSplits && !run.splits.empty() && !prevPbSplits.empty()) {
         float worst = 0.f;
         int worstIdx = 0;
         const size_t n = std::min(run.splits.size(), prevPbSplits.size());
@@ -630,8 +656,18 @@ AttemptResult makeMapRunResult(const std::string& key, const std::string& title,
             break;
         }
     }
-    if (run.finished && !run.recordEligible)
-        r.tips.push_back({"maps.not_eligible", "Run hors record : un niveau a été sauté ou rejoué.", 0.1f});
+    if (run.finished && run.endedByReset) {
+        r.tips.push_back({"maps.reset_end",
+                          "Run terminé par un reset : il compte dans tes stats, pas pour le record. Finis sur un but "
+                          "pour viser le record.",
+                          0.1f});
+    } else if (run.finished && !run.recordEligible) {
+        r.tips.push_back({"maps.not_eligible",
+                          run.cleanStart ? "Run hors record : un niveau a été sauté ou rejoué."
+                                         : "Run hors record : le chrono n'a pas vu ton départ. Fais un reset pour un "
+                                           "run complet.",
+                          0.1f});
+    }
     std::stable_sort(r.tips.begin(), r.tips.end(), [](const Tip& a, const Tip& b) { return a.weight > b.weight; });
     if (r.tips.size() > 3) r.tips.resize(3);
     return r;
@@ -906,7 +942,9 @@ DrawPanel MapsModule::buildHud(const ViewContext& view, const DrawContext& ctx, 
     const RunSummary& last = run_.last();
     if (!run_.running() && last.valid && last.time >= kMinRunSeconds && now - last.endedAt <= kLastRunShown &&
         now >= last.endedAt) {
-        if (last.finished) {
+        if (last.finished && last.endedByReset) {
+            line("Run fini sur reset : " + formatTime(last.time, false), grey);
+        } else if (last.finished) {
             std::string s = "Dernier run : " + formatTime(last.time, false);
             Color c = white;
             if (lastWasPb_) {

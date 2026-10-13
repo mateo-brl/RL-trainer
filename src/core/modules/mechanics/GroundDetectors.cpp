@@ -77,6 +77,7 @@ bool WavedashDetector::onDodge(const DodgeRecord& r, const Ctx& c, std::vector<M
     g.add("speedBefore", length(vb));
     g.add("speedAfter", length(va));
     g.add("apexHeight", r.maxHeight);
+    if (r.phaseHadJump) g.add("hopHeight", r.maxHeight);
     g.add("jumpToDodgeTicks", static_cast<float>(r.ticksSinceJumpPress));
     g.add("firstJumpHoldTicks", static_cast<float>(r.firstJumpHoldTicks));
     g.add("handbrakeAtLanding", r.handbrakeAtLanding ? 1.f : 0.f);
@@ -146,6 +147,9 @@ void WavedashDetector::onTick(const Ctx& c, std::vector<MechGrade>& out) {
             g.tickStart = mt.takeoffTick;
             g.tickEnd = c.s.frame;
             g.add("ticksAfterLanding", static_cast<float>(since));
+            g.add("stickAtPress", stickMag(c.s.in));
+            g.add("deadzone", c.cfg.dodgeDeadzone);
+            g.add("hopHeight", mt.lastAirPhaseMaxHeight);
             g.err("WD_LATE_JUMPED", 90.f);
             finalizeGrade(g, 10.f);
             out.push_back(std::move(g));
@@ -163,6 +167,7 @@ void WavedashDetector::onTick(const Ctx& c, std::vector<MechGrade>& out) {
             g.tickEnd = c.s.frame;
             g.add("stickAtPress", stickMag(c.s.in));
             g.add("deadzone", c.cfg.dodgeDeadzone);
+            g.add("hopHeight", mt.phaseMaxHeight);
             g.err("WD_NO_STICK", 90.f);
             finalizeGrade(g, 10.f);
             out.push_back(std::move(g));

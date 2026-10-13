@@ -176,6 +176,10 @@ void StallDetector::onTick(const Ctx& c, std::vector<MechGrade>& out) {
     g.mech = Mech::Stall;
     g.variant = "no-flip";
     g.tickStart = g.tickEnd = c.s.frame;
+    g.add("yawPlusRoll", in.yaw + in.roll);
+    g.add("pitchAbs", std::fabs(in.pitch));
+    if (c.mt.phaseJumpTick >= 0) g.add("sinceJumpTicks", static_cast<float>(c.s.frame - c.mt.phaseJumpTick));
+    else if (c.mt.takeoffTick >= 0) g.add("sinceJumpTicks", static_cast<float>(c.s.frame - c.mt.takeoffTick));
     g.err("ST_NO_FLIP", 100.f);
     finalizeGrade(g, 0.f);
     out.push_back(std::move(g));

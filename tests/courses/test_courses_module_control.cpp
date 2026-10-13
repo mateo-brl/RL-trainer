@@ -211,7 +211,8 @@ TEST(courses_slalom_course_with_ball) {
     CHECK(h.mod.kind() == CoursesKind::Slalom);
     CHECK(!h.mod.course().rings.empty());
     h.runCountdown();
-    h.followPath(h.ringPath(h.snap.ball.pos), 900.f, true);
+    CHECK(courses::ballOnRoof(h.snap.ball, h.snap.car));  // released with the ball on the roof
+    h.followPathCarry(h.ringPath(h.snap.ball.pos), 900.f, Harness::Carry::BallOnRoof);
     const AttemptResult* r = lastResult(h);
     CHECK(r && r->success);
     CHECK(r && r->skill == "course.control.slalom");

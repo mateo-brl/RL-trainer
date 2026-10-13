@@ -38,9 +38,9 @@ struct ShootingStatus {
     ShootMode mode = ShootMode::None;
     ShootPhase phase = ShootPhase::Idle;
     int requestedFlick = -1; // FlickType index, -1 = any
-    int zoneSelection = shoot::kZoneRandom; // 0..4 or kZoneRandom
+    int zoneSelection = shoot::kZoneRandom; // 0..4 or kZoneRandom (Cibles drill and "Zone choisie dans Cibles")
     int currentZone = 4;
-    int setupSelection = 0; // TargetSetup (0 = mix)
+    int setupSelection = 0; // TargetSetup (0 = mix) of the Cibles drill
     int currentSetup = 1;
     bool flickZoneActive = false; // flick drill aims at a zone (else the whole goal)
     int flickZone = 4;
@@ -128,6 +128,7 @@ private:
     DrawPanel buildPanel(const ViewContext& view, const DrawContext& ctx) const;
 
     ShootingConfig cfg_;
+    bool settingsSeen_ = false; // first onSettingsChanged applies the zone / setup selections
     shoot::FlickThresholds thresholds_;
     Rng rng_;
     uint64_t seedCounter_ = 0;

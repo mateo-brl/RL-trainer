@@ -27,6 +27,7 @@ constexpr int kMaxKismetAttempts = 10;
 constexpr auto kKismetFirstDelay = std::chrono::milliseconds(1000);  // variables are not all set at InitGame
 constexpr auto kKismetRetryDelay = std::chrono::milliseconds(2000);
 constexpr auto kLaunchBindWindow = std::chrono::seconds(120);
+constexpr auto kCvarSyncPeriod = std::chrono::seconds(2);
 
 InstalledMap toInstalled(const ScannedMap& s) {
     InstalledMap m;
@@ -84,6 +85,7 @@ void MapsService::init() {
 
 // ---- Stock maps ----------------------------------------------------------------------------------------
 bool MapsService::isStockMap(const std::string& mapName) {
+    syncScanOptionsFromCvars();
     if (mapName.empty()) return true;
     if (stockMaps_.empty()) {
         MapListWrapper list = gw_->GetMapListWrapper();
@@ -148,6 +150,33 @@ void MapsService::setCategoryOverrides(const std::map<std::string, MapCategory>&
 }
 
 // ---- Installed maps ------------------------------------------------------------------------------------
+// init() runs before the cvars exist (first scan with the default folders). The context refresh calls
+// isStockMap every 0.25 s on the game thread: from there, rescan with the player's scan settings as soon as
+// they are registered and whenever they change, so maps in extra folders are known without opening the tab.
+// Same values as the engine's settings (the glue applies the cvar strings as they are): no flip-flop with
+// the tab's ensureScanned.
+void MapsService::syncScanOptionsFromCvars() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now < nextCvarSync_ || !cvars_) return;
+    nextCvarSync_ = now + kCvarSyncPeriod;
+    try {
+        CVarWrapper extra = cvars_->getCvar("rlt_map_extra_folders");
+        if (extra.IsNull()) return;  // settings not registered yet
+        auto flag = [&](const char* name) {
+            CVarWrapper c = cvars_->getCvar(name);
+            return c.IsNull() ? true : c.getBoolValue();
+        };
+        MapScanOptions o;
+        o.extraFolders = extra.getStringValue();
+        o.steam = flag("rlt_map_scan_steam");
+        o.mods = flag("rlt_map_scan_mods");
+        o.wml = flag("rlt_map_scan_wml");
+        ensureScanned(o);
+    } catch (...) {
+        // Never let a settings read break the context refresh.
+    }
+}
+
 std::vector<InstalledMap> MapsService::installedMaps() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return maps_;

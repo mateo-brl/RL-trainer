@@ -41,8 +41,10 @@ struct KickoffMetrics {
     float boostUsed = 0.f;     // boost spent from GO to the touch
     float boostPicked = 0.f;
     int padsPicked = 0;
+    int64_t lastPadFrame = -1;         // frame of the last pad pickup of the approach, -1 = none
+    bool padsMaybeOnCooldown = false;  // a pad was picked < 4 s before GO: the pads on the path may still respawn
     bool boostLooksUnlimited = false;  // boost held for a while without the tank going down
-    float lateralOffset = 0.f;         // ball centre in the car frame, + = right (uu)
+    float lateralOffset = 0.f;         // ball centre right of the car heading, horizontal plane, + = right (uu)
     float contactHeight = 0.f;         // ball centre above the car origin (car frame)
     bool flipIntoBall = false;         // a dodge started <= 0.35 s before the touch
     // Timings in s from GO; negative = did not happen.
@@ -70,6 +72,9 @@ struct KickoffRecorderParams {
     float cancelPitch = 0.5f;    // stick back threshold
     float cancelWindow = 0.25f;  // s after the dodge
     int maxSamples = 1200;       // 10 s of along samples
+    // Frame until which the pads on the path may be unavailable (small pads respawn 4 s after a pickup).
+    // A GO before that frame sets KickoffMetrics::padsMaybeOnCooldown. -1 = no recent pickup.
+    int64_t padsBusyUntilFrame = -1;
 };
 
 class KickoffRecorder {

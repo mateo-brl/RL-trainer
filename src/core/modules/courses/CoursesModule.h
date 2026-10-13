@@ -124,6 +124,10 @@ public:
     static bool kindIsRings(CoursesKind k);
     static constexpr int kMaxPbs = 20;
     static constexpr int kMaxSplits = 64;
+    // A finished course is a success only when at most a quarter of its rings were given up (penalty mode).
+    static int maxMissesAllowed(int ringCount) { return ringCount > 0 ? ringCount / 4 : 0; }
+    // A run with given-up rings can only set a record when each miss costs at least this many seconds.
+    static constexpr float kMinPenaltyForRecord = 1.f;
 
     // ---- Introspection for tests ----------------------------------------------------------------------------
     CoursesPhase phase() const { return phase_; }
@@ -146,7 +150,9 @@ private:
     };
 
     // Lifecycle
+    bool acquireActivity(CoursesKind kind, const TickContext& ctx, Actions& out);
     void startExercise(CoursesKind kind, const std::string& code, const TickContext& ctx, Actions& out);
+    void replayLast(const TickContext& ctx, Actions& out);
     bool buildCourse(CoursesKind kind, uint64_t seed, int pct, bool fromCode);
     void prepareControl(const TickContext& ctx);
     void restartAttempt();
@@ -159,7 +165,8 @@ private:
     void applyStartPose(const TickContext& ctx, Actions& out, bool release);
     void countdownTick(const TickContext& ctx, Actions& out);
     void runningTick(const TickContext& ctx, Actions& out);
-    void ringsTick(const TickContext& ctx, Actions& out, double t);
+    void ringsTick(const TickContext& ctx, Actions& out, double t, float dt);
+    void trackRoof(const Snapshot& s, double t, float dt);
     void dribbleTick(const TickContext& ctx, Actions& out, double t, float dt);
     void catchTick(const TickContext& ctx, Actions& out, double t, float dt);
     void resultTick(const TickContext& ctx, Actions& out);
@@ -188,6 +195,7 @@ private:
     void drawHud(const ViewContext& view, const DrawContext& ctx, DrawList& out) const;
 
     void flash(const std::string& text, Color c, float seconds = 1.2f);
+    bool gateCourse() const { return kind_ == CoursesKind::Slalom; }  // gates ("porte") instead of rings
     courses::MissPolicy missPolicy() const;
     Vec3 parkedBallPos() const { return parkPos_; }
 
@@ -219,7 +227,12 @@ private:
     float catchOnRoof_ = 0.f;
     int touches_ = 0;
     bool haveFirstTouch_ = false;
-    float firstTouchRel_ = 0.f;
+    // First catch contact: only the part of the closing speed the player controls is graded. The fall speed of
+    // the ball is unavoidable for a car waiting on the ground; the horizontal mismatch and a car jumping up into
+    // the ball are not.
+    float firstTouchFlat_ = 0.f;    // |horizontal (ball - car) velocity| before the contact
+    float firstTouchJump_ = 0.f;    // upward car speed into the ball before the contact
+    float firstTouchOffset_ = 0.f;  // horizontal distance from the roof centre to the ball at the contact
 
     // Running samples
     int64_t startFrame_ = 0;
@@ -230,7 +243,8 @@ private:
     float runTime_ = 0.f;
     float lastBoost_ = -1.f;
     float boostUsed_ = 0.f;
-    bool boostEmptied_ = false;
+    bool hadBoost_ = false;       // the tank held real boost (> 5) at some point of the run
+    bool boostEmptied_ = false;   // ...and was then emptied
     double speedSum_ = 0.0;
     int speedSamples_ = 0;
     int teleports_ = 0;

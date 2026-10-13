@@ -79,8 +79,9 @@ struct SettingCheck {
     std::string valueText;    // "270", "0.50", "Activée"
 };
 
-// Common pro ranges: FOV 108..110, distance 260..290, height 90..110, angle -5..-3, stiffness 0.35..0.6,
-// swivel 3..6, transition 1..1.3, ball cam on. `margin` widens every range by that fraction of its width.
+// Common pro ranges: FOV 110, distance 260..290, height 90..110, angle -5..-3, stiffness 0.35..0.6,
+// swivel 3..6, transition 1..1.3, ball cam on. `margin` widens every range by that fraction of its width
+// (a single-value range such as FOV 110 counts as 5 % of its value wide).
 std::vector<SettingCheck> analyzeCamera(const CameraProfile& cam, float margin = 0.f);
 
 // Dodge deadzone 0.5..0.7, controller deadzone 0.05..0.12 (gamepad only; Info lines on keyboard), plus the
@@ -106,6 +107,13 @@ struct AuditItem {
     std::string title;        // "Air roll directionnel"
     std::string text;         // French explanation / suggestion
 };
+// True when the device in use (gamepad or keyboard/mouse) has a key for Jump, Boost or Throttle. False when no
+// binding is known, or when the lists only hold keys of the other device (older BakkesMod reads no keyboard
+// binding, some setups report an empty gamepad list): the bindings of the device in use cannot be judged then.
+bool deviceBindingsReadable(const PlayerProfile& p);
+
+// Single Info item "pf.bindings_unknown" (nothing read) or "pf.device_bindings_unknown" (keys of the device in
+// use not readable) instead of false advice.
 std::vector<AuditItem> auditBindings(const PlayerProfile& p, KeyStyle style);
 
 struct MechanicReadiness {
@@ -113,6 +121,7 @@ struct MechanicReadiness {
     bool ready = false;
     std::string why;          // "Air roll gauche sur LB." / "Assigne un air roll directionnel."
 };
+// Empty when the keys of the device in use are not readable (deviceBindingsReadable false).
 std::vector<MechanicReadiness> mechanicsReadiness(const PlayerProfile& p, KeyStyle style);
 
 // "Manette" / "Clavier et souris".

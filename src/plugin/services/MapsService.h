@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -62,6 +63,13 @@ struct MapsUiState {
     bool favoritesOnly = false;
     int registeredGeneration = -1;
     int finalLevelInput = 0;
+    // Installed maps as the tab shows them, rebuilt only when a new scan result is swapped in (no per-frame
+    // copy of thousands of entries, no per-frame key building).
+    int libraryGeneration = -1;
+    std::vector<InstalledMap> library;      // sorted by title (scan order)
+    std::vector<std::string> libraryKeys;   // maps module key of each entry
+    std::vector<std::string> librarySearch; // lower-case "title stem id" of each entry
+    std::set<std::string> libraryKeySet;
 };
 
 struct KismetCacheInfo {
@@ -81,7 +89,9 @@ public:
     // Call once from onLoad (captures the game directory) and starts a first scan with default folders.
     void init();
 
-    // Stock arena check for GetCurrentMap() names (cached list from the game).
+    // Stock arena check for GetCurrentMap() names (cached list from the game). Called by every context
+    // refresh: also rescans (worker thread) when the scan settings cvars changed, at most every 2 s, so the
+    // player's extra folders count even before the Maps tab is opened.
     bool isStockMap(const std::string& mapName);
 
     // Workshop id / title / category of the current map when known (last launched, installed maps,
@@ -127,10 +137,12 @@ private:
 
     void scanWorker(MapScanOptions options, Paths paths);
     bool buildKismetCache();
+    void syncScanOptionsFromCvars();
 
     std::shared_ptr<GameWrapper> gw_;
     std::shared_ptr<CVarManagerWrapper> cvars_;
     std::vector<std::string> stockMaps_;
+    std::chrono::steady_clock::time_point nextCvarSync_{};
     Paths paths_;
     bool steam_ = false;
 

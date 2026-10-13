@@ -19,10 +19,40 @@ namespace rlt {
 namespace {
 
 // Text typed in the "course code" field. ImGui needs a buffer that lives across frames; it is only touched by
-// the render thread, inside this tab.
+// the render thread, inside this tab. The preview (type, difficulty, real ring count) is computed only when the
+// text changes: the generator clamps the ring count carried by the code (per type and difficulty).
 struct CodeField {
     char text[64] = {};
+    std::string previewFor;
+    bool previewValid = false;
+    std::string preview;
 };
+
+CoursesKind kindOfType(courses::CourseType t) {
+    switch (t) {
+    case courses::CourseType::GroundWall: return CoursesKind::RingsGround;
+    case courses::CourseType::AirDribble: return CoursesKind::RingsAirDribble;
+    case courses::CourseType::DribbleGates: return CoursesKind::Slalom;
+    default: return CoursesKind::RingsAir;
+    }
+}
+
+void refreshPreview(CodeField& f, const std::string& typed) {
+    if (typed == f.previewFor) return;
+    f.previewFor = typed;
+    f.previewValid = false;
+    f.preview.clear();
+    const auto decoded = courses::parseCourseCode(typed);
+    if (!decoded) return;
+    const courses::Course c = courses::generateCourse(decoded->seed, decoded->type, decoded->difficultyPct);
+    if (c.rings.empty()) return;
+    const bool gates = decoded->type == courses::CourseType::DribbleGates;
+    const size_t n = c.rings.size();
+    f.previewValid = true;
+    f.preview = std::string("Code valide : ") + CoursesModule::kindTitle(kindOfType(decoded->type)) + ", difficulté " +
+                std::to_string(decoded->difficultyPct) + ", " + std::to_string(n) +
+                (gates ? (n > 1 ? " portes" : " porte") : (n > 1 ? " anneaux" : " anneau"));
+}
 
 CodeField& codeField() {
     static CodeField field;
@@ -121,8 +151,8 @@ void renderCoursesTab(UiContext& ctx) {
             if (ImGui::SmallButton("Copier##live")) ImGui::SetClipboardText(s.code.c_str());
         }
         if (s.total > 0) {
-            ImGui::Text("Anneau %d/%d   Temps %s   Ratés %d", std::min(s.next + 1, s.total), s.total, formatTime(s.time).c_str(),
-                        s.misses);
+            ImGui::Text("%s %d/%d   Temps %s   Ratés %d", s.kind == CoursesKind::Slalom ? "Porte" : "Anneau",
+                        std::min(s.next + 1, s.total), s.total, formatTime(s.time).c_str(), s.misses);
             ImGui::ProgressBar(static_cast<float>(s.next) / static_cast<float>(s.total), ImVec2(-1.f, 0.f));
             if (s.hasPb) ImGui::Text("Record : %s", formatTime(s.pbTime).c_str());
             else ImGui::TextDisabled("Pas encore de record sur ce parcours.");
@@ -155,7 +185,8 @@ void renderCoursesTab(UiContext& ctx) {
         ImGui::Text("Score %d - %s", static_cast<int>(d.last.score + 0.5f), d.last.verdict.c_str());
         if (d.last.segments.size() >= 2) {
             ImGui::PlotHistogram("##segments", d.last.segments.data(), static_cast<int>(d.last.segments.size()), 0,
-                                 "Temps par anneau (s)", 0.f, FLT_MAX, ImVec2(-1.f, 70.f));
+                                 d.last.kind == CoursesKind::Slalom ? "Temps par porte (s)" : "Temps par anneau (s)", 0.f,
+                                 FLT_MAX, ImVec2(-1.f, 70.f));
             ImGui::TextDisabled("Les barres hautes montrent où tu perds du temps.");
         }
     }
@@ -225,7 +256,7 @@ void renderCoursesTab(UiContext& ctx) {
     ImGui::PopItemWidth();
     ImGui::SameLine();
     const std::string typed = field.text;
-    const auto decoded = courses::parseCourseCode(typed);
+    refreshPreview(field, typed);
     if ((ImGui::Button("Jouer ce code") || enter) && !typed.empty()) ctx.post("courses", "play", {typed});
     ImGui::SameLine();
     if (ImGui::Button("Coller")) {
@@ -236,15 +267,8 @@ void renderCoursesTab(UiContext& ctx) {
     if (ImGui::Button("Copier le code") && !d.code.empty()) ImGui::SetClipboardText(d.code.c_str());
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copie le code du parcours actuel (ou du dernier joué).");
     if (!typed.empty()) {
-        if (decoded) {
-            const int kind = decoded->type == courses::CourseType::GroundWall     ? 1
-                             : decoded->type == courses::CourseType::AirDribble   ? 2
-                             : decoded->type == courses::CourseType::DribbleGates ? 4
-                                                                                  : 0;
-            const int rings = courses::seedRingCount(decoded->seed);
-            ui::textColored(colors::Green, std::string("Code valide : ") + CoursesModule::kindTitle(static_cast<CoursesKind>(kind)) +
-                                               ", difficulté " + std::to_string(decoded->difficultyPct) +
-                                               (rings > 0 ? ", " + std::to_string(rings) + " anneaux" : std::string()));
+        if (field.previewValid) {
+            ui::textColored(colors::Green, field.preview);
         } else {
             ui::textColored(colors::Orange, "Code invalide : vérifie chaque caractère (format RLT1-A050-XXXXXXXXXXXXX-X).");
         }
@@ -292,9 +316,12 @@ void renderCoursesTab(UiContext& ctx) {
     if (ImGui::CollapsingHeader("Comment ça marche##courses_help")) {
         ImGui::BulletText("Passe les anneaux dans l'ordre : le prochain est en vert, épais, avec son numéro.");
         ImGui::BulletText("Anneau raté : pénalité de temps, retour obligatoire ou échec, selon le réglage.");
+        ImGui::BulletText("Plus d'un quart des anneaux ratés : l'essai compte comme raté, même arrivé au bout.");
+        ImGui::BulletText("Record : pas de record avec des anneaux ratés si la pénalité est réglée sous 1 s.");
         ImGui::BulletText("Le panneau en haut à gauche montre ton temps et ton écart avec ton record à chaque anneau.");
         ImGui::BulletText("Médailles : or sous le temps cible, argent jusqu'à +25 %%, bronze jusqu'à +50 %%.");
         ImGui::BulletText("Air dribble et slalom : c'est la balle qui doit passer, et elle ne doit pas toucher le sol.");
+        ImGui::BulletText("Slalom : balle sur le toit, et passage propre au centre de chaque porte (sans frôler les poteaux).");
         ImGui::BulletText("Rattrapage : suis le cercle au sol, amortis la balle et garde-la sur le toit.");
     }
     if (ImGui::CollapsingHeader("Commandes console##courses_cmds")) {

@@ -41,7 +41,7 @@ struct MapsLiveStatus {
     float runTime = 0.f;
     bool hasLevel = false;
     int level = 0;
-    int finalLevel = 0;              // profile, pins or catalogue (0 = unknown)
+    int finalLevel = 0;              // last level the run timer uses (profile, pins or catalogue; 0 = unknown)
     bool hasMapTimer = false;
     std::string mapTimer;
     bool hasDeaths = false;
@@ -116,6 +116,8 @@ private:
     void leaveMap(float now, Actions& out);
     void resolveProfile(const std::vector<KismetVar>* vars);
     void applyProfile(const KismetProfile* p, ProfileSource src);
+    // Copy of `p` that ends runs at the catalogue's last level when the profile counts levels without one.
+    KismetProfile withCatalogFinal(const KismetProfile& p) const;
     void refreshIdentity(const GameContext& game);
     void drain(float now, Actions& out);
     void onRunFinished(float now, Actions& out);

@@ -29,6 +29,8 @@ constexpr float kCarRestZ = 17.f;
 constexpr float kSupersonic = 2200.f;
 constexpr float kJumpImpulse = 291.667f;   // JUMP_IMMEDIATE_FORCE, also the double jump impulse
 constexpr float kBallDrag = 0.0305f;       // per second
+constexpr float kBallRollDrag = kBallDrag / 1.4f;  // rolling ball, about 2.2 % per second (physics research)
+constexpr float kBallRollVz = 100.f;       // floor impacts slower than this do not bounce: the ball rolls
 constexpr float kBallRestitution = 0.6f;
 } // namespace arena
 
@@ -79,7 +81,8 @@ struct GoalProjection {
     std::array<Vec3, 24> points{};  // sampled path (for drawing)
 };
 
-// Ball path toward the opponent goal of `team`: drag, floor/ceiling/side wall bounces, up to `horizon` seconds.
+// Ball path toward the opponent goal of `team`: drag, floor/ceiling/side wall bounces, rolling on the floor once a
+// floor impact is slower than kBallRollVz (rolling drag only), up to `horizon` seconds.
 GoalProjection projectToGoal(const Vec3& p, const Vec3& v, int team, float r, bool standardArena,
                              float horizon = 4.f);
 // 0..1: 1 at 5 deg of horizontal error, 0 at 30 deg, at least 0.8 when on target. 0.7 when unknown.

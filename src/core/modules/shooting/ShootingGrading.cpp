@@ -46,8 +46,8 @@ Metric metricIdeal(const char* key, const char* label, float value, const char* 
 }
 
 // " (A)" when the action is bound, "" otherwise: appended after a verb ("Saute (A), puis ...").
-std::string keySuffix(const PlayerProfile& profile, GameAction a) {
-    const std::string k = actionKeyLabel(profile, a);
+std::string keySuffix(const PlayerProfile& profile, GameAction a, KeyStyle style) {
+    const std::string k = actionKeyLabel(profile, a, style);
     return k.empty() ? std::string() : " (" + k + ")";
 }
 
@@ -57,7 +57,7 @@ bool needsRotation(FlickType t) {
 }
 
 // Correction when the requested flick was not the one performed.
-void wrongTypeTip(std::vector<Tip>& tips, const FlickReport& r, FlickType want) {
+void wrongTypeTip(std::vector<Tip>& tips, const FlickReport& r, FlickType want, float delayedSec) {
     const float ay = std::fabs(r.f.yawTurnDeg);
     switch (want) {
     case FlickType::Musty:
@@ -71,7 +71,7 @@ void wrongTypeTip(std::vector<Tip>& tips, const FlickReport& r, FlickType want) 
     case FlickType::Flick45:
         if (std::fabs(r.f.dodgeSide) < 0.35f)
             addTip(tips, "shooting.flick_diagonal_dodge",
-                   "Fais un dodge en diagonale (stick avant + côté) vers la balle.", 8.f);
+                   "Fais un dodge en diagonale (stick avant + côté) vers la cible.", 8.f);
         else if (ay < 25.f)
             addTip(tips, "shooting.flick_under_rotated", "Tourne la voiture d'environ 45° avant le dodge diagonal.",
                    8.f);
@@ -88,7 +88,9 @@ void wrongTypeTip(std::vector<Tip>& tips, const FlickReport& r, FlickType want) 
         break;
     case FlickType::Delayed:
         addTip(tips, "shooting.flick_not_delayed",
-               "Garde la balle plus longtemps sur le toit en l'air avant le dodge (0,6 s ou plus).", 8.f);
+               "Garde la balle plus longtemps sur le toit en l'air avant le dodge (" + frenchDecimal(delayedSec) +
+                   " s ou plus).",
+               8.f);
         break;
     case FlickType::Backflip:
         addTip(tips, "shooting.flick_back_dodge", "Fais un dodge vers l'arrière (stick tiré à fond).", 8.f);
@@ -108,22 +110,34 @@ void wrongTypeTip(std::vector<Tip>& tips, const FlickReport& r, FlickType want) 
 
 float flickMinPower(float level) { return lerpf(1300.f, 2400.f, clamp01(level)); }
 
-std::string airRollPrompt(const PlayerProfile& profile) {
-    for (GameAction a : {GameAction::AirRoll, GameAction::AirRollLeft, GameAction::AirRollRight})
-        if (!actionKeyLabel(profile, a).empty()) return actionPrompt(profile, a);
-    return actionPrompt(profile, GameAction::AirRoll);
+std::string frenchDecimal(float value) {
+    std::string s = formatNumber(value, 2);
+    const size_t dot = s.find('.');
+    if (dot == std::string::npos) return s;
+    while (!s.empty() && s.back() == '0') s.pop_back();
+    if (!s.empty() && s.back() == '.') s.pop_back();
+    if (s.empty() || s == "-0") return "0";
+    const size_t d = s.find('.');
+    if (d != std::string::npos) s[d] = ',';
+    return s;
 }
 
-std::string flickCue(FlickType t, const PlayerProfile& profile) {
-    const std::string jump = actionPrompt(profile, GameAction::Jump);
+std::string airRollPrompt(const PlayerProfile& profile, KeyStyle style) {
+    for (GameAction a : {GameAction::AirRoll, GameAction::AirRollLeft, GameAction::AirRollRight})
+        if (!actionKeyLabel(profile, a, style).empty()) return actionPrompt(profile, a, style);
+    return actionPrompt(profile, GameAction::AirRoll, style);
+}
+
+std::string flickCue(FlickType t, const PlayerProfile& profile, KeyStyle style, float delayedSec) {
+    const std::string jump = actionPrompt(profile, GameAction::Jump, style);
     switch (t) {
     case FlickType::Front: return jump + ", puis dodge avant";
     case FlickType::Flick45: return jump + ", tourne d'environ 45°, dodge diagonal";
     case FlickType::Flick90: return jump + ", tourne d'environ 90°, dodge latéral";
     case FlickType::Backflip: return jump + ", puis dodge arrière";
-    case FlickType::Delayed: return jump + ", garde la balle 0,6 s, puis dodge";
+    case FlickType::Delayed: return jump + ", garde la balle " + frenchDecimal(delayedSec) + " s, puis dodge";
     case FlickType::Musty: return jump + ", nez en bas, puis backflip";
-    case FlickType::Breezi: return jump + " tenu, tornade (" + airRollPrompt(profile) + "), puis backflip";
+    case FlickType::Breezi: return jump + " tenu, tornade (" + airRollPrompt(profile, style) + "), puis backflip";
     case FlickType::Reverse: return jump + ", roule sur le côté, dodge arrière-diagonal";
     case FlickType::Diagonal: return jump + ", puis dodge en diagonale";
     case FlickType::Side: return jump + ", puis dodge sur le côté";
@@ -131,26 +145,25 @@ std::string flickCue(FlickType t, const PlayerProfile& profile) {
     }
 }
 
-std::string flickHowTo(FlickType t, const PlayerProfile& profile) {
-    const std::string j = keySuffix(profile, GameAction::Jump);
-    const std::string ar = airRollPrompt(profile);
+std::string flickHowTo(FlickType t, const PlayerProfile& profile, KeyStyle style, float delayedSec) {
+    const std::string j = keySuffix(profile, GameAction::Jump, style);
+    const std::string ar = airRollPrompt(profile, style);
     switch (t) {
     case FlickType::Front:
         return "Balle posée au centre du toit : saute" + j +
                ", puis rappuie sur saut avec le stick vers l'avant. Le dodge avant projette la balle devant toi.";
     case FlickType::Flick45:
         return "Saute" + j + ", tourne la voiture d'environ 45° (stick sur le côté, " + ar +
-               " aide), puis dodge en diagonale vers la balle. Au-delà de 65° ça devient un 90.";
+               " aide), puis dodge en diagonale vers la cible. Au-delà de 65° ça devient un 90.";
     case FlickType::Flick90:
         return "Saute" + j +
-               ", tourne d'un quart de tour (environ 90°), puis dodge sur le côté vers la balle. Très puissant.";
+               ", tourne d'un quart de tour (environ 90°), puis dodge sur le côté vers la cible. Très puissant.";
     case FlickType::Backflip:
         return "Saute" + j +
                " puis dodge vers l'arrière (stick tiré à fond + saut). La balle part haute : idéal pour lober.";
     case FlickType::Delayed:
-        return "Saute" + j +
-               " avec la balle sur le toit, garde-la en équilibre en l'air au moins 0,6 s, "
-               "puis flick au dernier moment pour surprendre le défenseur.";
+        return "Saute" + j + " avec la balle sur le toit, garde-la en équilibre en l'air au moins " +
+               frenchDecimal(delayedSec) + " s, puis flick au dernier moment pour surprendre le défenseur.";
     case FlickType::Musty:
         return "Saute" + j +
                ", pousse le stick vers l'avant pour baisser le nez, puis backflip (stick tiré + saut). "
@@ -236,7 +249,7 @@ AttemptResult gradeFlick(const FlickReport& r, const AimResult& aim, const Flick
         else
             addTip(tips, "shooting.flick_no_contact", "Dodge pendant que la balle touche encore le toit.", 9.f);
     }
-    if (requested && !matches) wrongTypeTip(tips, r, want);
+    if (requested && !matches) wrongTypeTip(tips, r, want, p.delayedSec);
     const bool late = r.f.delay > band.hi + 0.1f;
     const bool early = r.f.delay < band.lo - 0.05f;
     if (r.contact && !powerOk) {

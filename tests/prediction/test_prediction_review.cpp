@@ -291,6 +291,9 @@ TEST(pr_stale_view_goal_relation_matches_the_hud) {
     Harness h;
     h.game.mode = GameMode::OfflineMatch;
     h.snap.car.team = 1;
+    // The ball starts at 300 uu going down: its first segments are the first-touch zone (amber, thicker). Hide the
+    // zone so the first segment carries the path colour this test is about.
+    h.set("rlt_pr_show_zone", "0");
     h.setBall({0.f, 3000.f, 300.f}, {0.f, 2000.f, 0.f});
     h.tick();
     DrawList d;

@@ -400,9 +400,9 @@ void BallMechModule::handleGrade(bm::MechGrade& g, const TickContext& ctx, Actio
             resolveDrill(v.success, ctx);
             return;
         }
-        // Another mechanic resolved the attempt: it failed for the drill.
+        // Another mechanic resolved the attempt: it failed for the drill (main tip: wrong mechanic, then the drill's).
         const std::string what = bm::gradeTitle(g);
-        failDrill(primaryFailCode(dm), ctx, out);
+        failDrill("DRILL_WRONG_MECH", ctx, out);
         drill_.lastVerdict = std::string("Raté (") + what + ")";
         return;
     }
@@ -465,14 +465,18 @@ void BallMechModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, Ac
         if (drill_.phase == DrillPhase::Live || drill_.phase == DrillPhase::Result) beginAttempt(ctx);
         break;
     case GameEventKind::Goal: impl_->pipeline.addGoal(); break;
-    case GameEventKind::FlipReset:
-        if (!cfg_.enabled) break;
+    case GameEventKind::FlipReset: {
+        // Counted only where our own detection runs: module and flip reset detection on (or the flip reset drill),
+        // analysed game mode (never replays, online or offline matches when they are not analysed).
+        const bool frDrill = drill_.phase != DrillPhase::Off && static_cast<Mech>(drill_.mech) == Mech::FlipReset;
+        if (!cfg_.enabled || !(cfg_.detFlipReset || frDrill) || !analysing(ctx.game)) break;
         if (ev.detail == "sdk" || ev.detail.empty()) {
             const int64_t frame = ev.frame >= 0 ? ev.frame : ctx.snap.frame;
             impl_->pipeline.addSdkReset(frame);
             countReset(frame);
         }
         break;
+    }
     default: break;
     }
 }
@@ -665,7 +669,18 @@ void BallMechModule::drillTick(const TickContext& ctx, Actions& out) {
                 break;
             }
         }
-        if (!drill_.resolved && drill_.failAt >= 0.f && now >= drill_.failAt) failDrill(drill_.failCode.c_str(), ctx, out);
+        if (!drill_.resolved && drill_.failAt >= 0.f) {
+            // A pending fail is cancelled when the situation recovers during the grace delay: the car is airborne
+            // again (hop, pop and follow; not a landing bounce) or the ball came back within reach.
+            const bool recovered = (drill_.failCode == "DRILL_LANDED" && world == 0 && s.car.pos.z > 50.f) ||
+                                   (drill_.failCode == "DRILL_BALL_LOST" && distance(s.car.pos, s.ball.pos) <= 300.f);
+            if (recovered) {
+                drill_.failAt = -1.f;
+                drill_.failCode.clear();
+            } else if (now >= drill_.failAt) {
+                failDrill(drill_.failCode.c_str(), ctx, out);
+            }
+        }
         break;
     }
     case DrillPhase::Result:

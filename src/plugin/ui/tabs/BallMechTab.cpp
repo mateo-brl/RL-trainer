@@ -142,7 +142,7 @@ void drawMechGrid(UiContext& ctx, const BallMechModule::UiState& st, const Playe
     for (const auto& m : st.mechs) {
         ImGui::PushID(m.id.c_str());
         if (m.detectionEnabled) ImGui::TextUnformatted(m.title.c_str());
-        else ImGui::TextDisabled("%s (off)", m.title.c_str());
+        else ImGui::TextDisabled("%s (désactivée)", m.title.c_str());
         tooltipWrapped(m.what + "\n\nLa clé : " + bm::fillButtons(m.key, profile, st.keyStyle));
         ImGui::NextColumn();
         ImGui::Text("%d", m.attempts);
@@ -201,8 +201,8 @@ void drawRecords(UiContext& ctx, const BallMechModule::UiState& st, SpeedUnit un
     if (ImGui::Button("Nouvelle session##bm")) ctx.post("ballmech", "reset_session");
     ui::helpMarker("Remet à zéro les compteurs de la session (flip resets, essais du jour). Tes stats restent.");
     ImGui::SameLine();
-    if (ImGui::Button("Réinitialiser les stats##bm")) ImGui::OpenPopup("bm_reset_stats");
-    if (ImGui::BeginPopupModal("bm_reset_stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::Button("Réinitialiser les stats##bm")) ImGui::OpenPopup("Réinitialiser les stats ?##bm_reset_stats");
+    if (ImGui::BeginPopupModal("Réinitialiser les stats ?##bm_reset_stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("Effacer toutes les stats, records et niveaux des mécas balle ?");
         if (ImGui::Button("Oui, tout effacer")) {
             ctx.post("ballmech", "reset_stats");

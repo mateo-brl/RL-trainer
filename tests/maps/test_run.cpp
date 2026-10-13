@@ -281,8 +281,10 @@ TEST(maps_run_own_timing_never_at_rest_starts_at_arm_time) {
     // Armed "unclean" (mid-map profile change): such a run is never a record.
     RunTracker u;
     u.arm(0.f, false);
+    u.onTick(carSnap(0.05f, {}, {800.f, 0.f, 0.f}));  // first tick right after the arm (120 Hz)
     u.onTick(carSnap(0.6f, {}, {800.f, 0.f, 0.f}));
     CHECK(u.running() && !u.recordEligible());
+    CHECK(!u.partialSplits());
 }
 
 TEST(maps_run_own_timing_disabled) {

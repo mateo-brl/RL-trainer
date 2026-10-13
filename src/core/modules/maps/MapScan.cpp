@@ -101,7 +101,10 @@ bool better(const Candidate& a, const Candidate& b) {
     return a.size > b.size;
 }
 
-void addMap(const Candidate& c, const std::string& folder, const std::string& source, std::vector<ScannedMap>& out) {
+// `shared`: the folder holds several maps (several .udk), so it names none of them: no workshop id, title or
+// catalogue match taken from the folder name (they would all get the same identity).
+void addMap(const Candidate& c, const std::string& folder, const std::string& source, std::vector<ScannedMap>& out,
+            bool shared = false) {
     ScannedMap m;
     m.file = c.file;
     m.path = pathToUtf8(c.file);
@@ -111,20 +114,21 @@ void addMap(const Candidate& c, const std::string& folder, const std::string& so
     m.source = source;
     m.size = c.size;
     m.nonAscii = hasNonAscii(m.path);
+    const std::string named = shared ? std::string() : folder;
     const CatalogMap* cat = nullptr;
-    if (isWorkshopId(folder)) {
-        m.id = folder;
-        cat = MapCatalog::findById(folder);
+    if (isWorkshopId(named)) {
+        m.id = named;
+        cat = MapCatalog::findById(named);
     }
     if (!cat) cat = MapCatalog::findByStem(m.stem);
-    if (!cat && !folder.empty() && !isWorkshopId(folder)) cat = MapCatalog::findByStem(folder);
+    if (!cat && !named.empty() && !isWorkshopId(named)) cat = MapCatalog::findByStem(named);
     if (m.id.empty()) m.id = (cat && !cat->ids.empty()) ? cat->ids.front() : mapStatsKey("", m.stem);
     if (cat) {
         m.inCatalog = true;
         m.title = cat->title;
         m.category = cat->category;
     } else {
-        m.title = (!folder.empty() && !isWorkshopId(folder)) ? folder : prettifyMapName(m.stem);
+        m.title = (!named.empty() && !isWorkshopId(named)) ? named : prettifyMapName(m.stem);
         m.category = guessMapCategory(m.title + " " + m.stem);
     }
     out.push_back(std::move(m));
@@ -172,7 +176,8 @@ void scanMapRoot(const fs::path& root, const std::string& source, std::vector<Sc
             addMap(c, "", source, out);
         }
 
-        // One map per sub-folder.
+        // One map per sub-folder (Steam / Workshop Map Loader: the map plus its .upk dependencies), or one
+        // per .udk when the folder holds several (the player's own folders sorted by theme).
         fs::directory_iterator it(base, fs::directory_options::skip_permission_denied, ec);
         if (ec) return;
         std::vector<fs::path> dirs;
@@ -187,8 +192,19 @@ void scanMapRoot(const fs::path& root, const std::string& source, std::vector<Sc
             std::vector<Candidate> files;
             collect(d, files, stop);
             if (files.empty()) continue;
+            const std::string folder = pathToUtf8(d.filename());
+            const auto udkCount = std::count_if(files.begin(), files.end(), [](const Candidate& c) { return c.udk; });
+            if (udkCount >= 2) {
+                std::sort(files.begin(), files.end(),
+                          [](const Candidate& a, const Candidate& b) { return a.file < b.file; });
+                for (const auto& c : files) {
+                    if (out.size() >= limit) return;
+                    if (c.udk) addMap(c, folder, source, out, true);
+                }
+                continue;
+            }
             const auto best = std::min_element(files.begin(), files.end(), better);
-            addMap(*best, pathToUtf8(d.filename()), source, out);
+            addMap(*best, folder, source, out);
         }
     } catch (...) {
         // Filesystem errors (permissions, encoding) never escape: the scan just returns what it found.

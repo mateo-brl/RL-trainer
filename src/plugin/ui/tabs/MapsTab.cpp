@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,26 @@ std::string statsSummary(const MapStatsView* s) {
     return out.empty() ? "pas encore de stats" : out;
 }
 
+// Installed maps cached in the UI state, rebuilt only when a new scan result is swapped in.
+const MapsUiState& library(MapsService& svc) {
+    MapsUiState& ui = svc.uiState();
+    const int gen = svc.scanGeneration();
+    if (gen == ui.libraryGeneration) return ui;
+    ui.libraryGeneration = gen;
+    ui.library = svc.installedMaps();
+    ui.libraryKeys.clear();
+    ui.librarySearch.clear();
+    ui.libraryKeySet.clear();
+    ui.libraryKeys.reserve(ui.library.size());
+    ui.librarySearch.reserve(ui.library.size());
+    for (const auto& m : ui.library) {
+        ui.libraryKeys.push_back(keyOf(m));
+        ui.librarySearch.push_back(lowerCopy(m.title + " " + m.stem + " " + m.id));
+        ui.libraryKeySet.insert(ui.libraryKeys.back());
+    }
+    return ui;
+}
+
 void launchMap(UiContext& ctx, MapsService* svc, const InstalledMap& m) {
     if (!svc) return;
     ctx.runOnGame([svc, m]() { svc->launch(m); });
@@ -80,7 +101,9 @@ void navigationButtons(UiContext& ctx, MapsService* svc, bool onCustomMap) {
 }
 
 // ---- Current map -----------------------------------------------------------------------------------------
-void splitsTable(const std::vector<RunSplit>& splits, const std::vector<float>& pb, const MapsConfig& cfg) {
+// Deltas come from the run itself (computed against the record held when the split happened; none for a run
+// whose timing profile changed midway, its split numbers do not match the record's).
+void splitsTable(const std::vector<RunSplit>& splits, const MapsConfig& cfg) {
     if (splits.empty()) return;
     const size_t first = splits.size() > 40 ? splits.size() - 40 : 0;  // the last 40 rows are enough
     const float rows = static_cast<float>(std::min<size_t>(splits.size() - first, 10) + 1);
@@ -103,13 +126,7 @@ void splitsTable(const std::vector<RunSplit>& splits, const std::vector<float>& 
         ImGui::NextColumn();
         ImGui::TextUnformatted(formatTime(s.time, false).c_str());
         ImGui::NextColumn();
-        float delta = s.delta;
-        bool has = s.hasDelta;
-        if (!has && static_cast<size_t>(s.index) <= pb.size() && s.index > 0) {
-            delta = s.time - pb[static_cast<size_t>(s.index) - 1];
-            has = true;
-        }
-        if (has) ui::textColored(delta <= 0.f ? cfg.aheadColor : cfg.behindColor, formatDeltaSeconds(delta));
+        if (s.hasDelta) ui::textColored(s.delta <= 0.f ? cfg.aheadColor : cfg.behindColor, formatDeltaSeconds(s.delta));
         else ImGui::TextDisabled("-");
         ImGui::NextColumn();
     }
@@ -191,7 +208,8 @@ void kismetDebug(UiContext& ctx, const MapsLiveStatus& st, const std::vector<Kis
             tooltip("Utilise cette variable comme compteur de niveaux (un split à chaque +1).");
         } else if (v.type == KismetVar::Type::Bool) {
             if (ImGui::SmallButton("Départ")) ctx.post("maps", "pin", {"start", v.name});
-            tooltip("Le run démarre quand cette variable passe de faux à vrai.");
+            tooltip("Le run démarre quand cette variable passe de faux à vrai. Sans variable de niveau épinglée, il "
+                    "se termine quand elle repasse à faux (ou sur un but).");
         } else if (v.type == KismetVar::Type::String) {
             if (ImGui::SmallButton("Chrono")) ctx.post("maps", "pin", {"timer", v.name});
             tooltip("Chrono affiché par la map : le run démarre quand il revient à 0:00.");
@@ -277,7 +295,8 @@ void currentMapSection(UiContext& ctx, const MapsLiveStatus& st, const MapsConfi
         std::string s = std::string(st.last.finished ? "Dernier run : " : "Dernier run (abandonné) : ") +
                         formatTime(st.last.time, false);
         if (st.lastWasPb) s += "  nouveau record !";
-        else if (!st.last.recordEligible) s += "  (hors record)";
+        else if (st.last.endedByReset) s += "  (fini sur reset, hors record)";
+        else if (!st.last.recordEligible) s += st.last.cleanStart ? "  (hors record)" : "  (départ pas vu, hors record)";
         ui::textColored(st.lastWasPb ? cfg.aheadColor : colors::Grey, s);
     }
     ImGui::Text("Session : %s", formatClock(static_cast<float>(st.sessionSeconds)).c_str());
@@ -306,7 +325,7 @@ void currentMapSection(UiContext& ctx, const MapsLiveStatus& st, const MapsConfi
     const std::vector<RunSplit>& rows = st.phase == RunPhase::Running ? st.splits : st.last.splits;
     if (!rows.empty()) {
         ImGui::TextDisabled("%s", st.phase == RunPhase::Running ? "Splits du run en cours" : "Splits du dernier run");
-        splitsTable(rows, st.pbSplits, cfg);
+        splitsTable(rows, cfg);
     }
     if (stats && stats->lastRuns.size() >= 2) {
         float lo = stats->lastRuns.front(), hi = lo;
@@ -332,6 +351,7 @@ void currentMapSection(UiContext& ctx, const MapsLiveStatus& st, const MapsConfi
 // ---- Installed maps --------------------------------------------------------------------------------------
 struct Row {
     const InstalledMap* map = nullptr;
+    const std::string* key = nullptr;
     const MapStatsView* stats = nullptr;
     bool favorite = false;
 };
@@ -344,7 +364,8 @@ void librarySection(UiContext& ctx, MapsService* svc, const std::vector<MapStats
         return;
     }
     MapsUiState& ui = svc->uiState();
-    const std::vector<InstalledMap> maps = svc->installedMaps();
+    const MapsUiState& lib = library(*svc);
+    const std::vector<InstalledMap>& maps = lib.library;
     const bool scanning = svc->scanning();
 
     if (scanning) ImGui::TextDisabled("%s", "Recherche des maps installées...");
@@ -386,28 +407,28 @@ void librarySection(UiContext& ctx, MapsService* svc, const std::vector<MapStats
 
     std::map<std::string, const MapStatsView*> byKey;
     for (const auto& s : stats) byKey[s.key] = &s;
+    const std::set<std::string> favSet(favorites.begin(), favorites.end());
     const std::string needle = lowerCopy(ui.search);
     std::vector<Row> rows;
     rows.reserve(maps.size());
-    for (const auto& m : maps) {
+    for (size_t i = 0; i < maps.size(); ++i) {
+        const InstalledMap& m = maps[i];
         Row r;
         r.map = &m;
-        const std::string key = keyOf(m);
-        auto it = byKey.find(key);
+        r.key = &lib.libraryKeys[i];
+        auto it = byKey.find(*r.key);
         r.stats = it == byKey.end() ? nullptr : it->second;
-        r.favorite = std::find(favorites.begin(), favorites.end(), key) != favorites.end();
+        r.favorite = favSet.count(*r.key) != 0;
         if (ui.favoritesOnly && !r.favorite) continue;
         if (ui.categoryFilter >= 0 && static_cast<int>(m.category) != ui.categoryFilter) continue;
-        if (!needle.empty() && lowerCopy(m.title).find(needle) == std::string::npos &&
-            lowerCopy(m.stem).find(needle) == std::string::npos && m.id.find(needle) == std::string::npos)
-            continue;
+        if (!needle.empty() && lib.librarySearch[i].find(needle) == std::string::npos) continue;
         rows.push_back(r);
     }
+    // Favorites first, then last played; the scan order (by title) is kept otherwise.
     std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
         if (a.favorite != b.favorite) return a.favorite;
         const long long sa = a.stats ? a.stats->lastSeq : 0, sb = b.stats ? b.stats->lastSeq : 0;
-        if (sa != sb) return sa > sb;
-        return lowerCopy(a.map->title) < lowerCopy(b.map->title);
+        return sa > sb;
     });
 
     if (maps.empty() && !scanning) {
@@ -424,7 +445,7 @@ void librarySection(UiContext& ctx, MapsService* svc, const std::vector<MapStats
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
             const Row& r = rows[static_cast<size_t>(i)];
             const InstalledMap& m = *r.map;
-            const std::string key = keyOf(m);
+            const std::string& key = *r.key;
             ImGui::PushID(i);
             ImGui::PushStyleColor(ImGuiCol_Text, r.favorite ? toImVec(kGold) : ImVec4(0.6f, 0.6f, 0.6f, 1.f));
             if (ImGui::SmallButton(r.favorite ? "*" : "+")) ctx.post("maps", r.favorite ? "unfav" : "fav", {key});
@@ -461,18 +482,12 @@ void librarySection(UiContext& ctx, MapsService* svc, const std::vector<MapStats
     ImGui::EndChild();
 
     // Maps with stats that are not installed anymore (or launched by another loader).
-    std::vector<const MapStatsView*> orphans;
-    for (const auto& s : stats) {
-        bool installed = false;
-        for (const auto& m : maps)
-            if (keyOf(m) == s.key) {
-                installed = true;
-                break;
-            }
-        if (!installed) orphans.push_back(&s);
-    }
-    if (!orphans.empty() && ImGui::CollapsingHeader("Autres maps jouées##maps_orphans")) {
-        for (const MapStatsView* s : orphans) {
+    auto orphan = [&](const MapStatsView& s) { return lib.libraryKeySet.count(s.key) == 0; };
+    if (std::any_of(stats.begin(), stats.end(), orphan) &&
+        ImGui::CollapsingHeader("Autres maps jouées##maps_orphans")) {
+        for (const auto& so : stats) {
+            if (!orphan(so)) continue;
+            const MapStatsView* s = &so;
             ImGui::PushID(s->key.c_str());
             if (ImGui::SmallButton("Oublier")) ctx.post("maps", "forget", {s->key});
             tooltip("Efface les stats de cette map.");
@@ -502,7 +517,8 @@ void helpSection(UiContext& ctx, MapsService* svc) {
         ImGui::TextDisabled("%s", "Version Epic détectée : le workshop Steam n'est pas scanné.");
 
     ui::separatorText("Maps conseillées");
-    const std::vector<InstalledMap> maps = svc ? svc->installedMaps() : std::vector<InstalledMap>{};
+    static const std::vector<InstalledMap> kNone;
+    const std::vector<InstalledMap>& maps = svc ? library(*svc).library : kNone;
     for (auto c : {MapCategory::Rings, MapCategory::Dribble, MapCategory::AirDribble, MapCategory::Shooting,
                    MapCategory::Obstacle}) {
         const std::string header = std::string(mapCategoryLabel(c)) + " : " + mapCategoryPurpose(c) + "##maps_help_" +

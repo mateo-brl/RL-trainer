@@ -139,9 +139,13 @@ bool SpeedFlipDetector::onDodge(const DodgeRecord& r, const Ctx& c, const Kickof
     g.success = score >= 70.f && r.landedOnWheels && r.cancelTicks >= 0 && r.cancelTicks <= 10;
     finalizeGrade(g, score);
     if (kickoff && ko.timeToBall() < 0.f) {  // wait for the ball touch
-        if (hasPending_) out.push_back(std::move(pending_));
+        if (hasPending_) {
+            pending_.add("timeToBall", -1.f);
+            out.push_back(std::move(pending_));
+        }
         pending_ = std::move(g);
         hasPending_ = true;
+        fresh_ = true;
         return true;
     }
     if (kickoff) g.add("timeToBall", ko.timeToBall());
@@ -157,6 +161,7 @@ void SpeedFlipDetector::onTick(const Ctx& c, const KickoffTracker& ko, std::vect
         out.push_back(std::move(pending_));
         pending_ = MechGrade{};
         hasPending_ = false;
+        fresh_ = false;
     }
 }
 
@@ -166,6 +171,7 @@ void SpeedFlipDetector::flush(std::vector<MechGrade>& out) {
     out.push_back(std::move(pending_));
     pending_ = MechGrade{};
     hasPending_ = false;
+    fresh_ = false;
 }
 
 // ---- Half-flip -----------------------------------------------------------------------------------------
@@ -272,6 +278,7 @@ bool FlipCancelDetector::onDodge(const DodgeRecord& r, const Ctx& c, std::vector
 // ---- Combos --------------------------------------------------------------------------------------------
 void ComboDetector::onGrade(const MechGrade& g, std::vector<MechGrade>& out) {
     if (g.mech == Mech::SpeedFlip) {
+        if (usedSF_ && g.dodgeTick >= 0 && g.dodgeTick == usedSFDodgeTick_) return;  // its speed zap is out already
         lastSpeedflip_ = g;
         haveSF_ = true;
         return;
@@ -285,6 +292,8 @@ void ComboDetector::onGrade(const MechGrade& g, std::vector<MechGrade>& out) {
         g.tickStart - lastSpeedflip_.tickEnd <= kMaxGapTicks) {
         out.push_back(combine(Mech::SpeedZap, lastSpeedflip_, g));
         haveSF_ = false;
+        usedSF_ = true;
+        usedSFDodgeTick_ = lastSpeedflip_.dodgeTick;
     }
     if ((g.mech == Mech::Wavedash || g.mech == Mech::ZapDash) && g.variant != "late" && g.variant != "nostick" &&
         haveHF_ && g.tickStart >= lastHalfFlip_.tickEnd && g.tickStart - lastHalfFlip_.tickEnd <= kMaxGapTicks) {

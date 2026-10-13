@@ -8,10 +8,17 @@ namespace rlt::bm {
 // Flick family (research sections 2.3 to 2.6):
 //   Idle -> Carry (ball in the roof box, car on the ground) -> Air (left the ground after >= 0.10 s of carry)
 //   Air: ball farther than 280 uu for 6 ticks -> lost; landing without dodge -> Idle (dribble pop, not graded);
-//        double jump -> Idle
+//        double jump -> Idle; a second separate contact after the takeoff -> Idle (the ball is bumped: air dribble,
+//        a carried flick keeps a continuous roof contact); flip gone without a dodge or 1.5 s after the jump -> Idle
 //   Air -> Dodged -> grade (touch within 0.32 s) | fail FL_LOST_BALL / FL_NO_CONTACT
 // Classification order: breezi, musty, reverse, backflip, 90, 45, side, front, other; "+_delayed" when the
 // jump-to-dodge delay is >= 0.6 s with the ball kept on the car for >= 70 % of the air ticks.
+
+namespace {
+constexpr int kMaxAirNewTouches = 2;  // separate contacts after the takeoff that turn the attempt into an air dribble
+constexpr int kNoFlipTicks = 3;       // ticks without flip (and without dodge) before giving up (flag ordering slack)
+constexpr float kMaxAirTime = 1.5f;   // the flip expires 1.25 s after the jump (research): no flick after that
+} // namespace
 
 FlickBand flickDelayBand(const std::string& v) {
     if (v == "musty") return {0.20f, 0.70f};
@@ -78,8 +85,9 @@ std::optional<MechGrade> FlickDetector::update(const Frame& prev, const Frame& c
                 if (length(travel0_) < 0.5f) travel0_ = heading0_;
                 supersonicStart_ = pc.supersonic || length(pc.vel) >= arena::kSupersonic;
                 rollAccum_ = 0.f;
-                airTicks_ = airRollTicks_ = keptTicks_ = farTicks_ = 0;
+                airTicks_ = airRollTicks_ = keptTicks_ = farTicks_ = airNewTouches_ = noFlipTicks_ = 0;
                 lost_ = false;
+                flipSeen_ = c.hasFlip;
             } else {
                 state_ = State::Idle;
             }
@@ -120,9 +128,23 @@ std::optional<MechGrade> FlickDetector::update(const Frame& prev, const Frame& c
             underside_ = -c.basis.right.z;
             vBefore_ = prev.s.ball.vel;
             touchSeen_ = false;
-        } else if (grounded && cur.t - tJump_ > 0.1f) {
-            state_ = State::Idle;  // landed without flicking: dribble pop, not graded
+            break;
         }
+        const float sinceJump = cur.t - tJump_;
+        // Separate new contacts after the takeoff: the ball is bumped in the air (air dribble), not carried.
+        if (cur.touched && cur.touchNew && sinceJump > 0.1f && ++airNewTouches_ >= kMaxAirNewTouches) {
+            state_ = State::Idle;
+            break;
+        }
+        // Flip expired (or used by something we did not see as a dodge): no flick can follow any more. Only trusted
+        // once the flag was seen true in this jump, so a game that never reports it falls back to the time cap.
+        if (c.hasFlip) flipSeen_ = true;
+        noFlipTicks_ = (c.hasFlip || !flipSeen_) ? 0 : noFlipTicks_ + 1;
+        if (noFlipTicks_ >= kNoFlipTicks || sinceJump > kMaxAirTime) {
+            state_ = State::Idle;
+            break;
+        }
+        if (grounded && sinceJump > 0.1f) state_ = State::Idle;  // landed without flicking: dribble pop, not graded
         break;
     }
     case State::Dodged: {

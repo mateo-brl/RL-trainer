@@ -20,6 +20,7 @@ struct ShootingView {
     shoot::ShootingStats stats;
     ShootingConfig cfg;
     PlayerProfile profile;
+    KeyStyle style = KeyStyle::Auto; // button style chosen in "Ma config"
     bool worldControl = false;
     std::string activityOwner;
     std::string activityName;
@@ -35,6 +36,7 @@ ShootingView capture(UiContext& ctx) {
     v.stats = mod->stats();
     v.cfg = mod->config();
     v.profile = ctx.engine.profile();
+    v.style = keyStyleFromIndex(ctx.engine.settings().profile.buttonStyle);
     v.worldControl = ctx.engine.worldControlAllowed();
     v.activityOwner = ctx.engine.activityOwner();
     v.activityName = ctx.engine.activityName();
@@ -94,8 +96,8 @@ void flickSection(UiContext& ctx, const ShootingView& v) {
     ImGui::TextWrapped(
         "La balle est posée sur ton toit. Saute puis dodge : le plugin reconnaît le flick, mesure sa puissance, "
         "sa direction par rapport à la cible, la hauteur et ton timing, puis te donne un conseil.");
-    ImGui::Text("Tes boutons : %s, %s", actionPrompt(v.profile, GameAction::Jump).c_str(),
-                shoot::airRollPrompt(v.profile).c_str());
+    ImGui::Text("Tes boutons : %s, %s", actionPrompt(v.profile, GameAction::Jump, v.style).c_str(),
+                shoot::airRollPrompt(v.profile, v.style).c_str());
     if (ImGui::Button("Flicks libres (tous types)")) ctx.post("shooting", "flick", {"any"});
     ui::helpMarker("Fais le flick que tu veux : il est reconnu et noté. Les records sont gardés par type.");
     ImGui::Spacing();
@@ -105,7 +107,7 @@ void flickSection(UiContext& ctx, const ShootingView& v) {
         const std::string header = std::string(shoot::flickTypeLabel(type)) + "##flicktype";
         if (ImGui::TreeNode(header.c_str())) {
             ImGui::PushTextWrapPos(0.f);
-            ImGui::TextUnformatted(shoot::flickHowTo(type, v.profile).c_str());
+            ImGui::TextUnformatted(shoot::flickHowTo(type, v.profile, v.style, v.cfg.delayedSec).c_str());
             ImGui::PopTextWrapPos();
             const shoot::FlickRecord& rec = v.stats.flickAll[static_cast<size_t>(i)];
             if (rec.count > 0)
@@ -128,10 +130,16 @@ void targetsSection(UiContext& ctx, const ShootingView& v) {
     const char* zoneButtons[] = {"Lucarne gauche",   "Lucarne droite", "Poteau bas gauche",
                                  "Poteau bas droit", "Centre",         "Aléatoire"};
     const char* zoneArgs[] = {"tl", "tr", "bl", "br", "center", "random"};
+    ImGui::Text("Zone visée (lance l'exercice) :");
     for (int i = 0; i < 6; ++i) {
         if (i % 3 != 0) ImGui::SameLine();
-        const std::string label = std::string(zoneButtons[i]) + "##zone";
-        if (ImGui::Button(label.c_str())) ctx.post("shooting", "targets", {zoneArgs[i]});
+        const bool selected = v.status.zoneSelection == i;
+        const std::string label = std::string(selected ? "> " : "") + zoneButtons[i] + "##zone" + std::to_string(i);
+        if (ImGui::Button(label.c_str())) {
+            // Saved choice (also the flick target "Zone choisie dans Cibles"), then start the drill.
+            ctx.setCvar("rlt_sh_target_zone", std::to_string(i));
+            ctx.post("shooting", "targets", {zoneArgs[i]});
+        }
     }
     ImGui::Text("Mise en place :");
     const int setupSel = v.status.setupSelection;

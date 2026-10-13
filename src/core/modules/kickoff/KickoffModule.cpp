@@ -28,6 +28,8 @@ KickoffLevel ghostLevel(KickoffGhostMode m) {
     }
 }
 
+constexpr int64_t kPadRespawnTicks = 4 * 120;  // small boost pad respawn time (4 s)
+
 BallPlacement restingBall(float z) {
     BallPlacement b;
     b.pos = {0.f, 0.f, z};
@@ -193,6 +195,7 @@ KickoffDuelParams KickoffModule::duelParams() const {
 KickoffRecorderParams KickoffModule::recorderParams(const PlayerProfile& profile) const {
     KickoffRecorderParams p;
     if (profile.valid) p.dodgeDeadzone = clampf(profile.dodgeDeadzone, 0.1f, 0.95f);
+    if (lastPadFrame_ >= 0) p.padsBusyUntilFrame = lastPadFrame_ + kPadRespawnTicks;
     return p;
 }
 
@@ -290,7 +293,12 @@ void KickoffModule::onActivityStopped() {
     message_ = "Exercice kickoff interrompu.";
 }
 
+void KickoffModule::notePadPickups() {
+    if (recorder_.started()) lastPadFrame_ = std::max(lastPadFrame_, recorder_.metrics().lastPadFrame);
+}
+
 void KickoffModule::resetRepState() {
+    notePadPickups();
     recorder_.reset();
     attemptDone_ = false;
     waitingForNext_ = false;
@@ -306,6 +314,7 @@ void KickoffModule::resetTransient() {
     if (running_) stopDrill(true, "Exercice arrêté : la map a changé.");
     resetPassive();
     lastTickFrame_ = -1;
+    lastPadFrame_ = -1;  // new map or restarted frame counter: old pickup frames mean nothing
 }
 
 KickoffSpawn KickoffModule::pickSpawn() {
@@ -619,7 +628,8 @@ void KickoffModule::finalize(const TickContext& ctx, Actions& out, bool passive,
 
     const float previousBest = stats_.of(m.spawn).bestTime;
     // Passive results never count as ghost duels (the "vs fantôme" win rate stays a drill statistic).
-    const bool newPb = stats_.record(m, g.total, passive ? nullptr : dp);
+    // A run with unlimited boost is graded but never becomes a record (best time, "Mon record" ghost).
+    const bool newPb = stats_.record(m, g.total, passive ? nullptr : dp, !m.boostLooksUnlimited);
     if (!passive && repGhostMode_ == KickoffGhostMode::Adaptive && dp) staircase_.record(kickoffDuelWon(dp->outcome));
     out.results.push_back(kickoffMakeResult(m, g, dp, target, sn.time));
     out.requestSave = true;
@@ -663,6 +673,7 @@ void KickoffModule::finalize(const TickContext& ctx, Actions& out, bool passive,
         }
         if (newPb) line += ". Nouveau record !";
         else line += ".";
+        if (m.boostLooksUnlimited) line += " Boost illimité : record non compté.";
         out.chat.push_back({line, "RL Trainer"});
         if (!g.tips.empty())
             out.chat.push_back({std::string("Conseil : ") + kickoffTipText(g.tips.front().tip), "RL Trainer"});
@@ -781,7 +792,10 @@ void KickoffModule::onCommand(const Command& cmd, const TickContext& ctx, Action
 
 // ---- Passive analysis ----------------------------------------------------------------------------------------
 void KickoffModule::resetPassive() {
-    if (passivePhase_ == PassivePhase::Live) recorder_.reset();
+    if (passivePhase_ == PassivePhase::Live) {
+        notePadPickups();
+        recorder_.reset();
+    }
     passivePhase_ = PassivePhase::Waiting;
     ballMovingTicks_ = 0;
 }

@@ -143,6 +143,7 @@ private:
     bool carTeleported(const Snapshot& sn);
     bool headingToBall(const Snapshot& sn) const;
     void resetRepState();
+    void notePadPickups();  // keeps the last pad pickup frame of the attempt being dropped (pad respawn timer)
 
     // Passive analysis.
     void tickPassive(const TickContext& ctx, Actions& out);
@@ -192,6 +193,7 @@ private:
     int64_t lastCarFrame_ = 0;
     bool haveLastCar_ = false;
     int invalidTicks_ = 0;
+    int64_t lastPadFrame_ = -1;  // last boost pad pickup seen by an attempt (small pads respawn after 4 s)
 
     // Passive analysis state.
     PassivePhase passivePhase_ = PassivePhase::Waiting;

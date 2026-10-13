@@ -5,6 +5,7 @@
 #include <string>
 
 #include "core/common/Context.h"
+#include "core/common/Controls.h"
 #include "core/common/Grade.h"
 #include "core/modules/shooting/FlickAnalyzer.h"
 #include "core/modules/shooting/ShootGeometry.h"
@@ -21,6 +22,7 @@ struct FlickGradeParams {
     float minPower = 1300.f; // uu/s for a success
     bool requireOnTarget = true; // success needs a shot predicted on goal
     float aimErrorDeg = 0.f; // flat angle between the launch and the target (used when the plane is not reached)
+    float delayedSec = 0.6f; // delayed flick threshold (rlt_sh_delayed_sec), quoted in the tip
     float time = 0.f;
 };
 
@@ -51,11 +53,16 @@ struct PowerShot {
 float powerScore01(float kmh);
 AttemptResult gradePower(const PowerShot& shot, float goalUus, float time);
 
+// French decimal with a comma and no trailing zeros: 0.6 -> "0,6", 0.75 -> "0,75", 1 -> "1".
+std::string frenchDecimal(float value);
+
+// The texts below use the player's own buttons in the button style chosen in "Ma config"
+// (keyStyleFromIndex(settings.profile.buttonStyle)); `delayedSec` is the delayed flick threshold.
 // Short HUD cue of a flick type with the player's jump button, e.g. "Saut (A), nez en bas, puis backflip".
-std::string flickCue(FlickType t, const PlayerProfile& profile);
+std::string flickCue(FlickType t, const PlayerProfile& profile, KeyStyle style, float delayedSec);
 // French how-to of a flick type with the player's own buttons, for prompts and the UI.
-std::string flickHowTo(FlickType t, const PlayerProfile& profile);
+std::string flickHowTo(FlickType t, const PlayerProfile& profile, KeyStyle style, float delayedSec);
 // "Air roll (LB)" with the best air roll binding available (directional when that is what the player uses).
-std::string airRollPrompt(const PlayerProfile& profile);
+std::string airRollPrompt(const PlayerProfile& profile, KeyStyle style);
 
 } // namespace rlt::shoot

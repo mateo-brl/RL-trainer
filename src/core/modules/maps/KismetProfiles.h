@@ -37,6 +37,7 @@ struct KismetProfile {
     bool finishOnWrap = false;       // level goes back to 1 after the final level => finished
     bool finishOnReach = false;      // level/counter reaches finalLevel => finished
     bool finishOnGoal = false;       // goal while at the final level (or final unknown) => finished
+    bool finishOnFall = false;       // start bool true -> false ends the run as finished (no level to check)
 
     // Something to time with at all.
     bool usable() const {

@@ -371,6 +371,9 @@ enum class DTK { Good, Landed, LateNoSecond };
 std::vector<SimTick> doubleTapScenario(DTK kind);
 enum class AD { GroundCarry, WallBump, Short };
 std::vector<SimTick> airDribbleScenario(AD kind);
+// Review regression: 0.5 s roof carry (continuous contact), jump pop, `bumps` separate air touches 12 ticks apart,
+// then a front dodge into the ball. An air dribble with a flip finish, not a delayed flick.
+std::vector<SimTick> airDribbleFlipFinish(int bumps = 8);
 enum class AE { AirRoll, Redirect, OffCenter };
 std::vector<SimTick> aerialScenario(AE kind, int team = 0);
 enum class PI_ { Ground, Kuxir, Weak };

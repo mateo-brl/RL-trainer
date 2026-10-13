@@ -309,15 +309,19 @@ void PredictionModule::onTick(const TickContext& ctx, Actions& out) {
     bool need = forceRecompute_ || !path_.valid;
     if (!need) {
         const int64_t elapsed = s.frame - path_.frame;
-        if (elapsed < 0 || elapsed >= std::max(1, cfg_.recomputeTicks) || elapsed > path_.size()) {
-            need = true;
+        if (elapsed < 0 || elapsed > path_.size()) {
+            need = true;  // history jump or a cache older than its own horizon: nothing to compare with
         } else if (elapsed > 0) {
+            // Always compare with the cache first, even on a regular recompute tick: a touch landing on that tick
+            // must still be classed (forced recompute, outside disturbance), the period is only the fallback.
             const int e = static_cast<int>(elapsed);
             const float dv = length(s.ball.vel - path_.velAt(e));
             const float dp = distance(s.ball.pos, path_.posAt(e));
             if (dv > cfg_.recomputeSpeedDelta || dp > kTeleportCheck) {
                 need = true;
                 onForcedRecompute(s, e, dv, dp);
+            } else if (elapsed >= std::max(1, cfg_.recomputeTicks)) {
+                need = true;
             }
         }
     }
@@ -586,6 +590,9 @@ void PredictionModule::draw(const ViewContext& view, const DrawContext& ctx, Dra
         }
     }
     if (replay || stale) {
+        // Entering the view mode again (a second demolition, back to a replay): the view cache is from an earlier
+        // period, possibly minutes old. Drop it so the first frame predicts from the ball seen now.
+        if (!lastDrawFromView_) viewPath_.valid = false;
         lastDrawFromView_ = true;
         updateViewPath(view, ctx);
         if (!viewPath_.valid) return;

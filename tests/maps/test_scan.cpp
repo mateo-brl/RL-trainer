@@ -101,6 +101,37 @@ TEST(maps_scan_mods_layout_titles_and_direct_files) {
     CHECK(cool && labs);
 }
 
+TEST(maps_scan_folder_with_several_udk_lists_each_map) {
+    TempDir t("multi");
+    t.file("Dribble/NoobDribble.udk");
+    t.file("Dribble/DribblingChallenge2.udk");
+    t.file("Dribble/LethDribble.udk");
+    t.file("Dribble/Shared_Textures.upk");          // dependency package of the collection: not a map
+    t.file("2025564083/GiantRings.udk");
+    t.file("2025564083/GiantRings_Assets.upk", 9000);  // one map + its dependencies: one entry
+    t.file("3000000002/MapA.udk");
+    t.file("3000000002/MapB.udk");                  // a workshop item holding two maps
+    std::vector<ScannedMap> out;
+    scanMapRoot(t.root, "Dossier perso", out);
+    finalizeScan(out);
+    CHECK(out.size() == 6);
+    const ScannedMap* noob = byId(out, "1843822064");  // catalogue by file name
+    CHECK(noob != nullptr && noob->title == "Noob Dribble" && noob->folder == "Dribble");
+    CHECK(byId(out, "964271505") != nullptr);
+    const ScannedMap* leth = byId(out, "lethdribble");
+    CHECK(leth != nullptr);
+    if (leth) {
+        CHECK(leth->title == "Leth Dribble");  // its own name, not the folder's
+        CHECK(leth->category == MapCategory::Dribble);
+    }
+    const ScannedMap* giant = byId(out, "2025564083");
+    CHECK(giant != nullptr && giant->stem == "GiantRings");
+    // Two maps of one workshop folder: each keeps its own identity (no shared id, no dedup).
+    CHECK(byId(out, "3000000002") == nullptr);
+    CHECK(byId(out, "mapa") != nullptr && byId(out, "mapb") != nullptr);
+    for (const auto& m : out) CHECK(m.stem != "Shared_Textures" && m.stem != "GiantRings_Assets");
+}
+
 TEST(maps_scan_dedup_sort_and_bad_roots) {
     TempDir a("dedup_a");
     TempDir b("dedup_b");

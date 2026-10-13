@@ -22,7 +22,7 @@ void MechStats::record(float score, bool success) {
         ++successes;
         ++sessionSuccesses;
     }
-    scoreSum += score;
+    scoreSum += static_cast<double>(score);
     best = std::max(best, score);
     recent.push_back(score);
     if (recent.size() > kRecent) recent.erase(recent.begin(), recent.begin() + static_cast<long>(recent.size() - kRecent));
@@ -40,7 +40,7 @@ void Stats::save(Store& st) const {
         const std::string k = std::string("ballmech.stats.") + mechInfo(i).id;
         st.setInt(k + ".attempts", m.attempts);
         st.setInt(k + ".successes", m.successes);
-        st.setFloat(k + ".score_sum", m.scoreSum);
+        st.setDouble(k + ".score_sum", m.scoreSum);
         st.setFloat(k + ".best", m.best);
         std::vector<std::string> recent;
         recent.reserve(m.recent.size());
@@ -65,7 +65,9 @@ void Stats::load(const Store& st) {
         m = MechStats{};
         m.attempts = static_cast<int>(std::max(0LL, std::min(100000000LL, st.getInt(k + ".attempts", 0))));
         m.successes = static_cast<int>(std::max(0LL, std::min<long long>(m.attempts, st.getInt(k + ".successes", 0))));
-        m.scoreSum = sane(st.getFloat(k + ".score_sum", 0.f), 0.f, 100.f * static_cast<float>(m.attempts));
+        // Older saves wrote the sum with setFloat: getDouble parses both.
+        const double sum = st.getDouble(k + ".score_sum", static_cast<double>(st.getFloat(k + ".score_sum", 0.f)));
+        m.scoreSum = std::isfinite(sum) ? std::max(0.0, std::min(100.0 * static_cast<double>(m.attempts), sum)) : 0.0;
         m.best = sane(st.getFloat(k + ".best", 0.f), 0.f, 100.f);
         const auto recent = st.getList(k + ".recent");
         const size_t first = recent.size() > MechStats::kRecent ? recent.size() - MechStats::kRecent : 0;

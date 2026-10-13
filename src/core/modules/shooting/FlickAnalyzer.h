@@ -4,6 +4,13 @@
 //   Idle -> Carry (car grounded, ball resting on the roof) -> Air (jump with the ball on the roof)
 //        -> Dodged (dodge start while the ball is still on / near the car) -> report
 //
+// Timing of the snapshots (built in the SetVehicleInput pre-hook): `in` is the NEW input of the tick while the
+// car flags are the state BEFORE its physics step. A dodge pressed at tick D therefore shows `in.jump` rising at
+// D and `car.dodging` (with the engine dodge direction) only from D+1. The input edge opens the Dodged phase
+// provisionally with the stick direction; within kConfirmTicks the engine either confirms the dodge (IsDodging,
+// its direction replaces the stick one) or turns the press into a double jump (bDoubleJumped rises: the attempt
+// is dropped, a double jump is not a flick). Only a dodge the engine never confirmed is flagged `uncertain`.
+//
 // The report is produced 0.1 s after the last ball touch following the dodge (or at a timeout), with the ball
 // speed right after the flick (TouchEvent.post of the last touch), the launch direction, the timing (time on
 // the roof, jump to dodge delay) and the features used by classifyFlick().
@@ -98,7 +105,9 @@ struct FlickReport {
     bool contact = false; // the dodge hit the ball
     bool inferredContact = false; // contact deduced from the ball velocity (no touch event)
     bool lostBall = false; // ball left the car before the dodge
-    bool dodgeFromInput = false; // dodge direction guessed from the stick
+    bool dodgeFromInput = false; // dodge direction taken from the stick (engine gave no direction)
+    bool dodgeConfirmed = false; // the engine reported the dodge (IsDodging) after the press
+    bool dirMismatch = false; // engine and stick directions disagree (frame of GetDodgeDirection to verify)
     float power = 0.f; // uu/s, ball speed right after the flick
     float gain = 0.f; // uu/s, power - car speed at the dodge
     float carSpeedAtJump = 0.f;
@@ -135,8 +144,15 @@ public:
     // Seconds the ball has been settled on the roof with the car grounded (0 when not carrying).
     float settledTime(int64_t nowFrame) const;
 
+    // Ticks after the press during which the engine may confirm the dodge (IsDodging) or report a double jump.
+    static constexpr int64_t kConfirmTicks = 3;
+
 private:
     void enterIdle();
+    // Opens the Dodged phase. `confirmed`: the engine flag rose this tick (else the jump press edge of this tick).
+    void startDodge(const Snapshot& s, float distToCar, bool confirmed);
+    // Engine confirmation of a provisional dodge. Returns false when the press became a double jump.
+    bool confirmDodge(const Snapshot& s);
     FlickReport buildReport(const Snapshot& s, bool inferred);
 
     FlickThresholds th_;
@@ -154,6 +170,7 @@ private:
     int64_t lastOnRoof_ = -1000000;
 
     // Jump / air phase
+    int64_t lastJumpPress_ = -1000000; // last rising edge of the jump button
     int64_t jumpFrame_ = 0;
     Vec3 heading0_{1.f, 0.f, 0.f};
     Vec3 travel0_{1.f, 0.f, 0.f};
@@ -174,6 +191,10 @@ private:
     Vec3 vBallBefore_;
     float carSpeedAtDodge_ = 0.f;
     bool dodgeFromInput_ = false;
+    bool dodgePending_ = false; // input edge seen, engine confirmation still expected
+    bool dodgeConfirmed_ = false;
+    bool dirMismatch_ = false;
+    Vec3 inputDir_; // normalized stick direction at the press (car-local x fwd, y right)
     bool lostAtDodge_ = false;
 
     // Touches after the dodge

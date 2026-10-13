@@ -7,6 +7,9 @@ namespace rlt {
 
 namespace {
 
+constexpr float kTipMinLoss = 2.5f;       // tips costing less than this are not shown
+constexpr float kMissedPadMinLoss = 2.6f;  // above kTipMinLoss: the pad tip can surface when nothing bigger is wrong
+
 // Linear map of v to 0..100: `best` -> 100, `worst` -> 0 (either order), clamped.
 float lin(float v, float best, float worst) { return rampScore(v, best, worst) * 100.f; }
 
@@ -182,9 +185,15 @@ KickoffGrade kickoffGrade(const KickoffMetrics& m, KickoffLevel target, const Ki
     else if (m.reaction > 0.05f) add(KickoffTip::SlowReaction, (100.f - g.sReact) * e * 0.2f + 0.2f);
     add(KickoffTip::BoostReleased, (100.f - g.sBoost) * e * 0.2f);
     add(KickoffTip::PathDeviation, (100.f - g.sPath) * e * 0.2f);
-    // Missed small pad that the straight line would have collected (meaningless with unlimited boost).
-    if (m.padsPicked == 0 && !m.boostLooksUnlimited && !kickoffPadsOnPath(kickoffPath(m.spawn, m.team)).empty())
-        add(KickoffTip::MissedPad, 2.f);
+    // Missed small pad that the straight line would have collected (meaningless with unlimited boost, and not the
+    // player's fault when a pad picked on the previous rep may still be respawning). Its loss is the time the
+    // 12 boost is worth in time points: ~0.06 s when the tank ran dry before the ball (the pad would have kept
+    // the boost on), ~0.04 s otherwise; never under the 2.5 point floor of the tip list, so it can be shown.
+    if (m.padsPicked == 0 && !m.boostLooksUnlimited && !m.padsMaybeOnCooldown &&
+        !kickoffPadsOnPath(kickoffPath(m.spawn, m.team)).empty()) {
+        const float padTime = m.boostAtTouch < 1.f ? 0.06f : 0.04f;
+        add(KickoffTip::MissedPad, std::max(kMissedPadMinLoss, padTime / span * 100.f * w.time));
+    }
 
     const float total =
         w.time * g.sTime + w.speed * g.sSpeed + w.contact * g.sContact + w.outcome * g.sOutcome + w.exec * g.sExec;
@@ -200,7 +209,7 @@ KickoffGrade kickoffGrade(const KickoffMetrics& m, KickoffLevel target, const Ki
     std::stable_sort(merged.begin(), merged.end(),
                      [](const KickoffTipLoss& a, const KickoffTipLoss& b) { return a.loss > b.loss; });
     for (const auto& c : merged) {
-        if (g.tips.size() >= 3 || c.loss < 2.5f) break;
+        if (g.tips.size() >= 3 || c.loss < kTipMinLoss) break;
         g.tips.push_back(c);
     }
     if (g.tips.empty() && g.total >= 85) g.tips.push_back({KickoffTip::GreatKickoff, 0.f});
@@ -288,7 +297,8 @@ AttemptResult kickoffMakeResult(const KickoffMetrics& m, const KickoffGrade& g, 
         tip.weight = t.loss;
         r.tips.push_back(std::move(tip));
     }
-    if (m.touched) {
+    // Unlimited boost makes the time unrealistic: graded, but never stored as a record.
+    if (m.touched && !m.boostLooksUnlimited) {
         r.valueForRecord = m.timeToTouch;
         r.lowerIsBetter = true;
         r.hasRecordValue = true;

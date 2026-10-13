@@ -25,7 +25,14 @@ void UiContext::post(const std::string& module, const std::string& name, std::ve
 }
 
 void UiContext::runOnGame(std::function<void()> fn) const {
-    game->Execute([fn = std::move(fn)](GameWrapper*) { fn(); });
+    // Runs a frame later: skip it if the plugin unloaded in between, and never let an exception reach the game.
+    game->Execute([alive = this->alive, fn = std::move(fn)](GameWrapper*) {
+        if (alive && !*alive) return;
+        try {
+            fn();
+        } catch (...) {
+        }
+    });
 }
 
 Settings UiContext::settings() const {

@@ -54,7 +54,6 @@ struct MapsService::KismetCache {
     std::chrono::steady_clock::time_point waitStart{};
     std::chrono::steady_clock::time_point nextTry{};
     int attempts = 0;
-    int reads = 0;
     bool categoryDone = false;
 };
 
@@ -389,8 +388,8 @@ std::vector<KismetVar> MapsService::readKismet() {
                 return out;
             }
         }
-        // About every 2 s (reads come at ~30 Hz): make sure the level was not swapped under the cache.
-        if (++k.reads % 60 == 0) {
+        // Every read: the cached variables point into the level, so a swapped level must never be read.
+        {
             SequenceWrapper seq = gw_->GetMainSequence();
             if (seq.IsNull() || seq.memory_address != k.sequence) {
                 clearKismetCache();
@@ -441,7 +440,6 @@ void MapsService::clearKismetCache() {
     k.cached = false;
     k.waiting = false;
     k.attempts = 0;
-    k.reads = 0;
     k.categoryDone = false;
     std::lock_guard<std::mutex> lk(mutex_);
     kismetInfo_ = KismetCacheInfo{};

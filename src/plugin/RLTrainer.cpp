@@ -54,6 +54,7 @@ void RLTrainer::onLoad() {
     updates_->cleanup();
     ui_ = std::unique_ptr<UiContext>(new UiContext{*engine_, cvarManager, gameWrapper, profile_.get(), maps_.get(), false, &configDirty_});
     ui_->updateService = updates_.get();
+    ui_->alive = alive_;
     ui_->applyActions = [alive = alive_, this](Actions& a) {
         if (*alive) guarded(cvarManager, "applyActions", [&] { run(a); });
     };
@@ -326,6 +327,8 @@ void RLTrainer::periodic() {
 void RLTrainer::refreshContext() {
     GameContext ctx;
     ctx.mapName = gameWrapper->GetCurrentMap();
+    // A level swap that skips GameEvent_Soccar_TA.Destroyed would leave the Kismet cache on freed objects.
+    if (ctx.mapName != engine_->context().mapName) maps_->clearKismetCache();
     const bool stock = maps_->isStockMap(ctx.mapName);
     ctx.mode = bridge_->detectMode(stock);
     ctx.isCustomMap = ctx.mode == GameMode::Workshop;

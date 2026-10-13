@@ -323,16 +323,8 @@ AttemptResult BallMechModule::makeResult(const bm::MechGrade& g, int mech, bool 
     for (const auto& e : extra)
         if (std::find(errors.begin(), errors.end(), e) == errors.end()) errors.push_back(e);
     r.tips = bm::buildTips(errors, profile, keyStyle_);
-    switch (static_cast<Mech>(mech)) {
-    case Mech::Flick:
-    case Mech::Musty:
-    case Mech::Breezi: r.valueForRecord = g.ballSpeed; break;
-    case Mech::AirDribble: r.valueForRecord = g.value("duration"); break;
-    case Mech::Pinch:
-    case Mech::PowerShot: r.valueForRecord = g.value("exit_speed", g.ballSpeed); break;
-    default: r.valueForRecord = r.score; break;
-    }
-    r.hasRecordValue = true;
+    // Only a value the grade really measured (finite) is a record candidate, see bm::recordValueOf.
+    r.hasRecordValue = bm::recordValueOf(static_cast<Mech>(mech), g, r.score, r.valueForRecord);
     r.lowerIsBetter = false;
     return r;
 }
@@ -597,8 +589,9 @@ void BallMechModule::failDrill(const char* code, const TickContext& ctx, Actions
     std::vector<std::string> codes{code};
     if (std::string(code) != primaryFailCode(dm)) codes.push_back(primaryFailCode(dm));
     r.tips = bm::buildTips(codes, ctx.profile, keyStyle_);
+    // Nothing was measured: no record value (a 0 placeholder would read as a real, if poor, value).
     r.valueForRecord = 0.f;
-    r.hasRecordValue = true;
+    r.hasRecordValue = false;
     drill_.lastVerdict = r.title;
     publish(std::move(r), drill_.mech, nullptr, ctx, out);
     resolveDrill(false, ctx);

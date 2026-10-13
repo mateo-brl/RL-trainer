@@ -139,10 +139,14 @@ std::string MapsModule::resolvedTitle() const {
 }
 
 MapCategory MapsModule::resolvedCategory(std::string* source) const {
+    return categoryFrom(book_.find(key_), ctxCategory_, ctxTitle_, mapName_, source);
+}
+
+MapCategory MapsModule::categoryFrom(const MapStats* st, MapCategory listed, const std::string& title,
+                                     const std::string& mapName, std::string* source) const {
     auto set = [&](const char* s) {
         if (source) *source = s;
     };
-    const MapStats* st = book_.find(key_);
     if (st && st->categoryOverride) {
         set("ton choix");
         return st->category;
@@ -156,11 +160,11 @@ MapCategory MapsModule::resolvedCategory(std::string* source) const {
         set("variables de la map");
         return run_.profile().category;
     }
-    if (ctxCategory_ != MapCategory::Standard && ctxCategory_ != MapCategory::Other) {
+    if (listed != MapCategory::Standard && listed != MapCategory::Other) {
         set("liste des maps");
-        return ctxCategory_;
+        return listed;
     }
-    const MapCategory g = guessMapCategory(ctxTitle_ + " " + mapName_);
+    const MapCategory g = guessMapCategory(title + " " + mapName);
     if (g != MapCategory::Other) {
         set("nom de la map");
         return g;
@@ -907,7 +911,9 @@ DrawPanel MapsModule::buildHud(const ViewContext& view, const DrawContext& ctx, 
     } else if (run_.hasProfile() && run_.profile().hasKismetStart()) {
         line("En attente du départ de la map", grey);
     } else if (run_.ownStartActive()) {
-        line(actionPrompt(ctx.profile, GameAction::ResetShot) + " pour relancer un run", grey);
+        line(actionPrompt(ctx.profile, GameAction::ResetShot, keyStyleFromIndex(ctx.settings.profile.buttonStyle)) +
+                 " pour relancer un run",
+             grey);
     }
 
     // Level k/N
@@ -1098,18 +1104,26 @@ std::map<std::string, MapCategory> MapsModule::categoryOverrides() const {
     return out;
 }
 
+// Runs every 0.25 s on the game thread (glue context refresh, under the engine lock), possibly before any map
+// was seen: lookups only, never creates a stats entry nor touches the module state. `ctx` comes fresh from the
+// glue each time; reading it (not the engine's previous, already refined context) keeps a removed choice from
+// sticking.
 void MapsModule::refineContext(GameContext& ctx) const {
     if (!ctx.isCustomMap) return;
+    // Same file as the current map but the glue lost its workshop id: keep the id key (no stats split).
+    if (custom_ && ctx.workshopId.empty() && isWorkshopId(workshopId_) && bounded(ctx.mapName, 256) == mapName_)
+        ctx.workshopId = workshopId_;
     const std::string key = mapStatsKey(ctx.workshopId, ctx.mapName);
+    if (key.empty()) return;
+    const MapStats* st = book_.find(key);
     if (custom_ && key == key_) {
         if (ctx.mapTitle.empty() || catalog_) ctx.mapTitle = resolvedTitle();
-        ctx.category = resolvedCategory(nullptr);
+        ctx.category = categoryFrom(st, ctx.category, ctx.mapTitle, ctx.mapName, nullptr);
         return;
     }
-    if (const MapStats* st = book_.find(key)) {
-        if (ctx.mapTitle.empty() && !st->title.empty()) ctx.mapTitle = st->title;
-        if (st->categoryOverride) ctx.category = st->category;
-    }
+    if (!st) return;
+    if (ctx.mapTitle.empty() && !st->title.empty()) ctx.mapTitle = st->title;
+    if (st->categoryOverride) ctx.category = st->category;
 }
 
 } // namespace rlt

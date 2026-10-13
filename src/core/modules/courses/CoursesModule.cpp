@@ -268,6 +268,14 @@ void CoursesModule::prepareControl(const TickContext& ctx) {
     (void)ctx;
 }
 
+bool CoursesModule::refuseIdleShortcut(const TickContext& ctx, Actions& out) {
+    // "restart" / "next" while idle are shortcuts (key binds, a stale tab button): they never stop another
+    // module's drill. Choosing an exercise ("rings", "control", "play") still takes over on purpose.
+    if (!ctx.otherActivityRunning) return false;
+    say(out, "Un autre exercice est en cours : choisis un parcours dans l'onglet Parcours pour le remplacer.");
+    return true;
+}
+
 bool CoursesModule::acquireActivity(CoursesKind kind, const TickContext& ctx, Actions& out) {
     if (!cfg_.enabled) {
         say(out, "Le module Parcours est désactivé (onglet Parcours).");
@@ -513,13 +521,18 @@ void CoursesModule::onCommand(const Command& cmd, const TickContext& ctx, Action
         else say(out, "Code du parcours : " + code_ + " (bouton Copier dans l'onglet Parcours).");
     } else if (name == "restart") {
         if (phase_ == CoursesPhase::Idle) {
+            if (refuseIdleShortcut(ctx, out)) return;
             replayLast(ctx, out);  // the last course or control drill, keeping its origin (generated or code)
         } else {
             restartAttempt();
         }
     } else if (name == "next") {
-        if (phase_ == CoursesPhase::Idle) startExercise(kind_, std::string(), ctx, out);
-        else nextAttempt(ctx, out);
+        if (phase_ == CoursesPhase::Idle) {
+            if (refuseIdleShortcut(ctx, out)) return;
+            startExercise(kind_, std::string(), ctx, out);
+        } else {
+            nextAttempt(ctx, out);
+        }
     } else if (name == "stop") {
         if (phase_ != CoursesPhase::Idle) {
             stopExercise(true);

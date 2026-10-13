@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 #include "core/common/Controls.h"
 #include "core/common/Text.h"
@@ -59,6 +60,15 @@ float metricValue(const AttemptResult& r, const char* key, float def) {
 }
 
 int setupIndex(TargetSetup s) { return std::clamp(static_cast<int>(s), 1, kTargetSetupCount - 1); }
+
+// Console commands save the zone / setup choice like the tab does (ctx.setCvar): through the module's own cvars,
+// whose choice indexes are the selections (zone 0..4 or kZoneRandom, setup 0 mix..4).
+void persistZone(Actions& out, int zoneSel) {
+    out.setCvars.emplace_back("rlt_sh_target_zone", std::to_string(zoneSel));
+}
+void persistSetup(Actions& out, int setupSel) {
+    out.setCvars.emplace_back("rlt_sh_target_setup", std::to_string(setupSel));
+}
 
 } // namespace
 
@@ -187,8 +197,9 @@ void ShootingModule::describeSettings(SettingsSchema& schema) {
 }
 
 void ShootingModule::onSettingsChanged(const Settings& settings) {
-    // Zone / setup selections follow their cvars when those change (any module's change calls this); the
-    // "targets", "zone" and "setup" commands override them in between.
+    // Zone / setup selections follow their cvars when those change (any module's change calls this). The
+    // "targets", "zone" and "setup" commands set the selection at once and save it through Actions::setCvars,
+    // so the cvar catches up a moment later with the same value.
     if (!settingsSeen_ || settings.shooting.targetZone != cfg_.targetZone)
         zoneSel_ = std::clamp(settings.shooting.targetZone, 0, kZoneRandom);
     if (!settingsSeen_ || settings.shooting.targetSetup != cfg_.targetSetup)
@@ -296,19 +307,25 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
     }
     if (n == "targets" || n == "target" || n == "cibles") {
         int zsel = zoneSel_, ssel = setupSel_;
+        bool zoneGiven = false, setupGiven = false;
         for (const auto& arg : cmd.args) {
             int v = 0;
-            if (parseZone(arg, v))
+            if (parseZone(arg, v)) {
                 zsel = v;
-            else if (parseSetup(arg, v))
+                zoneGiven = true;
+            } else if (parseSetup(arg, v)) {
                 ssel = v;
-            else {
+                setupGiven = true;
+            } else {
                 warn("Zone inconnue : " + arg + ". Choix : tl, tr, bl, br, center, random.");
                 return;
             }
         }
         zoneSel_ = std::clamp(zsel, 0, kZoneRandom);
         setupSel_ = std::clamp(ssel, 0, kTargetSetupCount - 1);
+        // Saved even when the drill cannot start here, like the tab's zone buttons.
+        if (zoneGiven) persistZone(out, zoneSel_);
+        if (setupGiven) persistSetup(out, setupSel_);
         startDrill(ShootMode::Targets, ctx, out);
         return;
     }
@@ -327,6 +344,7 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
             return;
         }
         setupSel_ = std::clamp(v, 0, kTargetSetupCount - 1);
+        persistSetup(out, setupSel_);
         const std::string text = std::string("Mise en place : ") + setupLabel(static_cast<TargetSetup>(setupSel_));
         if (mode_ == ShootMode::Targets) {
             newAttemptLater(text + ".");
@@ -343,6 +361,7 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
             return;
         }
         zoneSel_ = std::clamp(v, 0, kZoneRandom);
+        persistZone(out, zoneSel_);
         const std::string label = zoneSel_ == kZoneRandom ? std::string("aléatoire")
                                                           : std::string(zoneLabel(static_cast<Zone>(zoneSel_)));
         if (mode_ == ShootMode::Targets) {

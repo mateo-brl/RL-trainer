@@ -195,6 +195,7 @@ KickoffDuelParams KickoffModule::duelParams() const {
 KickoffRecorderParams KickoffModule::recorderParams(const PlayerProfile& profile) const {
     KickoffRecorderParams p;
     if (profile.valid) p.dodgeDeadzone = clampf(profile.dodgeDeadzone, 0.1f, 0.95f);
+    // Only a pickup since the last PLACE (drill) or a recent passive attempt can leave a pad respawning.
     if (lastPadFrame_ >= 0) p.padsBusyUntilFrame = lastPadFrame_ + kPadRespawnTicks;
     return p;
 }
@@ -371,6 +372,12 @@ void KickoffModule::placeRep(const TickContext& ctx, Actions& out) {
     out.setCar = car;
     out.setBall = restingBall(cfg_.ballHeight);
     out.setBoost = cfg_.spawnBoost;
+    // Match conditions for every rep (placeRep only runs while the drill owns the activity): limited boost (the
+    // freeplay "unlimited boost" would falsify the times; the engine puts the player's rules back when the activity
+    // ends) and every boost pad respawned, so pickups made before this tick no longer matter.
+    out.boostRules = BoostRules{false, false};
+    out.resetPickups = true;
+    lastPadFrame_ = -1;
     // Zero the inputs without freezing on this tick: the placement is applied before the car is frozen.
     out.overrideInputs = Inputs{};
     const int countdown = std::max(1, cfg_.countdownSeconds);

@@ -1,7 +1,6 @@
 #include "core/modules/overlay/OverlayModule.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 
@@ -31,10 +30,6 @@ SpeedUnit unitFromIndex(int i) {
     }
 }
 
-double steadySeconds() {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 bool validDate(const std::string& d) {
     if (d.size() != 10 || d[4] != '-' || d[7] != '-') return false;
     for (size_t i = 0; i < d.size(); ++i) {
@@ -55,8 +50,6 @@ bool loadTicks(const std::string& text, double hiSeconds, int64_t& ticks) {
 
 bool finite(const Vec3& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 } // namespace
-
-OverlayModule::OverlayModule() : clock_(&steadySeconds) {}
 
 // ---- Time accounting helpers -----------------------------------------------------------------------------------
 int64_t OverlayModule::secondsToTicks(double seconds) {
@@ -309,7 +302,6 @@ void OverlayModule::resetTransient() {
     hasLastTouch_ = false;
     lastTickFrame_ = -1;
     lastDrawSnapTime_ = -1.f;
-    lastClock_ = -1.0;
     OverlayStatus fresh;
     fresh.mode = cfg_.speedMode;
     status_ = fresh;
@@ -386,8 +378,14 @@ void OverlayModule::onCommand(const Command& cmd, const TickContext& ctx, Action
         t.text = "Statistiques effacées.";
         out.toasts.push_back(std::move(t));
     } else if (cmd.name == "preset_original") {
-        // Settings live in cvars, which only the UI/glue can write: the tab resets every "overlay" setting to its
-        // schema default (the defaults ARE the original plugin's values) and posts this command. Nothing to emit.
+        // Every "overlay" setting back to its schema default (the defaults ARE the original plugin's values). The glue
+        // applies them through the cvars, so they are saved and come back through onSettingsChanged.
+        out.resetSettings.push_back(id());
+        ToastMessage t;
+        t.title = "Préréglage d'origine";
+        t.text = "Réglages de l'Affichage remis aux valeurs de First Touch Trainer.";
+        t.kind = ToastKind::Info;
+        out.toasts.push_back(std::move(t));
     }
 }
 
@@ -404,21 +402,17 @@ bool OverlayModule::speedKinematics(const ViewContext& view, const DrawContext& 
     return finite(k.carPos) && finite(k.carVel) && finite(k.ballPos) && finite(k.ballVel);
 }
 
-float OverlayModule::frameDt(const DrawContext& ctx) {
-    // Live game: physics time of the newest snapshot (stops in pause, exact under slow motion).
+float OverlayModule::smoothingDt(const ViewContext& view, const DrawContext& ctx) {
+    float dt = 0.f;
     if (ctx.hasSnapshot && ctx.game.mode != GameMode::Replay) {
-        lastClock_ = -1.0;
-        float dt = 0.f;
+        // Live game: physics time of the newest snapshot (stops in pause, exact under slow motion).
         if (lastDrawSnapTime_ >= 0.f) dt = ctx.snap.time - lastDrawSnapTime_;
         lastDrawSnapTime_ = ctx.snap.time;
-        return std::isfinite(dt) ? clampf(dt, 0.f, kMaxFrameDt) : 0.f;
+    } else {
+        // Replays (no physics ticks): real time since the previous draw, measured by the glue.
+        lastDrawSnapTime_ = -1.f;
+        dt = view.frameDt;
     }
-    // Replays (no physics ticks): wall clock.
-    lastDrawSnapTime_ = -1.f;
-    const double now = clock_ ? clock_() : 0.0;
-    float dt = 0.f;
-    if (lastClock_ >= 0.0) dt = static_cast<float>(now - lastClock_);
-    lastClock_ = now;
     return std::isfinite(dt) ? clampf(dt, 0.f, kMaxFrameDt) : 0.f;
 }
 
@@ -527,7 +521,7 @@ void OverlayModule::drawBallOverlays(const ViewContext& view, const DrawContext&
 }
 
 void OverlayModule::draw(const ViewContext& view, const DrawContext& ctx, DrawList& out) {
-    const float dt = frameDt(ctx);
+    const float dt = smoothingDt(view, ctx);
     const bool replay = ctx.game.mode == GameMode::Replay;
     const SpeedUnit unit = resolveUnit(unitFromIndex(cfg_.speedUnit), ctx.profile.metric);
     const ovl::SpeedMode mode = ovl::speedModeFromIndex(cfg_.speedMode);

@@ -4,7 +4,8 @@
 // bests) and passive analysis of kickoffs outside the drill (freeplay reset, offline matches).
 //
 // Drill state machine (one rep):
-//   Placing (1 tick: place car + ball, zero inputs) -> Countdown (freeze, re-pin, refill boost, 3/2/1 messages)
+//   Placing (1 tick: place car + ball, zero inputs, limited boost rules, every boost pad respawned)
+//   -> Countdown (freeze, re-pin, refill boost, 3/2/1 messages)
 //   -> Live (GO: release, record until the touch or the timeout, ghost hit) -> Done (result shown, then next rep).
 
 #include <array>
@@ -193,7 +194,9 @@ private:
     int64_t lastCarFrame_ = 0;
     bool haveLastCar_ = false;
     int invalidTicks_ = 0;
-    int64_t lastPadFrame_ = -1;  // last boost pad pickup seen by an attempt (small pads respawn after 4 s)
+    // Last boost pad pickup seen by an attempt (small pads respawn after 4 s). Cleared at PLACE, which respawns
+    // every pad: it only matters for passive kickoffs (the plugin does not touch the pads outside the drill).
+    int64_t lastPadFrame_ = -1;
 
     // Passive analysis state.
     PassivePhase passivePhase_ = PassivePhase::Waiting;

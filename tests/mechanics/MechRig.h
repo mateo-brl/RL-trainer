@@ -2,7 +2,8 @@
 // Module-level test rig: drives MechanicsModule like the engine does. The fake host reproduces Engine's rules:
 // world control (placements, inputs, game speed) routed only from the activity owner and only where world control is
 // allowed (checked after the callback, as Engine::route does), the previous owner's onActivityStopped on a handover,
-// and the context order of Engine::setContext (world control recomputed, activity stopped, THEN ContextChanged).
+// the context order of Engine::setContext (world control recomputed, activity stopped, THEN ContextChanged),
+// TickContext::otherActivityRunning, and the engine's game speed restore whenever an activity ends (gameSpeed).
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -27,6 +28,15 @@ struct FakeHost : ActivityHost {
     Module* owner = nullptr;
     int requests = 0, releases = 0, stops = 0;
     std::string name;
+    float gameSpeed = 1.f;      // speed the game runs at (routed speeds and engine restores)
+    int engineRestores = 0;     // Engine::markWorldRestore / flushWorldRestore: speed put back to 1 by the engine
+    // Engine: the activity ended (release, stop, handover) while the speed was modified: back to 1.
+    void activityEnded() {
+        if (std::fabs(gameSpeed - 1.f) > 1e-3f) {
+            gameSpeed = 1.f;
+            ++engineRestores;
+        }
+    }
     bool requestActivity(Module* m, const std::string& n) override {
         ++requests;
         if (!allow || !m || (worldControl && !*worldControl)) return false;
@@ -38,6 +48,7 @@ struct FakeHost : ActivityHost {
             Module* old = owner;
             owner = nullptr;
             name.clear();
+            activityEnded();
             old->onActivityStopped();
         }
         owner = m;
@@ -49,6 +60,7 @@ struct FakeHost : ActivityHost {
         if (owner == m) {
             owner = nullptr;
             name.clear();
+            activityEnded();
         }
     }
     bool ownsActivity(const Module* m) const override { return m && owner == m; }
@@ -59,6 +71,7 @@ struct FakeHost : ActivityHost {
         Module* old = owner;
         owner = nullptr;
         name.clear();
+        activityEnded();
         old->onActivityStopped();
     }
 };
@@ -116,7 +129,9 @@ struct Rig {
         route(a);
     }
     TickContext ctx() const {
-        return TickContext{last, history, settings, game, profile, hasSnap, host.ownsActivity(&mod), game.worldControlAllowed};
+        const bool owns = host.ownsActivity(&mod);
+        return TickContext{last, history, settings, game, profile, hasSnap, owns, game.worldControlAllowed,
+                           host.owner != nullptr && !owns};
     }
     Actions route(Actions a) {
         if (!game.worldControlAllowed || !host.ownsActivity(&mod)) a.clearWorldControl();
@@ -128,6 +143,7 @@ struct Rig {
             ++speedChanges;
             lastSpeed = *a.setGameSpeed;
             speeds.push_back(*a.setGameSpeed);
+            host.gameSpeed = *a.setGameSpeed;
         }
         return a;
     }

@@ -42,7 +42,7 @@ struct KickoffMetrics {
     float boostPicked = 0.f;
     int padsPicked = 0;
     int64_t lastPadFrame = -1;         // frame of the last pad pickup of the approach, -1 = none
-    bool padsMaybeOnCooldown = false;  // a pad was picked < 4 s before GO: the pads on the path may still respawn
+    bool padsMaybeOnCooldown = false;  // passive only: a pad was picked < 4 s before GO and may still respawn
     bool boostLooksUnlimited = false;  // boost held for a while without the tank going down
     float lateralOffset = 0.f;         // ball centre right of the car heading, horizontal plane, + = right (uu)
     float contactHeight = 0.f;         // ball centre above the car origin (car frame)
@@ -73,7 +73,8 @@ struct KickoffRecorderParams {
     float cancelWindow = 0.25f;  // s after the dodge
     int maxSamples = 1200;       // 10 s of along samples
     // Frame until which the pads on the path may be unavailable (small pads respawn 4 s after a pickup).
-    // A GO before that frame sets KickoffMetrics::padsMaybeOnCooldown. -1 = no recent pickup.
+    // A GO before that frame sets KickoffMetrics::padsMaybeOnCooldown. -1 = no recent pickup, always the case in
+    // the drill (every pad is respawned when the car is placed).
     int64_t padsBusyUntilFrame = -1;
 };
 

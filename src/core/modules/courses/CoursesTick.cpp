@@ -389,8 +389,10 @@ void CoursesModule::finishRings(const TickContext& ctx, Actions& out) {
     const bool teleported = teleports_ > 0;  // a teleport during the run: finished, but never a record
     // Rings given up (penalty mode) only cost the penalty: with a tiny one a sloppy run would beat every clean one.
     const bool fairTime = passed == n || cfg_.missPenalty >= kMinPenaltyForRecord;
+    // One rule for both records: the personal best of this code and the record value reported to the coach.
+    const bool recordEligible = !teleported && fairTime;
     const bool faster = !hadBest || time < oldBest - 1e-3f;
-    const bool isPb = !teleported && fairTime && faster;
+    const bool isPb = recordEligible && faster;
     ++pb.attempts;
     ++pb.finishes;
     std::vector<float> segments;
@@ -458,9 +460,10 @@ void CoursesModule::finishRings(const TickContext& ctx, Actions& out) {
                           3.f});
     sortTips(r.tips);
     r.time = ctx.snap.time;
-    r.valueForRecord = score;
-    r.lowerIsBetter = false;
-    r.hasRecordValue = true;
+    // Record value: the finish time (penalties included, the same time as the personal best of the code).
+    r.valueForRecord = time;
+    r.lowerIsBetter = true;
+    r.hasRecordValue = recordEligible;
 
     const bool adaptiveSuccess = ratio <= 1.75;
     recordAdaptive(adaptiveSuccess);
@@ -532,8 +535,10 @@ void CoursesModule::failRun(const TickContext& ctx, Actions& out, const std::str
     addBoostTip(kind_, boostEmptied_, r.tips);
     sortTips(r.tips);
     r.time = ctx.snap.time;
-    r.valueForRecord = score;
-    r.hasRecordValue = true;
+    // Not finished: no finish time, so no record value (the score is never one).
+    r.valueForRecord = 0.f;
+    r.lowerIsBetter = true;
+    r.hasRecordValue = false;
 
     recordAdaptive(false);
     ++attempts_[static_cast<size_t>(kind_)];
@@ -579,7 +584,9 @@ void CoursesModule::endDribble(const TickContext& ctx, Actions& out) {
     if (ratio > 1.f) score += std::min(10.f, 10.f * (ratio - 1.f));
     score = std::clamp(score, 0.f, 100.f);
     if (!success) score = std::min(score, 65.f);
-    const bool isRecord = held > dribbleBest_ + 0.01f && held >= 1.f;
+    // Same rule for the module best and the record value reported to the coach (time held, higher is better).
+    const bool recordEligible = held >= kMinDribbleRecord;
+    const bool isRecord = recordEligible && held > dribbleBest_ + 0.01f;
     const float oldBest = dribbleBest_;
     if (isRecord) dribbleBest_ = held;
 
@@ -607,7 +614,7 @@ void CoursesModule::endDribble(const TickContext& ctx, Actions& out) {
     r.time = ctx.snap.time;
     r.valueForRecord = held;
     r.lowerIsBetter = false;
-    r.hasRecordValue = true;
+    r.hasRecordValue = recordEligible;
 
     recordAdaptive(success);
     ++attempts_[static_cast<size_t>(kind_)];
@@ -671,8 +678,9 @@ void CoursesModule::endCatch(const TickContext& ctx, Actions& out, bool success,
         score = 25.f;
     }
     score = std::clamp(score, 0.f, 100.f);
-    const bool isRecord = success && (catchBest_ <= 0.f || settle < catchBest_ - 0.005f);
-    if (isRecord) catchBest_ = settle;
+    // Fastest catch: a plain stat of the tab, not a record (see the record value below).
+    const bool isFastest = success && (catchBest_ <= 0.f || settle < catchBest_ - 0.005f);
+    if (isFastest) catchBest_ = settle;
 
     AttemptResult r;
     r.module = "courses";
@@ -708,8 +716,11 @@ void CoursesModule::endCatch(const TickContext& ctx, Actions& out, bool success,
     }
     sortTips(r.tips);
     r.time = ctx.snap.time;
-    r.valueForRecord = score;
-    r.hasRecordValue = true;
+    // No record value: the settle time mostly measures how far the ball falls, and every attempt drops it from
+    // somewhere else (a low drop would beat any clean catch). The score is never a record either.
+    r.valueForRecord = 0.f;
+    r.lowerIsBetter = false;
+    r.hasRecordValue = false;
 
     recordAdaptive(success);
     ++attempts_[static_cast<size_t>(kind_)];
@@ -723,9 +734,9 @@ void CoursesModule::endCatch(const TickContext& ctx, Actions& out, bool success,
     last_.score = score;
     last_.verdict = verdictLabel(r.verdict);
     last_.headline = success ? "Balle contrôlée en " + formatNumber(settle, 2) + " s" : "Raté : " + reason;
-    if (isRecord && attempts_[static_cast<size_t>(kind_)] > 1) last_.headline += " (record !)";
+    if (isFastest && attempts_[static_cast<size_t>(kind_)] > 1) last_.headline += " (le plus rapide !)";
     last_.time = success ? settle : runTime_;
-    last_.newRecord = isRecord;
+    last_.newRecord = false;  // the catch has no record
     resultHint_ = r.tips.empty() ? std::string() : r.tips.front().text;
     emitResult(std::move(r), ctx, out);
     enterResult(success);

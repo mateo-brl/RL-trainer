@@ -1,6 +1,6 @@
 // Regression tests for the review fixes: horizontal lateral contact offset on a rolled car, unlimited-boost runs
-// kept out of the records, the missed-pad tip (visible, but not while a pad may still be respawning), the HUD
-// prompts in the player's button style.
+// kept out of the records, the missed-pad tip (visible, but not while a pad picked on a passive kickoff may still be
+// respawning; the drill respawns every pad at each placement), the HUD prompts in the player's button style.
 #include "core/common/Controls.h"
 #include "tests/TestFramework.h"
 #include "tests/kickoff/KickoffTestUtil.h"
@@ -338,7 +338,7 @@ TEST(ko_fix_missed_pad_in_drill_and_quick_next) {
         CHECK(hasTip(v.grade, KickoffTip::MissedPad));
     }
     // Rep 1 picks the pad, "next" right after the touch with a 1 s countdown: rep 2 starts < 4 s after the
-    // pickup, the pad may still be respawning, so missing it is not blamed.
+    // pickup, but its placement respawned every pad, so missing the pad is blamed (it used to be excused).
     {
         Harness h;
         h.set("rlt_ko_ghost", "0");
@@ -353,29 +353,94 @@ TEST(ko_fix_missed_pad_in_drill_and_quick_next) {
             if (h.mod.phase() == KickoffPhase::Done) break;
         }
         CHECK(h.mod.phase() == KickoffPhase::Done);
+        const int64_t pickup = h.mod.lastResult().metrics.lastPadFrame;
         CHECK_EQ(h.mod.lastResult().metrics.padsPicked, 1);
+        CHECK(pickup > 0);
         h.command("next");
-        h.tick(makeSnap(++f));
+        const Actions place = h.tick(makeSnap(++f));
+        CHECK(h.mod.phase() == KickoffPhase::Countdown);
+        CHECK(place.resetPickups);
         go = h.runCountdown(f);
+        CHECK(go < pickup + 4 * 120);  // the pad would still be respawning without the reset
         SimOut sim2 = simulate(KickoffSpawn::DiagonalLeft, KickoffTeam::Blue, fastSpeedflip(), go, 4.f);
         stripPads(sim2);
         playAttempt(h, sim2, f);
         const KickoffResultView& v = h.mod.lastResult();
         CHECK(v.valid && v.metrics.touched);
-        CHECK(v.metrics.padsMaybeOnCooldown);
-        CHECK(!hasTip(v.grade, KickoffTip::MissedPad));
+        CHECK_EQ(v.metrics.padsPicked, 0);
+        CHECK(!v.metrics.padsMaybeOnCooldown);
+        CHECK(hasTip(v.grade, KickoffTip::MissedPad));
+    }
+}
+
+namespace {
+
+// Passive kickoff (drill not running): the car rests on `spawn` for a few ticks, then the simulated attempt runs
+// until a few ticks after the touch. `strip` removes the pad pickups.
+const KickoffResultView& passiveKickoff(Harness& h, int64_t& f, KickoffSpawn spawn, bool strip) {
+    for (int i = 0; i < 5; ++i) h.tick(restingSnap(++f, spawn, KickoffTeam::Blue, false));
+    SimOut sim = simulate(spawn, KickoffTeam::Blue, fastSpeedflip(), f + 1, 4.f);
+    if (strip) stripPads(sim);
+    for (size_t i = 0; i < sim.snaps.size() && i < static_cast<size_t>(sim.touchIndex) + 4; ++i) {
+        h.tick(sim.snaps[i], static_cast<int>(i) == sim.touchIndex);
+        f = sim.snaps[i].frame;
+    }
+    return h.mod.lastResult();
+}
+
+} // namespace
+
+TEST(ko_fix_pad_cooldown_passive_only) {
+    // Outside the drill the plugin does not touch the pads: a pad picked on the previous passive kickoff may still
+    // be respawning, so missing it is not blamed.
+    {
+        Harness h;
+        int64_t f = 0;
+        const KickoffResultView& r1 = passiveKickoff(h, f, KickoffSpawn::DiagonalLeft, false);
+        CHECK(r1.valid && r1.passive && r1.metrics.touched);
+        CHECK_EQ(r1.metrics.padsPicked, 1);
+        CHECK(!r1.metrics.padsMaybeOnCooldown);
+        const KickoffResultView& r2 = passiveKickoff(h, f, KickoffSpawn::DiagonalLeft, true);
+        CHECK(r2.valid && r2.passive && r2.metrics.touched);
+        CHECK_EQ(r2.metrics.padsPicked, 0);
+        CHECK(r2.metrics.padsMaybeOnCooldown);
+        CHECK(!hasTip(r2.grade, KickoffTip::MissedPad));
         // Map change: the pickup memory is dropped.
+        passiveKickoff(h, f, KickoffSpawn::DiagonalLeft, false);
         h.game.mapName = "Park_P";
         h.event(GameEventKind::ContextChanged);
         h.game.mapName = "Stadium_P";
         h.event(GameEventKind::ContextChanged);
-        int64_t f2 = f;
-        start(h, f2, {"diagonal_left"});
-        go = h.runCountdown(f2);
-        SimOut sim3 = simulate(KickoffSpawn::DiagonalLeft, KickoffTeam::Blue, fastSpeedflip(), go, 4.f);
-        stripPads(sim3);
-        playAttempt(h, sim3, f2);
-        CHECK(!h.mod.lastResult().metrics.padsMaybeOnCooldown);
+        const KickoffResultView& r3 = passiveKickoff(h, f, KickoffSpawn::DiagonalLeft, true);
+        CHECK(r3.valid && r3.passive && r3.metrics.touched);
+        CHECK(!r3.metrics.padsMaybeOnCooldown);
+        CHECK(hasTip(r3.grade, KickoffTip::MissedPad));
+    }
+    // A drill started right after a passive pickup: its placement respawned every pad, the earlier pickup is
+    // forgotten and the missed pad is blamed.
+    {
+        Harness h;
+        h.set("rlt_ko_ghost", "0");
+        h.set("rlt_ko_countdown", "1");
+        int64_t f = 0;
+        const KickoffResultView& r1 = passiveKickoff(h, f, KickoffSpawn::DiagonalLeft, false);
+        CHECK_EQ(r1.metrics.padsPicked, 1);
+        const int64_t pickup = r1.metrics.lastPadFrame;
+        start(h, f, {"diagonal_left"});
+        const int64_t go = h.runCountdown(f);
+        CHECK(go < pickup + 4 * 120);
+        SimOut sim = simulate(KickoffSpawn::DiagonalLeft, KickoffTeam::Blue, fastSpeedflip(), go, 4.f);
+        stripPads(sim);
+        playAttempt(h, sim, f);
+        const KickoffResultView& v = h.mod.lastResult();
+        CHECK(v.valid && !v.passive && v.metrics.touched);
+        CHECK(!v.metrics.padsMaybeOnCooldown);
+        CHECK(hasTip(v.grade, KickoffTip::MissedPad));
+        // Stopped drill, then a passive kickoff that picks nothing: no pickup since the placement, nothing excused.
+        h.command("stop");
+        const KickoffResultView& r2 = passiveKickoff(h, f, KickoffSpawn::DiagonalLeft, true);
+        CHECK(r2.valid && r2.passive && r2.metrics.touched);
+        CHECK(!r2.metrics.padsMaybeOnCooldown);
     }
 }
 

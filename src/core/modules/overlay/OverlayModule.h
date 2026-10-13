@@ -8,10 +8,10 @@
 //  - training time statistics (total, per day, sessions) persisted under "overlay.".
 // Analysis and display only: the module never requests the activity nor moves the ball or the car.
 //
-// Commands ("rlt overlay <cmd>"): speed, reset_timer, preset_original, reset_stats.
+// Commands ("rlt overlay <cmd>"): speed, reset_timer, preset_original (every "overlay" setting back to its schema
+// default, i.e. the original plugin's values, through Actions::resetSettings), reset_stats.
 
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <vector>
 
@@ -79,8 +79,6 @@ public:
     static constexpr int kMaxDays = 60;                 // persisted per-day history
     static constexpr float kMinCountedSession = 30.f;   // shorter sessions are not counted as sessions
 
-    OverlayModule();
-
     const char* id() const override { return "overlay"; }
     const char* title() const override { return "Affichage"; }
 
@@ -108,9 +106,6 @@ public:
     // Text of the "speed" command (also used by the UI preview). French, accents kept (the glue folds them).
     std::string speedChatText(const TickContext& ctx) const;
 
-    // Tests: replaces the wall clock (seconds) used to smooth the zone in replays, where no physics tick runs.
-    void setClock(std::function<double()> clock) { clock_ = std::move(clock); }
-
     // Time accounting helpers (public for tests): whole ticks <-> seconds, and the locale independent text used to
     // persist seconds ("1234.567", exact to the tick) with its parser (also reads older "%.6g" / "%.1f" values).
     static float ticksToSeconds(int64_t ticks) { return static_cast<float>(static_cast<double>(ticks) / kTickRate); }
@@ -128,7 +123,7 @@ private:
     };
 
     bool speedKinematics(const ViewContext& view, const DrawContext& ctx, Kinematics& k) const;
-    float frameDt(const DrawContext& ctx);
+    float smoothingDt(const ViewContext& view, const DrawContext& ctx);
     void drawSpeed(const ViewContext& view, const ovl::SpeedDiff& diff, ovl::SpeedZone zone, SpeedUnit unit,
                    float scale, DrawList& out) const;
     void drawTimer(const ViewContext& view, float scale, DrawList& out) const;
@@ -171,9 +166,7 @@ private:
     Vec3 dir_{0.f, 0.f, -1.f};
     bool hasLastBall_ = false;
     Vec3 lastBallPos_;
-    float lastDrawSnapTime_ = -1.f;
-    double lastClock_ = -1.0;
-    std::function<double()> clock_;
+    float lastDrawSnapTime_ = -1.f;  // physics time of the previous live draw, -1 when unknown (replay, reset)
 };
 
 } // namespace rlt

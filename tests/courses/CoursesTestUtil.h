@@ -79,8 +79,11 @@ struct Harness {
         return ok;
     }
 
+    // Like Engine::makeTickContext: otherActivityRunning when another module owns the activity.
     TickContext ctx() {
-        return TickContext{snap, history, settings, game, profile, true, host.ownsActivity(&mod), game.worldControlAllowed};
+        const bool owns = host.ownsActivity(&mod);
+        return TickContext{snap, history, settings, game, profile, true, owns, game.worldControlAllowed,
+                           host.owner != nullptr && !owns};
     }
 
     Actions command(const std::string& name, std::vector<std::string> args = {}) {

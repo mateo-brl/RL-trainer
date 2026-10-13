@@ -47,4 +47,10 @@ Mech mechOf(const MechGrade& g);
 // French title of a grade, e.g. "Flick 45°", "Pinch mural (Kuxir)", "Flip reset : double touche".
 std::string gradeTitle(const MechGrade& g);
 
+// Personal-best value of a graded attempt of mechanic `m` (AttemptResult::valueForRecord): ball speed after a
+// flick, air dribble duration, pinch / power shot exit speed, otherwise the 0..100 `score`. Returns false and sets
+// `value` to 0 when the grade did not measure it (no shot, missing metric) or it is not finite (and, for speeds and
+// durations, not positive): the attempt then has no record value (AttemptResult::hasRecordValue).
+bool recordValueOf(Mech m, const MechGrade& g, float score, float& value);
+
 } // namespace rlt::bm

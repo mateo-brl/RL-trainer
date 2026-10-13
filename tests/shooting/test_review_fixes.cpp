@@ -3,7 +3,9 @@
 //     not graded as a flick;
 //   - "flick diagonal" / "flick side" refused (not drills);
 //   - the HUD cue follows the button style chosen in "Ma config";
-//   - zone / setup selections are consistent between commands, cvars, the status and the flick target.
+//   - zone / setup selections are consistent between commands, cvars, the status and the flick target;
+//   - the "zone", "setup" and "targets" console commands save the choice through the module's own cvars
+//     (Actions::setCvars), like the tab does with ctx.setCvar.
 
 #include <string>
 
@@ -72,6 +74,36 @@ bool panelHas(const DrawList& d, const std::string& needle) {
         for (const auto& l : p.lines)
             if (l.text.find(needle) != std::string::npos) return true;
     return false;
+}
+
+// Number of setCvars entries for `cvar`, and the last value emitted for it ("" when absent).
+int cvarCount(const Actions& a, const std::string& cvar) {
+    int n = 0;
+    for (const auto& c : a.setCvars)
+        if (c.first == cvar) ++n;
+    return n;
+}
+std::string cvarValue(const Actions& a, const std::string& cvar) {
+    std::string v;
+    for (const auto& c : a.setCvars)
+        if (c.first == cvar) v = c.second;
+    return v;
+}
+
+// The engine only honours the emitting module's own cvars: every entry must be a "shooting" setting.
+bool onlyOwnCvars(const Harness& h, const Actions& a) {
+    for (const auto& c : a.setCvars) {
+        const SettingDef* d = h.schema.find(c.first);
+        if (!d || d->module != "shooting") return false;
+    }
+    return true;
+}
+
+// What the glue does with Actions::setCvars: set each cvar (validated by the schema), settings re-applied.
+bool applyCvars(Harness& h, const Actions& a) {
+    bool ok = true;
+    for (const auto& c : a.setCvars) ok = h.set(c.first, c.second) && ok;
+    return ok;
 }
 
 } // namespace
@@ -243,4 +275,116 @@ TEST(shooting_fix_zone_and_setup_selection_outside_the_drill) {
     // Setup cvar change applies too.
     h.set("rlt_sh_target_setup", "4");
     CHECK_EQ(h.mod.status().setupSelection, static_cast<int>(TargetSetup::Roof));
+}
+
+// ---- Console commands save the zone / setup choice ---------------------------------------------------------
+TEST(shooting_fix_commands_persist_zone_and_setup_cvars) {
+    Harness h;
+    World w;
+    h.tick(w.snap());
+
+    // "zone" outside the drill: selection now, saved through the module's own cvar (choice index).
+    Actions a = h.command("zone", {"tl"});
+    CHECK(onlyOwnCvars(h, a));
+    CHECK_EQ(a.setCvars.size(), size_t{1});
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_zone"), std::string("0"));
+    CHECK(applyCvars(h, a));
+    CHECK_EQ(h.settings.shooting.targetZone, static_cast<int>(Zone::TopLeft));
+    CHECK_EQ(h.mod.status().zoneSelection, static_cast<int>(Zone::TopLeft));
+    a = h.command("zone", {"random"});
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_zone"), std::to_string(kZoneRandom));
+    CHECK(applyCvars(h, a));
+    CHECK_EQ(h.settings.shooting.targetZone, kZoneRandom);
+
+    // "setup".
+    a = h.command("setup", {"pass"});
+    CHECK(onlyOwnCvars(h, a));
+    CHECK_EQ(a.setCvars.size(), size_t{1});
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_setup"), std::to_string(static_cast<int>(TargetSetup::Pass)));
+    CHECK(applyCvars(h, a));
+    CHECK_EQ(h.settings.shooting.targetSetup, static_cast<int>(TargetSetup::Pass));
+    CHECK_EQ(h.mod.status().setupSelection, static_cast<int>(TargetSetup::Pass));
+
+    // "targets <zone> <setup>": both saved, the drill starts with them.
+    a = h.command("targets", {"br", "roof"});
+    CHECK(onlyOwnCvars(h, a));
+    CHECK_EQ(a.setCvars.size(), size_t{2});
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_zone"), std::to_string(static_cast<int>(Zone::LowRight)));
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_setup"), std::to_string(static_cast<int>(TargetSetup::Roof)));
+    CHECK(h.mod.mode() == ShootMode::Targets);
+    CHECK(applyCvars(h, a));
+    CHECK_EQ(h.settings.shooting.targetZone, static_cast<int>(Zone::LowRight));
+    CHECK_EQ(h.settings.shooting.targetSetup, static_cast<int>(TargetSetup::Roof));
+    runToLive(h, w);
+    CHECK(h.mod.currentZone() == Zone::LowRight);
+    CHECK(h.mod.currentSetup() == TargetSetup::Roof);
+
+    // During the drill: "zone" / "setup" still save (the cvar catches up with the same selection).
+    a = h.command("zone", {"center"});
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_zone"), std::to_string(static_cast<int>(Zone::Center)));
+    a.setCvars.clear(); // glue not run yet: a later unrelated change must not undo the command
+    h.set("rlt_sh_hud_scale", "1.2");
+    CHECK_EQ(h.mod.status().zoneSelection, static_cast<int>(Zone::Center));
+    a = h.command("setup", {"rolling"});
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_setup"), std::to_string(static_cast<int>(TargetSetup::Rolling)));
+    CHECK(applyCvars(h, a));
+    CHECK_EQ(h.mod.status().setupSelection, static_cast<int>(TargetSetup::Rolling));
+    h.command("stop");
+
+    // Only what the command names is saved: no argument = nothing, zone only = zone only, setup only = setup only.
+    a = h.command("targets");
+    CHECK(a.setCvars.empty());
+    h.command("stop");
+    a = h.command("targets", {"tr"});
+    CHECK_EQ(cvarCount(a, "rlt_sh_target_zone"), 1);
+    CHECK_EQ(cvarCount(a, "rlt_sh_target_setup"), 0);
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_zone"), std::to_string(static_cast<int>(Zone::TopRight)));
+    h.command("stop");
+    a = h.command("targets", {"bouncing"});
+    CHECK_EQ(cvarCount(a, "rlt_sh_target_zone"), 0);
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_setup"), std::to_string(static_cast<int>(TargetSetup::Bouncing)));
+    h.command("stop");
+    // Several zones: the last one wins and is saved once.
+    a = h.command("targets", {"tl", "bl"});
+    CHECK_EQ(cvarCount(a, "rlt_sh_target_zone"), 1);
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_zone"), std::to_string(static_cast<int>(Zone::LowLeft)));
+    h.command("stop");
+
+    // Bad arguments and unrelated commands save nothing.
+    CHECK(h.command("zone", {"nowhere"}).setCvars.empty());
+    CHECK(h.command("zone").setCvars.empty());
+    CHECK(h.command("setup", {"sideways"}).setCvars.empty());
+    CHECK(h.command("setup").setCvars.empty());
+    CHECK(h.command("targets", {"tl", "nowhere"}).setCvars.empty());
+    CHECK(h.command("flick", {"musty"}).setCvars.empty());
+    CHECK(h.command("next").setCvars.empty());
+    CHECK(h.command("stop").setCvars.empty());
+    CHECK(h.command("power").setCvars.empty());
+    CHECK(h.command("stop").setCvars.empty());
+
+    // Saved even where the drill cannot start (like the tab's zone buttons).
+    Harness g;
+    g.game.worldControlAllowed = false;
+    a = g.command("targets", {"center", "pass"});
+    CHECK(g.mod.mode() == ShootMode::None);
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_zone"), std::to_string(static_cast<int>(Zone::Center)));
+    CHECK_EQ(cvarValue(a, "rlt_sh_target_setup"), std::to_string(static_cast<int>(TargetSetup::Pass)));
+
+    // Module disabled: refused, nothing saved.
+    Harness d;
+    d.set("rlt_sh_enabled", "0");
+    CHECK(d.command("zone", {"tl"}).setCvars.empty());
+    CHECK(d.command("setup", {"roof"}).setCvars.empty());
+    CHECK(d.command("targets", {"tl", "roof"}).setCvars.empty());
+
+    // Persistence: a fresh module loading the saved settings starts with the choice made by command.
+    Harness p;
+    a = p.command("zone", {"bl"});
+    CHECK(applyCvars(p, a));
+    a = p.command("setup", {"bouncing"});
+    CHECK(applyCvars(p, a));
+    ShootingModule fresh;
+    fresh.onSettingsChanged(p.settings);
+    CHECK_EQ(fresh.status().zoneSelection, static_cast<int>(Zone::LowLeft));
+    CHECK_EQ(fresh.status().setupSelection, static_cast<int>(TargetSetup::Bouncing));
 }

@@ -588,36 +588,99 @@ TEST(ov_module_zone_snaps_on_teleport_reset_and_context_change) {
     CHECK_NEAR(h.mod.status().tiltDeg, 35.f, 0.1f);
 }
 
-TEST(ov_module_zone_in_replays_uses_view_and_wall_clock) {
+TEST(ov_module_zone_in_replays_uses_view_and_frame_dt) {
     Harness h;
     h.set("rlt_ov_zone_enabled", "1");
     h.set("rlt_ov_zone_behavior", "1");
     h.game.mode = GameMode::Replay;
     h.hasSnapshot = false;
-    double now = 100.0;
-    h.mod.setClock([&now]() { return now; });
     ViewContext v = makeView(kAirBall);
     v.carValid = false;   // no local car in replays: the car test is skipped
-    DrawList dl = h.draw(v);
+    DrawList dl = h.draw(v);  // first frame: frameDt 0, direction snapped
     CHECK_EQ(dl.lines3D.size(), static_cast<size_t>(32));
     CHECK(dl.texts2D.empty());
     v.ballVel = {-2100.f, 0.f, 0.f};
-    now += 0.05;
+    v.frameDt = 0.05f;
     h.draw(v);
     const float mid = h.mod.status().tiltDeg;
     CHECK(mid > 5.f && mid < 30.f);
-    for (int i = 0; i < 60; ++i) {
-        now += 1.0 / 60.0;
-        dl = h.draw(v);
-    }
+    v.frameDt = 1.f / 60.f;
+    for (int i = 0; i < 60; ++i) dl = h.draw(v);
     CHECK_NEAR(h.mod.status().tiltDeg, 35.f, 0.2f);
     CHECK(lineCentroid(dl).x > 20.f);   // opposite to a ball travelling toward -x
-    // Huge wall-clock gap (replay paused, alt-tab): step clamped, no blow-up.
+    // Long frame (the glue caps frameDt at 0.25 s; anything larger is clamped again): no blow-up.
     v.ballVel = {2100.f, 0.f, 0.f};
-    now += 1000.0;
+    v.frameDt = 1000.f;
     h.draw(v);
     CHECK(std::isfinite(h.mod.status().tiltDeg));
     CHECK(h.mod.status().tiltDeg < 35.f + 1e-3f);
+}
+
+TEST(ov_module_zone_smoothing_steps) {
+    // The smoothing step is the real frame time in replays (ViewContext::frameDt) and the physics time of the newest
+    // snapshot in a live game (frozen in pause, whatever the real frame time).
+    const Vec3 vel{-2100.f, 0.f, 0.f};
+    {
+        // Replay: same frames give the same result (deterministic), frameDt 0 does not move the zone.
+        Harness a, b;
+        for (Harness* h : {&a, &b}) {
+            h->set("rlt_ov_zone_enabled", "1");
+            h->set("rlt_ov_zone_behavior", "1");
+            h->game.mode = GameMode::Replay;
+            h->hasSnapshot = false;
+        }
+        ViewContext v = makeView(kAirBall);
+        a.draw(v);
+        b.draw(v);
+        v.ballVel = vel;
+        for (int i = 0; i < 5; ++i) a.draw(v);   // frameDt 0: still straight down
+        CHECK_NEAR(a.mod.status().tiltDeg, 0.f, 1e-3f);
+        v.frameDt = 0.02f;
+        for (int i = 0; i < 3; ++i) {
+            a.draw(v);
+            b.draw(v);
+        }
+        CHECK_EQ(a.mod.status().tiltDeg, b.mod.status().tiltDeg);
+        const float before = a.mod.status().tiltDeg;
+        CHECK(before > 1.f && before < 34.f);
+        // Invalid frame times never step the smoothing.
+        for (float bad : {-0.1f, std::nanf(""), INFINITY}) {
+            v.frameDt = bad;
+            a.draw(v);
+            CHECK_NEAR(a.mod.status().tiltDeg, before, 1e-4f);
+        }
+        // A long frame (0.25 s, the glue's cap) is clamped to a 0.1 s step.
+        v.frameDt = 0.25f;
+        a.draw(v);
+        v.frameDt = 0.1f;
+        b.draw(v);
+        CHECK_NEAR(a.mod.status().tiltDeg, b.mod.status().tiltDeg, 1e-3f);
+        CHECK(a.mod.status().tiltDeg < 34.f);
+    }
+    {
+        // Live game in pause: no tick, so no smoothing even with real frame time passing.
+        Harness h;
+        h.set("rlt_ov_zone_enabled", "1");
+        h.set("rlt_ov_zone_behavior", "1");
+        h.tick();
+        ViewContext v = makeView(kAirBall);
+        v.frameDt = 0.016f;
+        h.draw(v);
+        v.ballVel = vel;
+        h.snap.ball.vel = vel;
+        h.tick();
+        h.draw(v);
+        const float moving = h.mod.status().tiltDeg;
+        CHECK(moving > 0.5f && moving < 20.f);
+        v.frameDt = 0.25f;
+        for (int i = 0; i < 30; ++i) h.draw(v);
+        CHECK_NEAR(h.mod.status().tiltDeg, moving, 1e-4f);
+        // Physics resumes: smoothing resumes from the snapshot time, not from the frame time.
+        h.tick();
+        h.draw(v);
+        CHECK(h.mod.status().tiltDeg > moving);
+        CHECK(h.mod.status().tiltDeg < moving + 5.f);
+    }
 }
 
 // ---- Centre sphere --------------------------------------------------------------------------------------------------
@@ -726,7 +789,18 @@ TEST(ov_module_speed_command_chat) {
 
 TEST(ov_module_other_commands) {
     Harness h;
-    CHECK(h.command("preset_original").empty());   // settings are reset by the UI (cvars), nothing to emit
+    {
+        // Every overlay setting back to its default: executed by the glue through the cvars.
+        const Actions p = h.command("preset_original");
+        CHECK_EQ(p.resetSettings.size(), static_cast<size_t>(1));
+        CHECK(!p.resetSettings.empty() && p.resetSettings[0] == "overlay");
+        CHECK_EQ(p.toasts.size(), static_cast<size_t>(1));
+        CHECK(!p.toasts.empty() && p.toasts[0].title == "Préréglage d'origine");
+        CHECK(p.setCvars.empty());
+        CHECK(p.chat.empty());
+        CHECK(!p.requestSave);   // progress is untouched (the glue marks the config dirty itself)
+        CHECK(!hasWorldControl(p));
+    }
     CHECK(h.command("inconnue").empty());
     h.tick();
     h.ticks(120 * 50);

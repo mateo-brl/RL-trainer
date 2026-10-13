@@ -231,23 +231,25 @@ TEST(bm_tips_codes_and_buttons) {
     // Key labels come from the shared Controls helper: build the expectations from it.
     const std::string jump = actionKeyLabel(p, GameAction::Jump);
     CHECK(!jump.empty());
-    CHECK(fillButtons("Saute avec {jump}.", p) == "Saute avec le saut (" + jump + ").");
-    CHECK(airRollPrompt(p) == "l'air roll gauche (" + actionKeyLabel(p, GameAction::AirRollLeft) + ") ou droit (" +
-                                  actionKeyLabel(p, GameAction::AirRollRight) + ")");
-    CHECK(fillButtons("{boost} / {slide}", p) == "le boost (" + actionKeyLabel(p, GameAction::Boost) + ") / la glissade (" +
-                                                     actionKeyLabel(p, GameAction::Powerslide) + ")");
+    CHECK(fillButtons("Saute avec {jump}.", p, KeyStyle::Auto) == "Saute avec le saut (" + jump + ").");
+    CHECK(airRollPrompt(p, KeyStyle::Auto) == "l'air roll gauche (" + actionKeyLabel(p, GameAction::AirRollLeft) +
+                                                  ") ou droit (" + actionKeyLabel(p, GameAction::AirRollRight) + ")");
+    CHECK(fillButtons("{boost} / {slide}", p, KeyStyle::Auto) ==
+          "le boost (" + actionKeyLabel(p, GameAction::Boost) + ") / la glissade (" +
+              actionKeyLabel(p, GameAction::Powerslide) + ")");
     CHECK(fillButtons("{jump}", p, KeyStyle::PlayStation) ==
           "le saut (" + actionKeyLabel(p, GameAction::Jump, KeyStyle::PlayStation) + ")");
     CHECK(buildTips({"FR_NO_RESET"}, p, KeyStyle::PlayStation).size() == 1u);
     PlayerProfile none;
-    CHECK(fillButtons("{jump}", none) == "le saut");
-    CHECK(airRollPrompt(none) == "l'air roll");
+    CHECK(fillButtons("{jump}", none, KeyStyle::Auto) == "le saut");
+    CHECK(airRollPrompt(none, KeyStyle::Auto) == "l'air roll");
     PlayerProfile freeRoll;
     freeRoll.pcBindings = {{"Handbrake", "LeftShift"}};
-    CHECK(airRollPrompt(freeRoll) == "l'air roll (" + actionKeyLabel(freeRoll, GameAction::Powerslide) + ")");
+    CHECK(airRollPrompt(freeRoll, KeyStyle::Auto) ==
+          "l'air roll (" + actionKeyLabel(freeRoll, GameAction::Powerslide) + ")");
 
     CHECK(tipCode("FR_NO_RESET") == "bm.fr_no_reset");
-    const auto tips = buildTips({"FR_OFF_TARGET", "FR_NO_RESET", "FR_NO_RESET", "UNKNOWN_CODE"}, p);
+    const auto tips = buildTips({"FR_OFF_TARGET", "FR_NO_RESET", "FR_NO_RESET", "UNKNOWN_CODE"}, p, KeyStyle::Auto);
     CHECK_EQ(tips.size(), 2u);
     if (tips.size() == 2) {
         CHECK(tips[0].code == "bm.fr_no_reset");  // heavier first
@@ -270,7 +272,7 @@ TEST(bm_tips_codes_and_buttons) {
         const char* t = tipTemplate(c);
         CHECK_MSG(t != nullptr, c);
         if (!t) continue;
-        const std::string filled = fillButtons(t, p);
+        const std::string filled = fillButtons(t, p, KeyStyle::Auto);
         CHECK_MSG(filled.find('{') == std::string::npos, c);
         CHECK_MSG(!hasEmDash(t), c);
         CHECK_MSG(std::string(t).size() < 120, c);  // one short sentence

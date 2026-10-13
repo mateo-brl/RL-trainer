@@ -6,8 +6,11 @@
 // Flow: onTick feeds the MovementCoach (detection hub) with each snapshot; every grade passes the family toggles
 // and the map category (both skipped for the family the player focuses on or drills) and the focus filter, then
 // becomes an AttemptResult (Actions::results), updates the stats and the HUD panel. Drills own the world-control
-// activity: placement, frozen countdown, slow motion, auto-reset. The game speed is only restored while owning the
-// activity (the engine drops it otherwise): a restore that could not be routed stays pending (see appliedSpeed_).
+// activity: placement, frozen countdown, slow motion, auto-reset. On its own normal stop the module routes the speed
+// restore as the owner, then gives the activity back; when the activity ends any other way (stop button, handover,
+// map unloaded, world control lost) the engine puts the game speed back to 1 itself.
+// Taking the activity for the focus slow motion or for "restore_speed" never stops another module's exercise: the
+// wish waits until that exercise ends (TickContext::otherActivityRunning). Only a drill started by the player does.
 
 #include <array>
 #include <optional>
@@ -42,9 +45,8 @@ public:
         int drillAttempts = 0, drillSuccesses = 0;
         bool worldControl = false;
         float gameSpeed = 1.f; // game speed this module applies (1 when it does not control the world)
-        // The activity was taken away while the game was slowed down: the restore may not have reached the game
-        // (the UI offers the "restore_speed" command).
-        bool speedRestorePending = false;
+        // A focus slow motion or a "restore_speed" waits for another module's exercise to end.
+        bool speedWaiting = false;
         int chainDashes = 0;
         int sessionAttempts = 0;
     };
@@ -96,7 +98,7 @@ public:
     bool drillActive() const { return drill_.active; }
     mech::Focus drillFocus() const { return drill_.focus; }
     float appliedGameSpeed() const { return appliedSpeed_; }
-    bool speedRestorePending() const { return pendingSpeedRestore_; }
+    bool speedWaiting() const { return focusSpeedWanted_ || restoreWanted_; }
     float level(mech::Focus f) const;
     const mech::MechStats& stats() const { return stats_; }
     const mech::DetectConfig& detectConfig() const { return coach_.cfg; }
@@ -138,6 +140,9 @@ private:
     void releaseHeld(const TickContext& ctx, Actions& out);
     // Routes a game speed (only called while owning the activity with world control allowed).
     void emitSpeed(float speed, Actions& out);
+    // Takes the activity for the focus slow motion, or remembers the wish while another module's exercise runs.
+    void takeFocusSpeed(const TickContext& ctx, Actions& out);
+    // "restore_speed": same rule (never stops another module's exercise, applied once it ends).
     void restoreSpeed(const TickContext& ctx, Actions& out);
     void handleGrade(mech::MechGrade& g, const TickContext& ctx, Actions& out);
     void emitAttempt(const mech::MechGrade& g, const TickContext& ctx, Actions& out, bool drillAttempt);
@@ -160,17 +165,15 @@ private:
     float heldTime_ = 0.f;
 
     bool focusSpeedOwned_ = false;   // activity held only for the focus slow motion
-    bool focusSpeedWanted_ = false;  // slow motion turned on while a focus runs: ask for the activity once
-    bool focusSpeedLost_ = false;    // another module took the focus slow motion: a slider change does not take it back
+    // Slow motion asked for the focus (slider change or focus command) without owning the activity: taken on the
+    // next tick, or once another module's exercise ends (never stolen from it). Dropped on a map change.
+    bool focusSpeedWanted_ = false;
+    bool restoreWanted_ = false;     // "restore_speed" waiting for another module's exercise to end
     bool focusFromDrill_ = false;    // focus_ was set by the running drill (cleared when the drill stops)
-    // Game speed bookkeeping. The engine drops world control (game speed included) from a module that does not
-    // own the activity, so a restore only counts once it was routed as the owner:
-    //   appliedSpeed_        last speed routed as the owner (what the game runs at because of this module);
-    //   pendingSpeedRestore_ the activity was lost while appliedSpeed_ != 1: the next activity of this module
-    //                        sends its speed first (1 for a normal drill), and the UI offers restore_speed.
+    // Last speed routed as the owner (what the game runs at because of this module). Back to 1 whenever the activity
+    // ends: restored by this module on its normal stop, by the engine otherwise.
     float appliedSpeed_ = 1.f;
     bool pendingRelease_ = false;    // release the activity on the next tick (after the speed restore was routed)
-    bool pendingSpeedRestore_ = false;
     int resetTicks_ = 0;             // ticks to skip after a placement (teleport)
     bool worldControl_ = false;
     std::string mapKey_;

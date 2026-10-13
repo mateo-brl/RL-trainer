@@ -123,10 +123,11 @@ void MechanicsModule::onSettingsChanged(const Settings& settings) {
     cfg_ = settings.mechanics;
     keyStyle_ = keyStyleFromIndex(settings.profile.buttonStyle);
     cfg_.slowMotion = clampf(cfg_.slowMotion, 0.25f, 1.f);
-    // Slow motion turned on (or changed) while a focus runs without the activity: ask for it once, next tick.
-    // Only on a change of this setting, never as a standing condition (that would steal other drills).
+    // Slow motion turned on (or changed) while a focus runs without the activity: ask for it on the next tick, or
+    // once another module's exercise ends. Only on a change of this setting, never as a standing condition (that
+    // would take the activity back after the stop button).
     if (std::fabs(cfg_.slowMotion - oldSlow) > 1e-4f && cfg_.slowMotion < 0.999f && focus_ != Focus::None &&
-        !drill_.active && !focusSpeedOwned_ && !focusSpeedLost_)
+        !drill_.active && !focusSpeedOwned_)
         focusSpeedWanted_ = true;
     applyDetectConfig();
 }
@@ -193,29 +194,19 @@ void MechanicsModule::toast(Actions& out, const std::string& title, const std::s
 // ---- Tick ----------------------------------------------------------------------------------------------
 void MechanicsModule::onTick(const TickContext& ctx, Actions& out) {
     worldControl_ = ctx.worldControlAllowed;
-    if (pendingSpeedRestore_ && ctx.ownsActivity && ctx.worldControlAllowed && !drill_.active && !focusSpeedOwned_) {
-        emitSpeed(1.f, out);  // still the owner (release pending): this restore reaches the game
-        pendingRelease_ = true;
-    } else if (pendingRelease_) {
+    if (pendingRelease_) {
         pendingRelease_ = false;
         if (!drill_.active && !focusSpeedOwned_ && ctx.ownsActivity) releaseActivity();
     }
     if (!cfg_.enabled) {
         focusSpeedWanted_ = false;
+        restoreWanted_ = false;
         if (drill_.active || focusSpeedOwned_) stopWorld(ctx, out);
         return;
     }
-    if (focusSpeedWanted_) {
-        focusSpeedWanted_ = false;
-        if (focus_ != Focus::None && !drill_.active && !focusSpeedOwned_ && cfg_.slowMotion < 0.999f) {
-            if (ctx.worldControlAllowed && requestActivity("Mécas : focus " + focusTitle(focus_))) {
-                focusSpeedOwned_ = true;
-                pendingRelease_ = false;
-            } else {
-                toast(out, "Mécas mouvement", "Ralenti indisponible ici : focus sans ralenti.", ToastKind::Info);
-            }
-        }
-    }
+    // Wishes that wait for another module's exercise to end (never stolen from it).
+    if (focusSpeedWanted_) takeFocusSpeed(ctx, out);
+    if (restoreWanted_ && !ctx.otherActivityRunning) restoreSpeed(ctx, out);
     if (!ctx.hasSnapshot) return;
     const Snapshot& s = ctx.snap;
     nowTime_ = s.time;
@@ -258,6 +249,8 @@ void MechanicsModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, A
             mapKey_ = key;
             coach_.reset();
             held_.reset();
+            focusSpeedWanted_ = false;  // a wish made on the previous map does not take the activity on this one
+            restoreWanted_ = false;
             if (drill_.active || focusSpeedOwned_) stopWorld(ctx, out);
         } else if (!ctx.worldControlAllowed && (drill_.active || focusSpeedOwned_)) {
             stopWorld(ctx, out);
@@ -277,6 +270,8 @@ void MechanicsModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, A
     case GameEventKind::MapUnloaded:
         coach_.reset();
         held_.reset();
+        focusSpeedWanted_ = false;
+        restoreWanted_ = false;
         break;
     default: break;
     }
@@ -288,6 +283,7 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
     if (cmd.name == "stop") {
         const bool wasRunning = drill_.active || focus_ != Focus::None;
         stopWorld(ctx, out);
+        restoreWanted_ = false;
         focus_ = Focus::None;
         applyDetectConfig();
         if (wasRunning) toast(out, "Mécas mouvement", "Focus et exercice arrêtés.", ToastKind::Info);
@@ -344,7 +340,6 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
 
 void MechanicsModule::setFocus(Focus f, const TickContext& ctx, Actions& out) {
     focusSpeedWanted_ = false;
-    focusSpeedLost_ = false;  // an explicit focus command may take the activity again
     if (f == Focus::None) {
         if (drill_.active || focusSpeedOwned_) stopWorld(ctx, out);
         focus_ = Focus::None;
@@ -357,12 +352,10 @@ void MechanicsModule::setFocus(Focus f, const TickContext& ctx, Actions& out) {
     focus_ = f;
     applyDetectConfig();
     if (cfg_.slowMotion < 0.999f && !drill_.active && !focusSpeedOwned_) {
-        if (ctx.worldControlAllowed && requestActivity("Mécas : focus " + focusTitle(f))) {
-            focusSpeedOwned_ = true;
-            pendingRelease_ = false;
-        } else {
-            toast(out, "Mécas mouvement", "Ralenti indisponible ici : focus sans ralenti.", ToastKind::Info);
-        }
+        takeFocusSpeed(ctx, out);
+        if (focusSpeedWanted_)
+            toast(out, "Mécas mouvement", "Un autre exercice est en cours : le ralenti s'appliquera quand il se terminera.",
+                  ToastKind::Info);
     }
     toast(out, "Focus : " + focusTitle(f), "Seule cette méca est notée. Les objectifs restent affichés à gauche.",
           ToastKind::Info);
@@ -380,6 +373,8 @@ void MechanicsModule::startDrill(Focus f, const TickContext& ctx, Actions& out) 
     }
     pendingRelease_ = false;
     focusSpeedOwned_ = false;
+    focusSpeedWanted_ = false;  // the drill applies the slow motion itself
+    restoreWanted_ = false;
     drill_ = Drill{};
     drill_.active = true;
     drill_.focus = f;
@@ -394,21 +389,37 @@ void MechanicsModule::startDrill(Focus f, const TickContext& ctx, Actions& out) 
 void MechanicsModule::emitSpeed(float speed, Actions& out) {
     out.setGameSpeed = speed;
     appliedSpeed_ = speed;
-    pendingSpeedRestore_ = false;  // routed as the owner: the game runs at this speed now
+}
+
+void MechanicsModule::takeFocusSpeed(const TickContext& ctx, Actions& out) {
+    focusSpeedWanted_ = false;
+    if (focus_ == Focus::None || drill_.active || focusSpeedOwned_ || cfg_.slowMotion >= 0.999f) return;  // obsolete
+    restoreWanted_ = false;  // the newer slow motion wish replaces a waiting "restore_speed"
+    if (ctx.worldControlAllowed && ctx.otherActivityRunning) {
+        focusSpeedWanted_ = true;  // slow motion is not worth stopping another exercise: retried every tick
+        return;
+    }
+    if (ctx.worldControlAllowed && requestActivity("Mécas : focus " + focusTitle(focus_))) {
+        focusSpeedOwned_ = true;
+        pendingRelease_ = false;
+    } else {
+        toast(out, "Mécas mouvement", "Ralenti indisponible ici : focus sans ralenti.", ToastKind::Info);
+    }
 }
 
 void MechanicsModule::stopWorld(const TickContext& ctx, Actions& out) {
     const bool owner = ownsActivity();
     if (owner && ctx.worldControlAllowed) {
-        // Still the owner: the speed restore is routed with this callback, the release happens next tick.
-        if (appliedSpeed_ != 1.f || pendingSpeedRestore_) emitSpeed(1.f, out);
+        // Normal stop, still the owner: the speed restore is routed with this callback, the release happens next tick.
+        if (appliedSpeed_ != 1.f) emitSpeed(1.f, out);
         pendingRelease_ = true;
     } else {
-        // The engine would drop the restore: keep it pending (see appliedSpeed_), give the activity back now.
-        if (appliedSpeed_ != 1.f) pendingSpeedRestore_ = true;
+        // A restore would be dropped here: the engine puts the speed back to 1 when the activity ends.
         if (owner) releaseActivity();
+        appliedSpeed_ = 1.f;
         pendingRelease_ = false;
     }
+    focusSpeedWanted_ = false;
     if (drill_.active && focusFromDrill_) focus_ = Focus::None;  // the drill chose the focus: it ends with it
     focusFromDrill_ = false;
     drill_ = Drill{};
@@ -421,11 +432,10 @@ void MechanicsModule::stopWorld(const TickContext& ctx, Actions& out) {
 }
 
 void MechanicsModule::onActivityStopped() {
-    // No Actions here and no ownership any more: this module cannot route a restore (the engine has to restore the
-    // speed on stop / handover). appliedSpeed_ is kept so that the next activity of this module sends 1 first.
-    if (appliedSpeed_ != 1.f) pendingSpeedRestore_ = true;
+    // No Actions here and no ownership any more: the engine restores the game speed when the activity ends (stop
+    // button, handover, map unloaded, world control lost). The focus slow motion is not taken back by itself.
+    appliedSpeed_ = 1.f;
     focusSpeedWanted_ = false;
-    if (focusSpeedOwned_ || (drill_.active && !focusFromDrill_)) focusSpeedLost_ = true;
     if (drill_.active && focusFromDrill_) focus_ = Focus::None;
     focusFromDrill_ = false;
     drill_ = Drill{};
@@ -446,7 +456,7 @@ void MechanicsModule::runWorld(const TickContext& ctx, Actions& out) {
         return;
     }
     const float desired = clampf(cfg_.slowMotion, 0.25f, 1.f);
-    if (pendingSpeedRestore_ || std::fabs(desired - appliedSpeed_) > 0.001f) emitSpeed(desired, out);
+    if (std::fabs(desired - appliedSpeed_) > 0.001f) emitSpeed(desired, out);
     if (focusSpeedOwned_ && !drill_.active) {
         if (desired >= 0.999f) {  // slow motion turned off: give the activity back
             focusSpeedOwned_ = false;
@@ -556,8 +566,15 @@ void MechanicsModule::flushBeforeReset(const TickContext& ctx, Actions& out) {
 }
 
 void MechanicsModule::restoreSpeed(const TickContext& ctx, Actions& out) {
-    if (drill_.active || focusSpeedOwned_) {
+    restoreWanted_ = false;
+    if (drill_.active || focusSpeedOwned_ || focusSpeedWanted_) {
         toast(out, "Mécas mouvement", "Le ralenti suit le réglage « Ralenti » : mets-le à 1 ou arrête l'exercice.",
+              ToastKind::Info);
+        return;
+    }
+    if (ctx.worldControlAllowed && ctx.otherActivityRunning) {
+        restoreWanted_ = true;  // never stops another exercise: applied by onTick once it ends
+        toast(out, "Mécas mouvement", "Un autre exercice est en cours : vitesse remise à 1 quand il se terminera.",
               ToastKind::Info);
         return;
     }
@@ -760,7 +777,7 @@ MechanicsModule::Status MechanicsModule::status() const {
     s.drillActive = drill_.active;
     s.worldControl = worldControl_;
     s.gameSpeed = (drill_.active || focusSpeedOwned_) ? appliedSpeed_ : 1.f;
-    s.speedRestorePending = pendingSpeedRestore_ && !drill_.active && !focusSpeedOwned_;
+    s.speedWaiting = speedWaiting();
     s.chainDashes = coach_.chainCount();
     s.sessionAttempts = stats_.sessionTotal();
     if (drill_.active) {

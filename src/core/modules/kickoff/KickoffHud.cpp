@@ -100,9 +100,13 @@ void appendResult(DrawPanel& p, const KickoffResultView& r, const DrawContext& c
         for (const auto& l : wrap(kickoffTipText(t.tip), 58)) addLine(p, l, kTip, accents, 0.9f);
         ++shown;
     }
+    // Safety net: the drill limits the boost at every placement, so this mostly concerns passive kickoffs.
     if (m.boostLooksUnlimited) {
         addLine(p, "Boost illimité détecté : record non compté.", colors::Orange, accents, 0.85f);
-        addLine(p, "Coupe-le pour un kickoff réaliste.", colors::Orange, accents, 0.85f);
+        addLine(p,
+                r.passive ? "Lance l'exercice : il le coupe pendant tes essais."
+                          : "Pas pu le couper ici : coupe-le en freeplay.",
+                colors::Orange, accents, 0.85f);
     }
 }
 

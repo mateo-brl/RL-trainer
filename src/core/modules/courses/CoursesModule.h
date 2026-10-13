@@ -6,6 +6,8 @@
 //  - CONTROL ("Contrôle"): roof dribble keep-up, dribble slalom through gates, catch (ball dropped from the
 //    sky or coming off a side wall, to settle on the roof).
 // Difficulty is adaptive (one staircase per exercise, 75 % success target) or chosen by the player.
+// Record values reported to the coach (AttemptResult): rings and slalom report the finish time (lower is better)
+// of a finished, record-eligible run only, the roof dribble the time held (higher is better), the catch none.
 // Commands: "rlt courses <cmd>", see onCommand and the tab.
 
 #include <array>
@@ -128,6 +130,8 @@ public:
     static int maxMissesAllowed(int ringCount) { return ringCount > 0 ? ringCount / 4 : 0; }
     // A run with given-up rings can only set a record when each miss costs at least this many seconds.
     static constexpr float kMinPenaltyForRecord = 1.f;
+    // Roof dribble: shortest keep-up (s) that counts as a record (module best and AttemptResult record value).
+    static constexpr float kMinDribbleRecord = 1.f;
 
     // ---- Introspection for tests ----------------------------------------------------------------------------
     CoursesPhase phase() const { return phase_; }
@@ -151,6 +155,7 @@ private:
 
     // Lifecycle
     bool acquireActivity(CoursesKind kind, const TickContext& ctx, Actions& out);
+    bool refuseIdleShortcut(const TickContext& ctx, Actions& out);
     void startExercise(CoursesKind kind, const std::string& code, const TickContext& ctx, Actions& out);
     void replayLast(const TickContext& ctx, Actions& out);
     bool buildCourse(CoursesKind kind, uint64_t seed, int pct, bool fromCode);

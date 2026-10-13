@@ -587,7 +587,6 @@ void renderMapsTab(UiContext& ctx) {
     std::vector<MapStatsView> stats;
     std::vector<KismetCandidate> kvars;
     std::vector<std::string> favorites;
-    std::map<std::string, MapCategory> overrides;
     MapsConfig cfg;
     bool found = false;
     {
@@ -597,7 +596,6 @@ void renderMapsTab(UiContext& ctx) {
             st = mod->status();
             stats = mod->statsList();
             favorites = mod->favorites();
-            overrides = mod->categoryOverrides();
             cfg = mod->config();
             if (ctx.showAdvanced && st.onCustomMap) kvars = mod->kismetCandidates();
         }
@@ -613,7 +611,8 @@ void renderMapsTab(UiContext& ctx) {
     options.mods = cfg.scanMods;
     options.wml = cfg.scanWml;
     if (svc) {
-        svc->setCategoryOverrides(overrides);
+        // The player's category choice reaches the game context through MapsModule::refineContext (glue context
+        // refresh): nothing to push from here, so it applies even when this tab is never opened.
         svc->ensureScanned(options);
         // Tell the module where each installed map lives, so "rlt maps load <id>" works from the console.
         MapsUiState& ui = svc->uiState();

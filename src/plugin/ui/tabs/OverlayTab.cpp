@@ -160,12 +160,9 @@ void renderActions(const UiContext& ctx) {
     if (ImGui::Button("Remettre le chrono à zéro")) ctx.post(kModule, "reset_timer");
     hoverTip("Repart de 0:00 sans changer de map (rlt overlay reset_timer).");
     ImGui::SameLine();
-    if (ImGui::Button("Préréglage d'origine")) {
-        ui::resetToDefaults(ctx, kModule);
-        ctx.post(kModule, "preset_original");
-    }
+    if (ImGui::Button("Préréglage d'origine")) ctx.post(kModule, "preset_original");
     hoverTip("Remet tous les réglages de l'onglet aux valeurs de First Touch Trainer (tout désactivé, taille 3, "
-             "cercle rouge de 47, couleurs vert / jaune / rouge).");
+             "cercle rouge de 47, couleurs vert / jaune / rouge). Même effet que rlt overlay preset_original.");
 }
 
 void renderStats(const UiContext& ctx, const OverlayStatus& st, const std::vector<OverlayDay>& days) {
@@ -200,8 +197,8 @@ void renderCommands() {
     ImGui::BulletText("rlt overlay speed : écart de vitesse actuel et sa zone dans le chat.");
     ImGui::BulletText("rlt overlay reset_timer : remet le chrono de session à zéro.");
     ImGui::BulletText("rlt overlay reset_stats : efface le temps d'entraînement enregistré.");
-    ImGui::BulletText("rlt overlay preset_original : utilisée par le bouton « Préréglage d'origine ». Seule dans la "
-                      "console, elle ne change rien : les réglages passent par cet onglet ou les cvars rlt_ov_*.");
+    ImGui::BulletText("rlt overlay preset_original : remet tous les réglages de l'Affichage (cvars rlt_ov_*) aux "
+                      "valeurs de First Touch Trainer, comme le bouton « Préréglage d'origine ».");
     ImGui::TextDisabled("Astuce : bind \"rlt overlay speed\" sur une touche pour vérifier ton écart en plein "
                         "exercice.");
     ImGui::Unindent();

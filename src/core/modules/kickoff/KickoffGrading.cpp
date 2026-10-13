@@ -186,7 +186,8 @@ KickoffGrade kickoffGrade(const KickoffMetrics& m, KickoffLevel target, const Ki
     add(KickoffTip::BoostReleased, (100.f - g.sBoost) * e * 0.2f);
     add(KickoffTip::PathDeviation, (100.f - g.sPath) * e * 0.2f);
     // Missed small pad that the straight line would have collected (meaningless with unlimited boost, and not the
-    // player's fault when a pad picked on the previous rep may still be respawning). Its loss is the time the
+    // player's fault when a pad picked on a previous passive kickoff may still be respawning; the drill respawns
+    // every pad when it places the car, so this never excuses a drill rep). Its loss is the time the
     // 12 boost is worth in time points: ~0.06 s when the tank ran dry before the ball (the pad would have kept
     // the boost on), ~0.04 s otherwise; never under the 2.5 point floor of the tip list, so it can be shown.
     if (m.padsPicked == 0 && !m.boostLooksUnlimited && !m.padsMaybeOnCooldown &&

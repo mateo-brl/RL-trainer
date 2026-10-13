@@ -155,9 +155,45 @@ TEST(ov_settings_section_reset_restores_defaults) {
     CHECK_EQ(st.overlay.speedX, 0.4587f);
     CHECK(st.overlay.shadow);
     CHECK_EQ(st.overlay.zoneRadius, 33.f);  // other sections untouched
-    // "preset_original" = every overlay setting back to its default.
-    for (const SettingDef* d : s.forModule("overlay")) s.apply(st, d->cvar, d->defaultValue);
-    CHECK_EQ(st.overlay.zoneRadius, 47.f);
+}
+
+TEST(ov_settings_preset_original_resets_every_setting) {
+    Harness h;
+    Settings ref;
+    h.schema.applyDefaults(ref);
+    // Change every overlay setting away from its default, plus a general one.
+    for (const SettingDef* d : h.schema.forModule("overlay")) {
+        switch (d->type) {
+        case SettingType::Bool: h.set(d->cvar, d->defaultValue == "1" ? "0" : "1"); break;
+        case SettingType::Color: h.set(d->cvar, "#123456FF"); break;
+        case SettingType::Choice: h.set(d->cvar, d->defaultValue == "0" ? "1" : "0"); break;
+        default:
+            h.set(d->cvar, std::to_string(d->minValue));
+            if (d->read(h.settings) == d->read(ref)) h.set(d->cvar, std::to_string(d->maxValue));
+            break;
+        }
+        CHECK_MSG(d->read(h.settings) != d->read(ref), d->cvar);
+    }
+    h.set("rlt_hud_scale", "1.5");
+    // What the glue does with Actions::resetSettings (RLTrainer: every cvar of the module, or of "<module>/<section>").
+    const Actions a = h.command("preset_original");
+    for (const std::string& target : a.resetSettings) {
+        const size_t slash = target.find('/');
+        const std::string module = target.substr(0, slash);
+        const std::string section = slash == std::string::npos ? std::string() : target.substr(slash + 1);
+        for (const SettingDef* d : h.schema.forModule(module))
+            if (section.empty() || d->section == section) h.set(d->cvar, d->defaultValue);
+    }
+    CHECK_EQ(a.resetSettings.size(), static_cast<size_t>(1));
+    for (const SettingDef* d : h.schema.forModule("overlay")) CHECK_MSG(d->read(h.settings) == d->read(ref), d->cvar);
+    const OverlayConfig fresh;   // struct defaults == schema defaults == the original plugin's values
+    const OverlayConfig& cfg = h.mod.config();
+    CHECK(!cfg.speedEnabled && !cfg.timerEnabled && !cfg.zoneEnabled && !cfg.sphereEnabled);
+    CHECK_EQ(cfg.textScale, fresh.textScale);
+    CHECK_EQ(cfg.zoneRadius, 47.f);
+    CHECK(sameColor(cfg.zoneColor, colors::Red));
+    CHECK(sameColor(cfg.goodColor, colors::Green));
+    CHECK_EQ(h.settings.general.hudScale, 1.5f);   // other modules' settings untouched
 }
 
 TEST(ov_settings_misordered_thresholds_are_fixed_by_the_module) {

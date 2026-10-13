@@ -20,12 +20,12 @@ float tipWeight(const std::string& error);
 std::string tipCode(const std::string& error);
 
 // Replaces the button placeholders with the player's bindings ("le saut (A)", "l'air roll gauche (LB)"), in the
-// button style the player chose (Settings::profile.buttonStyle, see Controls.h).
-std::string fillButtons(const std::string& text, const PlayerProfile& profile, KeyStyle style = KeyStyle::Auto);
-std::string airRollPrompt(const PlayerProfile& profile, KeyStyle style = KeyStyle::Auto);
+// button style the player chose (Settings::profile.buttonStyle, see Controls.h). The style has no default on purpose:
+// every caller passes keyStyleFromIndex(settings.profile.buttonStyle), so PlayStation players never see Xbox names.
+std::string fillButtons(const std::string& text, const PlayerProfile& profile, KeyStyle style);
+std::string airRollPrompt(const PlayerProfile& profile, KeyStyle style);
 
 // Tips for a list of error codes, sorted by weight (stable for equal weights), duplicates removed.
-std::vector<Tip> buildTips(const std::vector<std::string>& errors, const PlayerProfile& profile,
-                           KeyStyle style = KeyStyle::Auto);
+std::vector<Tip> buildTips(const std::vector<std::string>& errors, const PlayerProfile& profile, KeyStyle style);
 
 } // namespace rlt::bm

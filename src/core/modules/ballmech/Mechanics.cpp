@@ -1,5 +1,7 @@
 #include "core/modules/ballmech/Mechanics.h"
 
+#include <cmath>
+
 namespace rlt::bm {
 
 namespace {
@@ -158,6 +160,33 @@ std::string gradeTitle(const MechGrade& g) {
     }
     default: return "Méca balle";
     }
+}
+
+bool recordValueOf(Mech m, const MechGrade& g, float score, float& value) {
+    bool measured = true;
+    switch (m) {
+    case Mech::Flick:
+    case Mech::Musty:
+    case Mech::Breezi:
+        value = g.ballSpeed;
+        measured = g.hasShot && value > 0.f;
+        break;
+    case Mech::AirDribble:
+        value = g.value("duration");
+        measured = g.has("duration") && value > 0.f;
+        break;
+    case Mech::Pinch:
+    case Mech::PowerShot:
+        value = g.has("exit_speed") ? g.value("exit_speed") : g.ballSpeed;
+        measured = (g.has("exit_speed") || g.hasShot) && value > 0.f;
+        break;
+    default: value = score; break;
+    }
+    if (!measured || !std::isfinite(value)) {
+        value = 0.f;
+        return false;
+    }
+    return true;
 }
 
 } // namespace rlt::bm

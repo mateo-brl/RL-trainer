@@ -222,10 +222,12 @@ void lastResultBlock(const KickoffUiData& d) {
             ImGui::Text("Retour au sol : %.2f s après le flip", static_cast<double>(m.landing - m.dodge));
         ImGui::Text("Boost utilisé : %.0f, restant : %.0f, maintenu %.0f %% du temps", static_cast<double>(m.boostUsed),
                     static_cast<double>(m.boostAtTouch), static_cast<double>(m.boostHeldRatio * 100.f));
+        // Safety net: the drill limits the boost at every placement, so this mostly concerns passive kickoffs.
         if (m.boostLooksUnlimited)
-            ui::textColored(kWarn,
-                            "Boost illimité détecté : record non compté. Coupe-le dans le freeplay pour un "
-                            "kickoff réaliste.");
+            ui::textColored(kWarn, r.passive ? "Boost illimité détecté : record non compté. Lance l'exercice : il le "
+                                               "coupe pendant tes essais et le remet à la fin."
+                                             : "Boost illimité détecté : record non compté. Le plugin n'a pas pu le "
+                                               "couper ici : coupe-le dans les réglages du freeplay.");
         ImGui::Text("Écart moyen à la ligne droite : %.0f uu (max %.0f)", static_cast<double>(m.pathDevRms),
                     static_cast<double>(m.pathDevMax));
         if (m.hasBallExit)
@@ -303,8 +305,9 @@ void guideBlock() {
         ImGui::BulletText("Annule tout de suite : stick à fond en arrière en moins de 0,1 s.");
         ImGui::BulletText("Finis la vrille avec l'air roll du même côté pour retomber vite sur les roues.");
         ImGui::BulletText("Garde le boost jusqu'à la panne : le petit boost sur ta route te redonne +12.");
-        ImGui::BulletText("Coupe le boost illimité du freeplay : avec, tes essais sont notés mais ne comptent pas "
-                          "comme records.");
+        ImGui::BulletText("Boost illimité : l'exercice le coupe pendant tes essais et le remet à la fin. Hors "
+                          "exercice, coupe-le toi-même : avec, tes kickoffs sont notés mais ne comptent pas comme "
+                          "records.");
         ImGui::TextWrapped(
             "Gain attendu : 0,1 à 0,2 s par rapport à un front flip classique, ce qui suffit à gagner "
             "la plupart des kickoffs.");
@@ -359,7 +362,8 @@ void renderKickoffTab(UiContext& ctx) {
 
     ImGui::TextWrapped(
         "Kickoff comme en match : la voiture est figée pendant le 3, 2, 1, puis GO. Un fantôme part de la "
-        "position adverse, tu es chronométré jusqu'à la balle et noté sur 100 avec des conseils.");
+        "position adverse, tu es chronométré jusqu'à la balle et noté sur 100 avec des conseils. À chaque essai, "
+        "les boosts du terrain réapparaissent et le boost illimité est coupé (tes réglages reviennent à la fin).");
 
     ui::separatorText("Exercice");
     statusBlock(d);

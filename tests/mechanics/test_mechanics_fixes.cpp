@@ -61,36 +61,43 @@ int countSpeed(const std::vector<float>& speeds, float v) {
 } // namespace
 
 // ---- Game speed restore under the engine's rules ---------------------------------------------------------
-TEST(mechanics_speed_external_stop_then_next_drill_restores) {
+TEST(mechanics_speed_external_stop_engine_restores) {
     Rig rig;
     rig.set("rlt_me_slowmo", "0.5");
     rig.command("drill", {"halfflip"});
     rig.tick(Inputs{});
     CHECK(rig.speeds.size() == 1 && rig.speeds.back() == 0.5f);
     CHECK_NEAR(rig.mod.status().gameSpeed, 0.5f, 1e-6f);
+    CHECK_NEAR(rig.host.gameSpeed, 0.5f, 1e-6f);
 
-    // Home "Stop" button: Engine::stopActivity clears the owner, then calls onActivityStopped (no Actions).
+    // Home "Stop" button: Engine::stopActivity clears the owner, restores the speed, calls onActivityStopped.
     rig.host.stopActivity();
     CHECK(!rig.mod.drillActive());
+    CHECK(rig.host.engineRestores == 1);
+    CHECK_NEAR(rig.host.gameSpeed, 1.f, 1e-6f);
     rig.run(30, idle());
-    CHECK(rig.speeds.size() == 1);       // nothing reached the game: the engine would drop it
-    CHECK(!rig.raw.setGameSpeed);         // and the module does not pretend it restored the speed
-    CHECK_NEAR(rig.mod.appliedGameSpeed(), 0.5f, 1e-6f);
+    CHECK(rig.speeds.size() == 1);   // nothing to compensate: the module sends no speed of its own
+    CHECK(!rig.raw.setGameSpeed);
+    CHECK(rig.host.requests == 1);   // and never takes the activity back
+    CHECK_NEAR(rig.mod.appliedGameSpeed(), 1.f, 1e-6f);
     MechanicsModule::Status st = rig.mod.status();
-    CHECK(st.speedRestorePending);
-    CHECK_NEAR(st.gameSpeed, 1.f, 1e-6f);  // the module does not control the world any more
+    CHECK_NEAR(st.gameSpeed, 1.f, 1e-6f);
+    CHECK(!st.speedWaiting);
 
-    // Normal speed chosen, any mechanics drill: its first tick sends 1 as the owner, so the game is restored.
+    // Normal speed chosen: the next drill has nothing to send (the game already runs at 1).
     rig.set("rlt_me_slowmo", "1");
     rig.command("drill", {"halfflip"});
     rig.tick(Inputs{});
-    CHECK(rig.speeds.size() == 2 && rig.speeds.back() == 1.f);
-    CHECK(!rig.mod.speedRestorePending());
-    CHECK_NEAR(rig.mod.appliedGameSpeed(), 1.f, 1e-6f);
+    CHECK(rig.speeds.size() == 1);
     rig.command("stop");
     rig.run(5, idle());
-    CHECK(rig.speeds.size() == 2);  // already at 1: nothing more to send
+    CHECK(rig.speeds.size() == 1);
     CHECK(!rig.host.ownsActivity(&rig.mod));
+    // Slow motion again: the module does not believe the game is still slowed down, it sends its speed.
+    rig.set("rlt_me_slowmo", "0.5");
+    rig.command("drill", {"halfflip"});
+    rig.tick(Inputs{});
+    CHECK(rig.speeds.size() == 2 && rig.speeds.back() == 0.5f);
 
     // A drill that never touched the speed does not send one (a speed the player set by hand stays).
     Rig clean;
@@ -99,20 +106,29 @@ TEST(mechanics_speed_external_stop_then_next_drill_restores) {
     clean.command("stop");
     clean.run(3, idle());
     CHECK(clean.speeds.empty());
+    CHECK(clean.host.engineRestores == 0);
 }
 
-TEST(mechanics_speed_restore_command) {
+TEST(mechanics_speed_normal_stop_restores_itself) {
+    // Its own normal stop: the module routes 1 as the owner, then releases; the engine has nothing left to do.
     Rig rig;
     rig.set("rlt_me_slowmo", "0.5");
     rig.command("drill", {"wavedash"});
     rig.tick(Inputs{});
-    rig.host.stopActivity();
+    Actions a = rig.command("stop");
+    CHECK(a.setGameSpeed.has_value() && *a.setGameSpeed == 1.f);
+    CHECK(rig.host.ownsActivity(&rig.mod));
     rig.tick(Inputs{});
-    CHECK(rig.mod.status().speedRestorePending);
-    // The UI button (shown when no activity runs): takes the activity for one callback, restores, gives it back.
+    CHECK(!rig.host.ownsActivity(&rig.mod));
+    CHECK(rig.host.engineRestores == 0);
+    CHECK_NEAR(rig.host.gameSpeed, 1.f, 1e-6f);
+}
+
+TEST(mechanics_speed_restore_command) {
+    Rig rig;
+    // No exercise runs: takes the activity for one callback, restores, gives it back next tick.
     Actions a = rig.command("restore_speed");
     CHECK(a.setGameSpeed.has_value() && *a.setGameSpeed == 1.f);  // routed: the module owned the activity
-    CHECK(!rig.mod.status().speedRestorePending);
     CHECK(rig.toastContains("Vitesse du jeu remise"));
     rig.tick(Inputs{});
     CHECK(!rig.host.ownsActivity(&rig.mod));
@@ -134,29 +150,73 @@ TEST(mechanics_speed_restore_command) {
     CHECK(own.toastContains("Ralenti"));
 }
 
+TEST(mechanics_speed_restore_waits_for_other_drill) {
+    Rig rig;
+    OtherModule other;
+    other.attach(&rig.host);
+    CHECK(other.start("Kickoff"));
+    const int requests = rig.host.requests;
+    Actions a = rig.command("restore_speed");
+    CHECK(!a.setGameSpeed);
+    CHECK(rig.host.requests == requests);  // the other exercise is not stopped for this
+    CHECK(rig.host.ownsActivity(&other));
+    CHECK(rig.mod.speedWaiting() && rig.mod.status().speedWaiting);
+    CHECK(rig.toastContains("quand il se terminera"));
+    rig.run(20, idle());
+    CHECK(rig.host.ownsActivity(&other));
+    CHECK(rig.host.requests == requests);
+    CHECK(rig.speeds.empty());
+    // The other exercise ends: the wish is applied on the next tick, then the activity is given back.
+    other.stop();
+    Actions t = rig.tick(Inputs{});
+    CHECK(t.setGameSpeed.has_value() && *t.setGameSpeed == 1.f);
+    CHECK(!rig.mod.speedWaiting());
+    rig.tick(Inputs{});
+    CHECK(!rig.host.ownsActivity(&rig.mod));
+    rig.run(5, idle());
+    CHECK(rig.speeds.size() == 1);  // applied once
+
+    // "stop" and a map change drop the wish.
+    for (int variant = 0; variant < 2; ++variant) {
+        Rig w;
+        OtherModule o;
+        o.attach(&w.host);
+        CHECK(o.start("Kickoff"));
+        w.command("restore_speed");
+        CHECK(w.mod.speedWaiting());
+        if (variant == 0) w.command("stop");
+        else w.setContext(GameMode::Freeplay, "Stadium_P", true);
+        CHECK(!w.mod.speedWaiting());
+        o.stop();
+        w.run(5, idle());
+        CHECK(w.speeds.empty());
+        CHECK(!w.host.ownsActivity(&w.mod));
+    }
+}
+
 TEST(mechanics_speed_leaving_freeplay_and_map_unloaded) {
     {
-        // Freeplay -> workshop: Engine::setContext stops the activity BEFORE ContextChanged reaches the module.
+        // Freeplay -> workshop: Engine::setContext stops the activity (and restores the speed) BEFORE ContextChanged.
         Rig rig;
         rig.set("rlt_me_slowmo", "0.5");
         rig.command("drill", {"powerslide"});
         rig.tick(Inputs{});
         Actions a = rig.setContext(GameMode::Workshop, "Obstacle_course", false);
         CHECK(rig.host.stops == 1);
+        CHECK(rig.host.engineRestores == 1);
+        CHECK_NEAR(rig.host.gameSpeed, 1.f, 1e-6f);
         CHECK(!rig.mod.drillActive());
-        CHECK(!a.setGameSpeed);  // filtered anyway (no world control): the engine must restore (shared change)
-        CHECK(rig.mod.speedRestorePending());
+        CHECK(!a.setGameSpeed);
         rig.run(10, idle());
         CHECK(rig.speeds.size() == 1);
         CHECK(rig.host.requests == 1);  // never tries to take the activity back by itself
-        // Back in freeplay: the next drill of the module sends its speed first, then 1 at the stop.
+        // Back in freeplay: the next drill sends its speed, then 1 at its own stop.
         rig.setContext(GameMode::Freeplay, "Park_P", true);
         rig.command("drill", {"powerslide"});
         rig.tick(Inputs{});
         CHECK(rig.speeds.size() == 2 && rig.speeds.back() == 0.5f);
         rig.command("stop");
         CHECK(rig.speeds.size() == 3 && rig.speeds.back() == 1.f);
-        CHECK(!rig.mod.speedRestorePending());
     }
     {
         Rig rig;
@@ -165,8 +225,9 @@ TEST(mechanics_speed_leaving_freeplay_and_map_unloaded) {
         rig.tick(Inputs{});
         rig.mapUnloaded();
         CHECK(!rig.mod.drillActive());
-        CHECK(rig.mod.speedRestorePending());
-        CHECK(countSpeed(rig.speeds, 1.f) == 0);
+        CHECK(rig.host.engineRestores == 1);
+        CHECK(countSpeed(rig.speeds, 1.f) == 0);  // the module itself sends nothing
+        CHECK_NEAR(rig.mod.appliedGameSpeed(), 1.f, 1e-6f);
     }
 }
 
@@ -181,7 +242,7 @@ TEST(mechanics_master_switch_restores_as_owner) {
     CHECK(!rig.mod.drillActive());
     rig.tick(Inputs{});
     CHECK(!rig.host.ownsActivity(&rig.mod));
-    CHECK(!rig.mod.speedRestorePending());
+    CHECK(rig.host.engineRestores == 0);
 }
 
 // ---- Focus / drill of a family whose toggle is off ------------------------------------------------------
@@ -251,16 +312,25 @@ TEST(mechanics_slowmo_after_focus_requests_once) {
     other.attach(&rig.host);
     CHECK(other.start("Kickoff"));
     CHECK(rig.mod.focus() == Focus::Stall);
+    CHECK(rig.host.engineRestores == 1);  // the engine restored the focus slow motion
     rig.run(20, idle());
     rig.set("rlt_me_hud_x", "0.02");  // ...not when an unrelated setting changes...
     rig.run(5, idle());
-    rig.set("rlt_me_slowmo", "0.5");  // ...nor when the slider moves again (that would stop the other drill)
+    rig.set("rlt_me_slowmo", "0.5");  // ...nor when the slider moves (that would stop the other drill): it waits
     rig.run(5, idle());
     CHECK(rig.host.requests == 2);  // only the other module's request
     CHECK(rig.host.ownsActivity(&other));
-    rig.command("focus", {"stall"});  // an explicit focus command takes it again
+    CHECK(rig.mod.status().speedWaiting);
+    rig.command("focus", {"stall"});  // an explicit focus command does not steal it either
+    rig.run(2, idle());
+    CHECK(rig.host.requests == 2);
+    CHECK(rig.host.ownsActivity(&other));
+    CHECK(rig.toastContains("quand il se terminera"));
+    // The other exercise ends: the slow motion wish is applied.
+    other.stop();
     rig.run(2, idle());
     CHECK(rig.host.ownsActivity(&rig.mod));
+    CHECK(!rig.mod.speedWaiting());
     CHECK(!rig.speeds.empty() && rig.speeds.back() == 0.5f);
 
     // Slow motion back to 1 while owning: the activity is given back after the restore.

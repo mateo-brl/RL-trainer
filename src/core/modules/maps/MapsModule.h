@@ -107,8 +107,11 @@ public:
     std::vector<std::string> favorites() const { return book_.favorites(); }
     bool isFavorite(const std::string& key) const { return book_.isFavorite(key); }
     std::map<std::string, MapCategory> categoryOverrides() const;
-    // Fills title / category / workshop id of a custom map context from what the module knows (catalogue,
-    // Kismet profile, player's choice). Meant for the glue's context refresh (see shared change request).
+    // Fills title / category / workshop id of a custom map context from what the module knows (player's
+    // category choice, catalogue, Kismet profile). Called by the glue's context refresh (RLTrainer::refreshContext,
+    // every 0.25 s, under the engine lock) right after MapsService::describeCurrentMap, so every module gets the
+    // player's choice. Cheap, read-only, safe before any map was seen; `ctx` must be the glue's fresh
+    // description (not the engine's current context).
     void refineContext(GameContext& ctx) const;
 
 private:
@@ -123,6 +126,10 @@ private:
     void onRunFinished(float now, Actions& out);
     void syncPersonalBest();
     MapCategory resolvedCategory(std::string* source) const;
+    // Category precedence: player's choice, catalogue, the map's Kismet profile, the context's category
+    // (`listed`, unless Standard / Other), then a guess from the title and file name.
+    MapCategory categoryFrom(const MapStats* st, MapCategory listed, const std::string& title,
+                             const std::string& mapName, std::string* source) const;
     std::string resolvedTitle() const;
     int resolvedFinalLevel() const;
     std::string targetKey(const Command& cmd, size_t argIndex) const;

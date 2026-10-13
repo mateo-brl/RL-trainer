@@ -426,14 +426,15 @@ TEST(mechanics_activity_taken_away) {
     CHECK(rig.mod.focus() == Focus::None);  // the drill's focus ends with the drill
     const int requests = rig.host.requests;
     rig.run(20, idle());
-    // Not the owner any more: no world control at all (a restore sent now would be dropped by the engine, or would
-    // override the new owner's speed), never a request to take the activity back.
+    // Not the owner any more: no world control at all (it would override the new owner's speed), never a request
+    // to take the activity back. The engine restored the speed at the handover.
     CHECK(!rig.raw.setCar && !rig.raw.setGameSpeed && !rig.raw.freezeCar);
     CHECK(rig.host.requests == requests);
     CHECK(rig.host.ownsActivity(&other));
-    // The speed it left is remembered (not faked to 1): its next activity starts by sending a speed.
-    CHECK_NEAR(rig.mod.appliedGameSpeed(), 0.5f, 1e-6f);
-    CHECK(rig.mod.speedRestorePending());
+    CHECK(rig.host.engineRestores == 1);
+    CHECK_NEAR(rig.host.gameSpeed, 1.f, 1e-6f);
+    CHECK_NEAR(rig.mod.appliedGameSpeed(), 1.f, 1e-6f);
+    CHECK(!rig.mod.speedWaiting());
 }
 
 TEST(mechanics_focus_survives_drill_it_preceded) {
@@ -526,7 +527,7 @@ TEST(mechanics_context_change_stops_drill) {
     CHECK(a.setGameSpeed.has_value() && *a.setGameSpeed == 1.f);
     rig.tick(Inputs{});
     CHECK(!rig.host.ownsActivity(&rig.mod));
-    CHECK(!rig.mod.speedRestorePending());
+    CHECK(rig.host.engineRestores == 0);  // restored by the module itself
 }
 
 TEST(mechanics_reset_shot_replaces_drill) {

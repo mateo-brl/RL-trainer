@@ -10,6 +10,10 @@
 #define RLT_VERSION_PATCH 0
 #endif
 
+#ifndef RLT_REPO_SLUG
+#define RLT_REPO_SLUG "mateo-brl/RL-trainer"
+#endif
+
 #define RLT_STRINGIFY_(a) #a
 #define RLT_STRINGIFY(a) RLT_STRINGIFY_(a)
 

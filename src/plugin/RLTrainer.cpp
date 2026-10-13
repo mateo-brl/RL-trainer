@@ -47,7 +47,10 @@ void RLTrainer::onLoad() {
     profile_ = std::make_unique<ProfileService>(gameWrapper, cvarManager);
     maps_ = std::make_unique<MapsService>(gameWrapper, cvarManager);
     maps_->init();
+    updates_ = std::make_unique<UpdateService>(gameWrapper, RLT_REPO_SLUG, kPluginVersionString);
+    updates_->cleanup();
     ui_ = std::unique_ptr<UiContext>(new UiContext{*engine_, cvarManager, gameWrapper, profile_.get(), maps_.get(), false, &configDirty_});
+    ui_->updateService = updates_.get();
 
     registerCvars();
     loadProgress();
@@ -61,6 +64,15 @@ void RLTrainer::onLoad() {
     refreshContext();
     refreshProfile(true);
     schedulePeriodic();
+    gameWrapper->SetTimeout([alive = alive_, this](GameWrapper*) {
+        if (!*alive) return;
+        bool check = true;
+        {
+            auto lk = engine_->lock();
+            check = engine_->settings().general.checkUpdates;
+        }
+        if (check) guarded(cvarManager, "update check", [&] { updates_->checkAsync(); });
+    }, 8.f);
     cvarManager->log(std::string("RL Trainer ") + kPluginVersionString + " charge.");
 }
 

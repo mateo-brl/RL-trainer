@@ -18,6 +18,7 @@ namespace rlt {
 
 class ProfileService;
 class MapsService;
+class UpdateService;
 
 struct UiContext {
     Engine& engine;
@@ -27,6 +28,7 @@ struct UiContext {
     MapsService* mapsService = nullptr;
     bool showAdvanced = false;
     bool* configDirty = nullptr;  // set when a cvar changed: the plugin writes config.cfg a bit later
+    UpdateService* updateService = nullptr;
 
     // Sets a cvar from the UI (string form, as in the schema). Marks the config for saving.
     void setCvar(const std::string& name, const std::string& value) const;

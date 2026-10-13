@@ -5,7 +5,10 @@ cmake_minimum_required(VERSION 3.20)
 # avoids depending on the msvcp140.dll version loaded by the game. Must be set before project().
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
-project(RLTrainer VERSION 1.0.0 LANGUAGES CXX)
+# Version: the release workflow passes -DRLT_VERSION=<x.y.z> (from the git tag or the run number).
+set(RLT_VERSION "1.0.0" CACHE STRING "Plugin version (major.minor.patch)")
+project(RLTrainer VERSION ${RLT_VERSION} LANGUAGES CXX)
+set(RLT_REPO_SLUG "mateo-brl/RL-trainer" CACHE STRING "GitHub owner/repo used by the in-game update check")
 
 # ------------------------------------------------------------------------------------------------
 # RL Trainer: BakkesMod plugin for Rocket League.
@@ -30,12 +33,22 @@ else()
 endif()
 option(RLT_BUILD_PLUGIN "Build the BakkesMod plugin DLL (MSVC + BakkesMod SDK)" ${RLT_PLUGIN_DEFAULT})
 option(RLT_INSTALL_TO_BAKKESMOD "Copy the DLL to %APPDATA%/bakkesmod/bakkesmod/plugins after build" OFF)
+option(RLT_LTO "Whole-program optimisation (/GL + /LTCG) for Release builds" ON)
 set(BAKKESMOD_SDK_DIR "" CACHE PATH "BakkesModSDK folder (contains include/, lib/pluginsdk.lib, imgui_bm.zip)")
 
 if(MSVC)
     # /utf-8: French UTF-8 literals stay UTF-8 in the binary. /permissive-: standard conformance.
     add_compile_options(/utf-8 /permissive- /W3 /MP /Zc:__cplusplus)
+    # Release: fast code, functions/data in separate COMDATs so the linker drops what is unused.
+    add_compile_options($<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/Gy> $<$<CONFIG:Release>:/Gw>)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    if(RLT_LTO)
+        include(CheckIPOSupported)
+        check_ipo_supported(RESULT RLT_IPO_OK OUTPUT RLT_IPO_MSG LANGUAGES CXX)
+        if(RLT_IPO_OK)
+            set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        endif()
+    endif()
 else()
     add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 endif()
@@ -110,6 +123,7 @@ if(RLT_BUILD_PLUGIN)
         ${RLT_IMGUI_DIR})
     target_link_libraries(RLTrainer PRIVATE rlt_engine "${BAKKESMOD_SDK_DIR}/lib/pluginsdk.lib")
     target_compile_definitions(RLTrainer PRIVATE
+        RLT_REPO_SLUG="${RLT_REPO_SLUG}"
         RLT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
         RLT_VERSION_MINOR=${PROJECT_VERSION_MINOR}
         RLT_VERSION_PATCH=${PROJECT_VERSION_PATCH})

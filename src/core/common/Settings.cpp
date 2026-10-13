@@ -106,6 +106,8 @@ void describeGeneralSettings(SettingsSchema& schema) {
              "Autorise les notifications BakkesMod (records battus, objectifs atteints).");
     w.toggle("rlt_show_in_replays", &GeneralConfig::showInReplays, true, "Afficher dans les replays",
              "Le cercle de contact et la sphère restent visibles quand tu regardes un replay.");
+    w.toggle("rlt_check_updates", &GeneralConfig::checkUpdates, true, "Vérifier les mises à jour",
+             "Au lancement, demande à GitHub si une nouvelle version de RL Trainer est disponible.");
 
     auto a = schema.section(&Settings::general, "general", "Avancé");
     a.advanced();

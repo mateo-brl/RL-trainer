@@ -1,0 +1,148 @@
+name: release
+
+# Publishes a GitHub Release with the Windows installer, the DLL and the one-line installer script:
+#  - push of a tag "vX.Y.Z"           -> release vX.Y.Z
+#  - push to main / manual run         -> release v<major>.<minor>.<run number> (automatic version)
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            base=$(grep -oP 'set\(RLT_VERSION "\K[0-9]+\.[0-9]+' CMakeLists.txt)
+            version="${base}.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version"
+
+  core-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build clang
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure
+      - run: tools/sdk_syntax_check.sh
+
+  build:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch BakkesMod SDK (pinned commit)
+        shell: pwsh
+        run: |
+          $commit = (Get-Content tools/bakkesmod_sdk_commit.txt).Trim()
+          git clone --quiet https://github.com/bakkesmodorg/BakkesModSDK.git "$env:RUNNER_TEMP/BakkesModSDK"
+          git -C "$env:RUNNER_TEMP/BakkesModSDK" checkout --quiet $commit
+
+      - name: Configure (optimised Release, LTO)
+        shell: pwsh
+        run: cmake -S . -B build -A x64 "-DBAKKESMOD_SDK_DIR=$env:RUNNER_TEMP/BakkesModSDK" "-DRLT_VERSION=$env:VERSION" -DRLT_LTO=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests (MSVC)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Verify DLL
+        run: python scripts/verify_dll.py build/Release/rltrainer.dll
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          if (-not (Test-Path $iscc)) { throw "ISCC introuvable" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist, pkg | Out-Null
+          Copy-Item build/Release/rltrainer.dll dist/
+          & $env:ISCC /Q "/DAppVersion=$env:VERSION" "/DSourceDir=$PWD\dist" installer\RLTrainer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC a échoué" }
+          Copy-Item build/Release/rltrainer.dll, scripts/install.ps1, scripts/install.bat, README.md pkg/
+          Compress-Archive -Path pkg/* -DestinationPath "dist/RLTrainer-$env:VERSION.zip"
+          Copy-Item scripts/install.ps1 dist/
+          Copy-Item build/Release/rltrainer.pdb "dist/rltrainer-$env:VERSION.pdb"
+          Get-ChildItem dist -File | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Out-File dist/SHA256SUMS.txt -Encoding ascii
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ env.VERSION }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [version, core-tests, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ env.VERSION }}
+          path: dist
+      - name: Release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)
+          {
+            echo "## Installer RL Trainer $VERSION"
+            echo
+            echo "**Le plus simple :** télécharge \`RLTrainer-Setup.exe\` ci-dessous, ferme Rocket League et double-clique. C'est tout."
+            echo
+            echo "**En une ligne (PowerShell) :**"
+            echo '```powershell'
+            echo "irm https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.ps1 | iex"
+            echo '```'
+            echo
+            echo "Ensuite, lance Rocket League avec BakkesMod et ouvre **F2 > Plugins > RL Trainer** (ou tape \`rlt_menu\` dans la console F6)."
+            echo "Si tu as déjà RL Trainer, l'onglet Accueil te propose la mise à jour en un clic."
+            echo
+            echo "## Changements"
+            if [ -n "$prev" ]; then git log --no-merges --pretty='- %s' "$prev..$GITHUB_SHA"; else git log --no-merges --pretty='- %s' -n 30; fi
+          } > notes.md
+          cat notes.md
+      - name: Publish
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "RL Trainer $VERSION" --notes-file notes.md --latest
+          fi

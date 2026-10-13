@@ -34,6 +34,7 @@ struct GeneralConfig {
     bool controlInTraining = false;   // allow drills to move ball/car in custom training
     bool chatFeedback = true;         // global switch for chat messages
     bool toastFeedback = true;        // global switch for toasts
+    bool checkUpdates = true;         // ask GitHub for a newer release at startup
 };
 
 struct Settings {

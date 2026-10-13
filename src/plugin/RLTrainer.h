@@ -10,6 +10,7 @@
 #include "plugin/Sdk.h"
 #include "plugin/services/MapsService.h"
 #include "plugin/services/ProfileService.h"
+#include "plugin/services/UpdateService.h"
 
 namespace rlt {
 struct UiContext;
@@ -62,6 +63,7 @@ private:
     std::unique_ptr<rlt::GameBridge> bridge_;
     std::unique_ptr<rlt::ProfileService> profile_;
     std::unique_ptr<rlt::MapsService> maps_;
+    std::unique_ptr<rlt::UpdateService> updates_;
     std::unique_ptr<rlt::UiContext> ui_;
     rlt::Renderer renderer_;
 

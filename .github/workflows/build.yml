@@ -60,11 +60,20 @@ jobs:
       - name: Verify DLL (x64, exports, static CRT)
         run: python scripts/verify_dll.py build/Release/rltrainer.dll
 
+      - name: Build the installer (validates installer/RLTrainer.iss on every push)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/Release/rltrainer.dll dist/
+          & $iscc /Q "/DSourceDir=$PWD\dist" installer\RLTrainer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC a échoué" }
+
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build/Release/rltrainer.dll, build/Release/rltrainer.pdb, scripts/install.ps1, scripts/install.bat, README.md dist/
+          Copy-Item build/Release/rltrainer.pdb, scripts/install.ps1, scripts/install.bat, README.md dist/
 
       - uses: actions/upload-artifact@v4
         with:

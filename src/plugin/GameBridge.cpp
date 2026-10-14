@@ -177,8 +177,9 @@ void GameBridge::runConsole(const std::string& cmd) {
 }
 
 void GameBridge::execute(const Actions& a, void* params, bool hudAccents) {
-    // Feedback (chat, toasts, console) also runs in menus; anything touching the car only in a local game.
-    CarWrapper car = inLocalGame() ? gw_->GetLocalCar() : CarWrapper(0);
+    // Feedback (toasts, console) also runs in menus; the car and the game chat only in a local game.
+    const bool local = inLocalGame();
+    CarWrapper car = local ? gw_->GetLocalCar() : CarWrapper(0);
 
     // ---- Inputs (only meaningful inside the SetVehicleInput pre-hook)
     if (params) {
@@ -269,7 +270,20 @@ void GameBridge::execute(const Actions& a, void* params, bool hudAccents) {
     }
 
     // ---- Feedback
-    for (const auto& m : a.chat) gw_->LogToChatbox(hudText(m.text, hudAccents), hudText(m.sender, hudAccents));
+    if (local || gw_->IsInReplay()) {
+        for (const auto& m : a.chat) gw_->LogToChatbox(hudText(m.text, hudAccents), hudText(m.sender, hudAccents));
+    } else if (!a.chat.empty()) {
+        // No game chat in menus: one toast for the whole batch (plans and help send several lines), full text in F6.
+        std::string text;
+        for (const auto& m : a.chat) {
+            cvars_->log(m.sender + " : " + m.text);
+            if (!text.empty()) text += "\n";
+            text += m.text;
+        }
+        const float lines = static_cast<float>(std::min<size_t>(a.chat.size(), 6));
+        gw_->Toast(hudText(a.chat.front().sender, hudAccents), hudText(text, hudAccents), "default",
+                   std::min(10.f, 3.5f + 1.5f * (lines - 1.f)), ToastType_Info, 360.f, 60.f + 20.f * (lines - 1.f));
+    }
     for (const auto& t : a.toasts)
         gw_->Toast(hudText(t.title, hudAccents), hudText(t.text, hudAccents), "default", t.seconds,
                    static_cast<uint8_t>(t.kind));

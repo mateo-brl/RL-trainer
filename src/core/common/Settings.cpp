@@ -109,6 +109,21 @@ void describeGeneralSettings(SettingsSchema& schema) {
     w.toggle("rlt_check_updates", &GeneralConfig::checkUpdates, true, "Vérifier les mises à jour",
              "Au lancement, demande à GitHub si une nouvelle version de RL Trainer est disponible.");
 
+    auto h = schema.section(&Settings::general, "general", "HUD");
+    h.toggle("rlt_hud_compact", &GeneralConfig::hudCompact, true, "HUD compact",
+             "Chaque panneau garde ses lignes essentielles : la note et le conseil principal. Les statistiques "
+             "détaillées restent dans ce menu.");
+    h.toggle("rlt_hud_focus", &GeneralConfig::hudFocus, true, "Un seul panneau à la fois",
+             "Pendant un exercice, seul son panneau s'affiche. Sinon, seul celui du dernier résultat (touche, méca). "
+             "L'écart de vitesse, le chrono et le panneau des maps restent affichés.");
+    h.number("rlt_hud_text", &GeneralConfig::hudTextSize, 1.3f, 0.8f, 2.5f, "Taille du texte des panneaux",
+             "Taille du texte des panneaux en jeu, en plus de la taille de l'interface.", 2);
+    h.number("rlt_hud_opacity", &GeneralConfig::hudOpacity, 0.85f, 0.3f, 1.f, "Opacité du fond des panneaux",
+             "Plus le fond est opaque, plus le texte reste lisible sur un décor clair.", 2);
+    h.text("rlt_menu_key", &GeneralConfig::menuKey, "F3", "Touche du menu",
+           "Touche qui ouvre la fenêtre RL Trainer (nom BakkesMod : F3, F7, NumPadOne...). Elle n'est assignée que "
+           "si elle est libre. Vide : aucune touche.");
+
     auto a = schema.section(&Settings::general, "general", "Avancé");
     a.advanced();
     a.toggle("rlt_hud_accents", &GeneralConfig::hudAccents, false, "Accents dans le HUD",

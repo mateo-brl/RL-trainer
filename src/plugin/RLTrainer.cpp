@@ -305,7 +305,9 @@ void RLTrainer::periodic() {
     bool refreshAsked = false;
     {
         auto lk = engine_->lock();
-        if (auto* profileModule = engine_->get<ProfileModule>()) refreshAsked = profileModule->report().refreshPending;
+        // Not read yet: ask every tick so the first read happens as soon as a local game starts.
+        if (auto* profileModule = engine_->get<ProfileModule>())
+            refreshAsked = profileModule->report().refreshPending || !profileModule->report().valid;
     }
     if (profileTimer_ >= 3.f || refreshAsked) {
         profileTimer_ = 0.f;

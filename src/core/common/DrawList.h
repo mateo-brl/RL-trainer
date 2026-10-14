@@ -81,6 +81,7 @@ struct PanelLine {
     float bar = -1.f;           // 0..1 draws a progress bar under/after the text; < 0 = no bar
     Color barColor = colors::Green;
     float scale = 1.f;          // relative to the panel scale
+    bool detail = false;        // secondary line (stats, history, help): hidden when the compact HUD is on
 };
 
 struct DrawPanel {

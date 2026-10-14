@@ -251,3 +251,37 @@ TEST(shooting_hud_compact_budget) {
         }
     }
 }
+
+TEST(shooting_hud_names_the_45_and_90_flicks_without_degrees) {
+    CHECK(std::string(flickTypeHudLabel(FlickType::Flick45)) == "Flick en diagonale");
+    CHECK(std::string(flickTypeHudLabel(FlickType::Flick90)) == "Flick sur le côté");
+    for (int i = 0; i < kFlickTypeCount; ++i)
+        CHECK(std::string(flickTypeHudLabel(static_cast<FlickType>(i))).find("\xC2\xB0") == std::string::npos);
+    for (const char* type : {"45", "90"}) {
+        Harness h;
+        World w;
+        h.tick(w.snap());
+        h.command("flick", {type});
+        runTicks(h, w, 3);
+        CHECK(noDegrees(mainLines(h, w, "flick countdown")));
+        runToLive(h, w);
+        w.ballRides = true;
+        runTicks(h, w, 5);
+        const auto live = mainLines(h, w, "flick live");
+        CHECK(noDegrees(live));
+        bool named = false;
+        for (const auto& l : live) named = named || l.find("À toi : Flick ") == 0;
+        CHECK(named);
+    }
+    // The result title (HUD headline) has no degrees either.
+    const AimResult aim = scoreAim(goalMouthRect(), true, {500.f, 300.f});
+    FlickReport r = beginnerFlick();
+    r.cls.base = FlickType::Flick45;
+    r.category = FlickType::Flick45;
+    FlickGradeParams p;
+    p.requested = static_cast<int>(FlickType::Flick90);
+    p.level = kShootStartLevel;
+    p.minPower = flickMinPower(kShootStartLevel);
+    const AttemptResult res = gradeFlick(r, aim, p, PlayerProfile{});
+    CHECK_MSG(res.title.find("\xC2\xB0") == std::string::npos, res.title);
+}

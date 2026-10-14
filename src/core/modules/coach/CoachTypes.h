@@ -96,9 +96,8 @@ struct FeedbackCard {
     std::string goalLine;    // "Objectif 7/10 : 10 speedflips réussis"
     bool goalReached = false;  // `goalLine` is "Objectif atteint : ..." (a goal completed by this attempt)
     // Compact HUD card (the module panel already shows the verdict, score and tip): the record line without
-    // technical units ("Nouveau record !" alone for ms, uu/s...), and the recurring mistake in at most 2 lines.
+    // technical units ("Nouveau record !" alone for ms, uu/s...). A recurring mistake shows `recurringNote` only.
     std::string compactRecordLine;
-    std::vector<std::string> compactTipLines;
 };
 
 // Per-skill statistics for the UI.

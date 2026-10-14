@@ -50,6 +50,9 @@ constexpr int kRequestableFlickCount = 8; // Front .. Reverse
 
 const char* flickTypeId(FlickType t); // stable id: "front", "45", "90", "backflip", "delayed", "musty", ...
 const char* flickTypeLabel(FlickType t); // French display name: "Flick avant", "Flick 45°", ...
+// Name for the HUD and the results, without degrees: "Flick en diagonale" (45), "Flick sur le côté" (90). The
+// diagonal and side dodges without the turn say so, to stay apart from them.
+const char* flickTypeHudLabel(FlickType t);
 // "any"/"tout" -> -1, otherwise the FlickType index. Returns false when unknown.
 bool parseFlickType(const std::string& text, int& out);
 

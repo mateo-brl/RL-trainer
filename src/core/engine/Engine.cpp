@@ -245,7 +245,8 @@ void Engine::draw(const ViewContext& view, DrawList& out) {
         if (!show2D) continue;
         for (auto& p : part.panels) {
             styleHudPanel(p, g.hudCompact, g.hudTextSize, g.hudOpacity);
-            if (!p.lines.empty() || !p.title.empty()) out.panels.push_back(std::move(p));
+            // Compact: a panel left with only its title once the detail lines are dropped would be an empty box.
+            if (!p.lines.empty() || (!g.hudCompact && !p.title.empty())) out.panels.push_back(std::move(p));
         }
         out.texts2D.insert(out.texts2D.end(), part.texts2D.begin(), part.texts2D.end());
         out.rects2D.insert(out.rects2D.end(), part.rects2D.begin(), part.rects2D.end());

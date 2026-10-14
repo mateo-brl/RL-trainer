@@ -69,6 +69,7 @@ private:
     rlt::Renderer renderer_;
 
     bool windowOpen_ = false;
+    bool closeRequested_ = false;  // togglemenu already queued after the cross was clicked
     bool configDirty_ = false;
     float configDirtyTimer_ = 0.f;
     float saveTimer_ = 0.f;

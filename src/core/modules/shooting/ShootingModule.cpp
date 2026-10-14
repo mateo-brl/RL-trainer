@@ -407,7 +407,7 @@ bool ShootingModule::startDrill(ShootMode m, const TickContext& ctx, Actions& ou
     }
     switch (m) {
     case ShootMode::Flick:
-        message_ = requested_ >= 0 ? std::string("Flicks : ") + flickTypeLabel(static_cast<FlickType>(requested_))
+        message_ = requested_ >= 0 ? std::string("Flicks : ") + flickTypeHudLabel(static_cast<FlickType>(requested_))
                                    : "Flicks libres";
         break;
     case ShootMode::Targets:
@@ -679,7 +679,7 @@ void ShootingModule::onFlickReport(const FlickReport& rep, const TickContext& ct
     }
     if (flags.powerAll)
         toastRecord(out,
-                    std::string("Record ") + flickTypeLabel(rep.category) + " : " + formatSpeed(rep.power, unit, 1));
+                    std::string("Record ") + flickTypeHudLabel(rep.category) + " : " + formatSpeed(rep.power, unit, 1));
     if (flags.accuracyAll) toastRecord(out, "Record de précision en flick : " + formatNumber(acc, 0) + " %");
     finishAttempt(std::move(res), ctx, out);
 }
@@ -1049,7 +1049,7 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
     case ShootPhase::Live:
         if (mode_ == ShootMode::Flick)
             line(requested_ >= 0
-                     ? std::string("À toi : ") + flickTypeLabel(static_cast<FlickType>(requested_)) + " vers le but !"
+                     ? std::string("À toi : ") + flickTypeHudLabel(static_cast<FlickType>(requested_)) + " vers le but !"
                      : "À toi : flick vers le but !");
         else if (mode_ == ShootMode::Targets)
             line("À toi : vise " + zoneWithArticle(zone_) + " !");

@@ -200,7 +200,7 @@ void renderMenuKey(const UiContext& ctx, const Settings& current) {
     ui::separatorText("Touche du menu");
     cvarWidget(ctx, current, "rlt_menu_key");
     wrappedDisabled("Tape le nom BakkesMod de la touche puis Entrée : F3, F7, NumPadOne... Une touche déjà utilisée "
-                    "dans BakkesMod n'est jamais remplacée.");
+                    "dans BakkesMod ou dans Rocket League n'est jamais prise, et l'ancienne touche reste active.");
     if (!ctx.menuKeyStatus) return;
     const MenuKeyStatus st = ctx.menuKeyStatus();
     if (!st.checked) ImGui::TextDisabled("Vérification de la touche...");

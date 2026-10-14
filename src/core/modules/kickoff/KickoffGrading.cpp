@@ -46,8 +46,7 @@ const char* kickoffTipText(KickoffTip t) {
     case KickoffTip::BallToOwnHalf: return "La balle repart chez toi : arrive plus vite, frappe au centre.";
     case KickoffTip::FlipIntoBall: return "Flippe dans la balle juste avant le contact pour la pousser.";
     case KickoffTip::MissedPad: return "Passe sur le petit boost de ta route : il te recharge.";
-    case KickoffTip::TrySpeedflip:
-        return "Pour gagner du temps, apprends le speedflip (page Mécas mouvement, exercice Speedflip).";
+    case KickoffTip::TrySpeedflip: return "Apprends le speedflip : page Mécas mouvement, exercice Speedflip.";
     case KickoffTip::GreatKickoff: return "Excellent kickoff ! Garde ce rythme et change de position.";
     default: return "";
     }

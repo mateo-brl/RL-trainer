@@ -358,19 +358,21 @@ void RLTrainer::periodic() {
     }
 }
 
-// Binds rlt_menu_key to rlt_menu when the key is free in BakkesMod, never over an existing bind. When the key
-// changes, the old key loses its bind only if it still runs rlt_menu (the player may have rebound it since).
+// Binds rlt_menu_key to rlt_menu when the key is free in BakkesMod, never over an existing bind, never on a key
+// BakkesMod or the game reserves (F1, F2, F6, Escape) nor on a key of the player's Rocket League bindings. The old
+// key loses its bind only once the new key opens the menu (or when the field is emptied), and only if it still
+// runs rlt_menu (the player may have rebound it since): a refused key never leaves the player without a menu key.
 void RLTrainer::applyMenuKey() {
     std::string key;
+    PlayerProfile game;
     {
         auto lk = engine_->lock();
         key = normalizeKeyName(engine_->settings().general.menuKey);
+        game = engine_->profile();
     }
+    const std::string previous = menuKeyBound_;
     bool bindsChanged = false;
-    if (!menuKeyBound_.empty() && menuKeyBound_ != key) {
-        bindsChanged = profile_->unbindIfMatches(menuKeyBound_, kMenuCommand);
-        menuKeyBound_.clear();
-    }
+    bool bound = false;
 
     MenuKeyStatus status;
     status.checked = true;
@@ -379,20 +381,33 @@ void RLTrainer::applyMenuKey() {
         status.text = "Aucune touche (champ vide).";
     } else {
         const std::string current = profile_->currentBind(key);
-        if (current.empty()) {
-            status.bound = profile_->bindIfFree(key, kMenuCommand);
-            bindsChanged = bindsChanged || status.bound;
-        } else {
-            status.bound = current == kMenuCommand;  // bound by a previous session
-        }
-        if (status.bound) {
-            menuKeyBound_ = key;
-            status.text = key + " ouvre le menu.";
+        const bool usedByGame = pf::keyUsedByGame(game, key);
+        if (current == kMenuCommand) {
+            bound = true;  // bound by a previous session
+            status.text = usedByGame ? key + " ouvre le menu, mais sert aussi dans Rocket League : choisis une autre "
+                                             "touche."
+                                     : key + " ouvre le menu.";
+        } else if (pf::isReservedHotkey(key)) {
+            status.text = key + " est réservée par BakkesMod ou le jeu : choisis une autre touche.";
+        } else if (usedByGame) {
+            status.text = key + " sert déjà dans Rocket League : choisis une autre touche.";
         } else if (!current.empty()) {
             status.text = key + " est déjà utilisée par « " + current + " » : choisis une autre touche.";
+        } else if (profile_->bindIfFree(key, kMenuCommand)) {
+            bound = true;
+            bindsChanged = true;
+            status.text = key + " ouvre le menu.";
         } else {
             status.text = "Impossible d'assigner " + key + " : choisis une autre touche.";
         }
+    }
+    if (bound || key.empty()) {
+        if (!previous.empty() && previous != key)
+            bindsChanged = profile_->unbindIfMatches(previous, kMenuCommand) || bindsChanged;
+        menuKeyBound_ = bound ? key : std::string();
+        status.bound = bound;
+    } else if (!previous.empty() && previous != key) {
+        status.text += " " + previous + " ouvre toujours le menu.";
     }
     // Same as the hotkeys of Ma config: writeconfig also saves binds.cfg, so the bind survives a restart.
     if (bindsChanged) cvarManager->executeCommand("writeconfig", false);
@@ -455,6 +470,7 @@ void RLTrainer::refreshProfile(bool force) {
     Actions actions;
     engine_->setProfile(p, actions);
     run(actions);
+    menuKeyDirty_ = true;  // the game bindings may have changed: check the menu key against them again
 }
 
 // ---- Persistence -----------------------------------------------------------------------------------------
@@ -512,7 +528,9 @@ void RLTrainer::Render() {
     if (ImGui::Begin(title.c_str(), &windowOpen_, ImGuiWindowFlags_None) && ui_) renderUi(*ui_);
     ImGui::End();
     ui::popTheme();
-    if (!windowOpen_) {
+    // Closed with the cross: one togglemenu only, even if another frame renders before the game runs it.
+    if (!windowOpen_ && !closeRequested_) {
+        closeRequested_ = true;
         gameWrapper->Execute([alive = alive_, this](GameWrapper*) {
             if (*alive) cvarManager->executeCommand("togglemenu " + GetMenuName());
         });
@@ -524,5 +542,11 @@ std::string RLTrainer::GetMenuTitle() { return "RL Trainer"; }
 // While the window is open the game gets no input (no driving or camera moves while clicking in the menu).
 bool RLTrainer::ShouldBlockInput() { return windowOpen_; }
 bool RLTrainer::IsActiveOverlay() { return true; }
-void RLTrainer::OnOpen() { windowOpen_ = true; }
-void RLTrainer::OnClose() { windowOpen_ = false; }
+void RLTrainer::OnOpen() {
+    windowOpen_ = true;
+    closeRequested_ = false;
+}
+void RLTrainer::OnClose() {
+    windowOpen_ = false;
+    closeRequested_ = false;
+}

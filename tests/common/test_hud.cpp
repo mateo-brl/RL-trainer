@@ -113,3 +113,35 @@ TEST(hud_settings_registered) {
     CHECK(e.settings().general.menuKey == "F7");
     CHECK(e.settingValue("rlt_hud_focus") == "1");
 }
+
+// Compact HUD: a panel left with only its title once the detail lines are dropped is not drawn (an empty box).
+// Example: the shooting panel on "Toujours" in freeplay before any shot.
+TEST(hud_compact_drops_title_only_panels) {
+    for (bool compact : {true, false}) {
+        Engine e;
+        CHECK(e.applySetting("rlt_hud_focus", "0"));
+        CHECK(e.applySetting("rlt_hud_compact", compact ? "1" : "0"));
+        CHECK(e.applySetting("rlt_sh_hud_mode", "1"));
+        Actions a;
+        GameContext ctx;
+        ctx.mode = GameMode::Freeplay;
+        ctx.mapName = "Stadium_P";
+        e.setContext(ctx, a);
+        Snapshot s;
+        s.frame = 1;
+        s.car.valid = true;
+        s.car.onGround = true;
+        s.car.wheelContacts = 4;
+        s.ball.valid = true;
+        s.ball.pos = {0.f, 0.f, 93.f};
+        e.tick(s, a);
+        ViewContext view;
+        view.valid = true;
+        DrawList dl;
+        e.draw(view, dl);
+        bool titleOnly = false;
+        for (const auto& p : dl.panels) titleOnly = titleOnly || p.lines.empty();
+        // The full HUD still draws that panel (title only): the scenario is the one the compact HUD must drop.
+        CHECK_MSG(compact ? !titleOnly : titleOnly, compact ? "compact HUD drew a panel with no line" : "no scenario");
+    }
+}

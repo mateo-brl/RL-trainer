@@ -64,6 +64,16 @@ const char* flickTypeLabel(FlickType t) {
     }
 }
 
+const char* flickTypeHudLabel(FlickType t) {
+    switch (t) {
+    case FlickType::Flick45: return "Flick en diagonale";
+    case FlickType::Flick90: return "Flick sur le côté";
+    case FlickType::Diagonal: return "Flick diagonal sans tourner";
+    case FlickType::Side: return "Flick latéral sans tourner";
+    default: return flickTypeLabel(t);
+    }
+}
+
 bool parseFlickType(const std::string& text, int& out) {
     std::string s;
     for (char c : text) {

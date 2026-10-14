@@ -245,11 +245,11 @@ AttemptResult gradeFlick(const FlickReport& r, const AimResult& aim, const Flick
     const FlickType want = requested ? static_cast<FlickType>(p.requested) : cat;
     const bool matches = !requested || flickMatches(r.cls, p.requested);
     a.skill = std::string("shoot.flick.") + flickTypeId(cat);
-    a.title = flickTypeLabel(cat);
+    a.title = flickTypeHudLabel(cat);  // the HUD title: no degrees
     if (cat == FlickType::Delayed && r.cls.base != FlickType::Other)
-        a.title += std::string(" (") + flickTypeLabel(r.cls.base) + ")";
+        a.title += std::string(" (") + flickTypeHudLabel(r.cls.base) + ")";
     if (r.cls.uncertain) a.title += " (?)";
-    if (requested && !matches) a.title += std::string(", demandé : ") + flickTypeLabel(want);
+    if (requested && !matches) a.title += std::string(", demandé : ") + flickTypeHudLabel(want);
 
     const float kmh = r.power * kUusToKph;
     const float powerQ = r.contact ? rampScore(r.power, 2600.f, 800.f) : 0.f;
@@ -375,7 +375,7 @@ AttemptResult gradeTarget(const AimResult& aim, float shotSpeed, const TargetGra
     a.time = p.time;
     a.skill = std::string("shoot.target.") + zoneId(p.zone);
     std::string title = std::string("Cible ") + zoneLabel(p.zone);
-    if (p.flick) title += std::string(" (") + flickTypeLabel(p.flick->category) + ")";
+    if (p.flick) title += std::string(" (") + flickTypeHudLabel(p.flick->category) + ")";
     a.title = title;
     a.score = std::round(100.f * clamp01(aim.score01));
     const bool slow = p.minSpeed > 0.f && shotSpeed < p.minSpeed;

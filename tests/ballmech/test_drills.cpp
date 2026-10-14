@@ -454,7 +454,7 @@ TEST(bm_drill_flick_success) {
     CHECK_EQ(h.results.size(), 1u);
     if (!h.results.empty()) {
         CHECK(h.results[0].skill == "ball.flick");
-        CHECK(h.results[0].title == "Flick 45°");
+        CHECK(h.results[0].title == "Flick en diagonale");  // no degrees in the HUD title
         CHECK(h.results[0].success);
         CHECK(h.results[0].valueForRecord > 1500.f);  // ball speed after the flick
     }

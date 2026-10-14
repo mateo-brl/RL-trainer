@@ -190,8 +190,8 @@ std::string gradeTitle(const MechGrade& g) {
         const std::string b = baseVariant(v);
         std::string t;
         if (b == "front") t = "Flick avant";
-        else if (b == "45") t = "Flick 45°";
-        else if (b == "90") t = "Flick 90°";
+        else if (b == "45") t = "Flick en diagonale";  // HUD title: no degrees (the 45 and 90 flicks)
+        else if (b == "90") t = "Flick sur le côté";
         else if (b == "backflip") t = "Flick arrière";
         else if (b == "side") t = "Flick latéral";
         else if (b == "reverse") t = "Flick inversé (Mawkzy)";

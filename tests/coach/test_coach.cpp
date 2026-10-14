@@ -346,7 +346,7 @@ TEST(coach_card_compact_record_and_goal) {
     CHECK(m.card().recordLine.find(" ms") != std::string::npos);
 }
 
-TEST(coach_card_compact_recurring_mistake_in_two_lines) {
+TEST(coach_card_compact_recurring_mistake_gives_the_count_not_the_tip) {
     Env env;
     env.settings.coach.feedbackFading = false;
     CoachModule m;
@@ -360,23 +360,22 @@ TEST(coach_card_compact_recurring_mistake_in_two_lines) {
     DrawList dl = drawCompact(m, env);
     CHECK_EQ(dl.panels.size(), static_cast<size_t>(1));
     if (dl.panels.empty()) return;
+    // The module panel already shows the tip: the card only says how often it came back.
     CHECK_EQ(dl.panels[0].lines.size(), static_cast<size_t>(1));
-    CHECK_EQ(dl.panels[0].lines[0].text, std::string("Erreur fréquente : laisse la balle venir."));
+    CHECK_EQ(dl.panels[0].lines[0].text, std::string("Erreur fréquente : 3 des 5 derniers essais"));
     CHECK(dl.panels[0].lines[0].color == colors::Orange);
-    // A long tip takes wider lines, never a third one.
+    // A long tip is never repeated either: still one short line.
     for (int i = 0; i < 3; ++i) send(m, env, R("x.y", 40.f, false).tip("c", tip));
     dl = drawCompact(m, env);
     CHECK_EQ(dl.panels.size(), static_cast<size_t>(1));
     if (dl.panels.empty()) return;
-    CHECK_EQ(dl.panels[0].lines.size(), static_cast<size_t>(2));
-    std::string joined;
-    for (const auto& l : dl.panels[0].lines) joined += (joined.empty() ? "" : " ") + l.text;
-    CHECK_EQ(joined, "Erreur fréquente : g" + tip.substr(1));
+    CHECK_EQ(dl.panels[0].lines.size(), static_cast<size_t>(1));
+    for (const auto& l : dl.panels[0].lines) CHECK(l.text.find("dribble") == std::string::npos);
     // The preview shows the compact card too (placement from the settings).
     command(m, env, "preview");
     dl = drawCompact(m, env);
     CHECK_EQ(dl.panels.size(), static_cast<size_t>(1));
-    if (!dl.panels.empty()) CHECK(dl.panels[0].lines.size() >= 1 && dl.panels[0].lines.size() <= 2);
+    if (!dl.panels.empty()) CHECK(dl.panels[0].lines.size() == 1);
 }
 
 TEST(coach_feedback_fading_in_module) {

@@ -311,7 +311,7 @@ TEST(bm_mechanics_table) {
     CHECK(mechOf(g) == Mech::Breezi);
     g.variant = "45_delayed";
     CHECK(mechOf(g) == Mech::Flick);
-    CHECK(gradeTitle(g) == "Flick 45° retardé");
+    CHECK(gradeTitle(g) == "Flick en diagonale retardé");
     g.family = Family::Aerial;
     g.variant = "air_roll_shot";
     CHECK(mechOf(g) == Mech::AirRoll);

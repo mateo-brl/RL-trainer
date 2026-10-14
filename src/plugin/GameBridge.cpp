@@ -138,6 +138,11 @@ ViewContext GameBridge::buildView(CanvasWrapper& canvas, float hudScale) const {
     return v;
 }
 
+bool GameBridge::inLocalGame() const {
+    if (gw_->IsInOnlineGame() || gw_->IsInReplay()) return false;
+    return gw_->IsInFreeplay() || gw_->IsInCustomTraining() || gw_->IsInGame();
+}
+
 GameMode GameBridge::detectMode(bool isStockMap) const {
     if (gw_->IsInOnlineGame()) return GameMode::Online;
     if (gw_->IsInReplay()) return GameMode::Replay;
@@ -150,6 +155,7 @@ GameMode GameBridge::detectMode(bool isStockMap) const {
 void GameBridge::restoreBoostRules() {
     if (!boostSaved_) return;
     boostSaved_ = false;
+    if (!inLocalGame()) return;  // the car the rules were saved from is gone
     CarWrapper car = gw_->GetLocalCar();
     if (car.IsNull()) return;
     BoostWrapper b = car.GetBoostComponent();
@@ -171,7 +177,8 @@ void GameBridge::runConsole(const std::string& cmd) {
 }
 
 void GameBridge::execute(const Actions& a, void* params, bool hudAccents) {
-    CarWrapper car = gw_->GetLocalCar();
+    // Feedback (chat, toasts, console) also runs in menus; anything touching the car only in a local game.
+    CarWrapper car = inLocalGame() ? gw_->GetLocalCar() : CarWrapper(0);
 
     // ---- Inputs (only meaningful inside the SetVehicleInput pre-hook)
     if (params) {

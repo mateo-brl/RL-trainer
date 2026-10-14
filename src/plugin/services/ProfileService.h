@@ -2,8 +2,8 @@
 // Reads the player's own Rocket League configuration through the SDK (bindings, controller, camera,
 // units, car hitbox, body name) into a core PlayerProfile. Game thread only (also from UiContext::runOnGame).
 //
-// Camera: the LIVE camera settings (CameraWrapper, then the PRI) are preferred in a game, because RL can override
-// the saved camera per input device; the saved SettingsWrapper values are the fallback (menus, replays).
+// Camera: the LIVE camera settings (CameraWrapper, then the car's PRI) are preferred, because RL can override
+// the saved camera per input device; the saved SettingsWrapper values are the fallback.
 // Bindings: both lists are normalised by core normalizeBindings() (pairs are (key, action), order auto-detected).
 
 #include <memory>
@@ -19,6 +19,11 @@ namespace rlt {
 class ProfileService {
 public:
     ProfileService(std::shared_ptr<GameWrapper> gw, std::shared_ptr<CVarManagerWrapper> cvars);
+
+    // True only inside a local game (freeplay, training, offline match, workshop map). In the main menu the
+    // player controller is not a real in-game controller: GetPRI() returns a non-null garbage pointer and reading
+    // it crashes the game, so read() and quickChanged() do nothing outside a game.
+    bool canRead() const;
 
     // Reads everything available right now. Fields that cannot be read keep their previous value. The car body
     // (id, name) is only updated together with a readable hitbox, so a known body always means a measured hitbox.
@@ -40,7 +45,7 @@ public:
 
 private:
     bool readCamera(CameraProfile& out) const;
-    bool readBallCam(PlayerControllerWrapper& pc, bool& out) const;
+    bool readBallCam(CarWrapper& car, bool& out) const;
     std::string readBodyName(int bodyId) const;
 
     std::shared_ptr<GameWrapper> gw_;

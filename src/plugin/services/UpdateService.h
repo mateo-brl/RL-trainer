@@ -1,11 +1,15 @@
 #pragma once
 // In-game update: asks GitHub for the latest release, downloads rltrainer.dll next to the loaded one and swaps
 // the files (a loaded DLL can be renamed on Windows, not overwritten). The new version loads at the next game
-// start. HTTP callbacks run on a BakkesMod worker thread: they only touch this object's state and files.
+// start. HTTP callbacks run on a BakkesMod worker thread: they only touch this object's state and files, and hop
+// to the game thread (GameWrapper::Execute) before sending another request.
+// The DLL comes first from the "update" branch mirror (raw.githubusercontent.com answers without a redirect),
+// then from the release asset, whose redirect to GitHub's file storage failed with HTTP 400 in BakkesMod's client.
 
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "core/common/MiniJson.h"
 #include "plugin/Sdk.h"
@@ -37,6 +41,8 @@ public:
 private:
     std::filesystem::path pluginDir() const;
     void setState(Phase p, const std::string& msg);
+    // Downloads urls[index]; on failure tries the next one, then reports every attempt's HTTP code.
+    void tryDownload(std::vector<std::string> urls, size_t index, std::string failures);
 
     std::shared_ptr<GameWrapper> gw_;
     std::string repo_;

@@ -25,7 +25,8 @@ struct BallMechConfig {
     int hudMetrics = 3;             // metric lines in the panel
     bool hudTip = true;
     bool hudResetCounter = true;
-    bool drawTrajectory = true;     // 3D path of the last graded shot
+    bool drawTrajectory = false;    // 3D path of the last graded shot (a prediction: off by default)
+    bool drawGuide = false;         // ceiling start, niveaux 1-4: the ball's path and a ring at the meeting point (off)
     bool drawResetIndicator = true; // 3D ring around the car while a flip reset is available
     float drillHudX = 0.01f;        // drill panel (top-left "exercise" zone)
     float drillHudY = 0.12f;

@@ -11,6 +11,7 @@ namespace rlt {
 namespace {
 
 constexpr const char* kKeyVersion = "prediction.version";
+constexpr const char* kKeyDefaultsV2 = "prediction.defaults_v2";
 constexpr const char* kKeyCount = "prediction.acc.count";
 constexpr const char* kKeyMean = "prediction.acc.mean";
 constexpr const char* kKeyMax = "prediction.acc.max";
@@ -26,9 +27,9 @@ std::string seconds1(float s) { return formatNumber(std::max(0.f, s), 1) + " s";
 void PredictionModule::describeSettings(SettingsSchema& schema) {
     {
         auto w = schema.section(&Settings::prediction, "prediction", "Prédiction");
-        w.toggle("rlt_pr_enabled", &PredictionConfig::enabled, true, "Activer la prédiction",
+        w.toggle("rlt_pr_enabled", &PredictionConfig::enabled, false, "Activer la prédiction",
                  "Affiche où va la balle : trajectoire, rebonds, point d'atterrissage, zone de première touche "
-                 "et le meilleur moment pour l'intercepter.");
+                 "et le meilleur moment pour l'intercepter. Coupée par défaut, comme toutes les trajectoires.");
         w.number("rlt_pr_horizon", &PredictionConfig::horizon, 3.f, 1.f, 6.f, "Durée prédite (s)",
                  "Jusqu'où regarder dans le futur. 2 à 3 s suffisent pour lire un rebond, 5 à 6 s pour anticiper "
                  "un long dégagement.",
@@ -146,6 +147,17 @@ void PredictionModule::onSettingsChanged(const Settings& settings) {
 }
 
 void PredictionModule::onProfileChanged(const PlayerProfile& profile) { metric_ = profile.metric; }
+
+// The previous version showed the prediction by default; BakkesMod saved that value in config.cfg. A player who still
+// has the old default never chose it: turn the module off once, like every trajectory now. A value the player chose
+// is kept, and the saved flag stops it from running twice.
+void PredictionModule::migrateDefaults(Actions& out) {
+    defaultsV2_ = true;
+    out.requestSave = true;
+    if (!cfg_.enabled) return;
+    out.setCvars.emplace_back("rlt_pr_enabled", "0");
+    out.toasts.push_back(trajectoriesMigrationToast());  // the same toast for every trajectory (merged by the engine)
+}
 
 // ---- Helpers -------------------------------------------------------------------------------------------
 pr::ArenaMode PredictionModule::chooseArena(int setting, const GameContext& game, float ballRadius) {
@@ -281,6 +293,7 @@ void PredictionModule::onForcedRecompute(const Snapshot& s, int elapsed, float d
 void PredictionModule::onTick(const TickContext& ctx, Actions& out) {
     drawFramesSinceTick_ = 0;
     if (!ctx.hasSnapshot) return;
+    if (!defaultsV2_) migrateDefaults(out);  // ticks only come from a running game: config.cfg is loaded
     const Snapshot& s = ctx.snap;
     lastTickFrame_ = s.frame;
     metric_ = ctx.profile.metric;
@@ -451,7 +464,11 @@ void PredictionModule::setHidden(bool hidden, const TickContext& ctx, Actions& o
     if (!hidden_) forceRecompute_ = true;
     ToastMessage t;
     t.title = "RL Trainer";
-    t.text = hudText(hidden_ ? "Prédiction masquée" : "Prédiction affichée", ctx.settings.general.hudAccents);
+    // Off by default: a bind on "show" or "toggle" alone does not bring it back, say where to switch it on.
+    const char* text = hidden_ ? "Prédiction masquée"
+                       : cfg_.enabled ? "Prédiction affichée"
+                                      : "Prédiction coupée : active-la dans la page HUD, section Trajectoires";
+    t.text = hudText(text, ctx.settings.general.hudAccents);
     t.kind = ToastKind::Info;
     t.seconds = 2.f;
     out.toasts.push_back(std::move(t));
@@ -794,6 +811,7 @@ void PredictionModule::drawPanel(const pr::PredictedPath& p, int now, bool withI
 // ---- Persistence ---------------------------------------------------------------------------------------
 void PredictionModule::save(Store& store) const {
     store.setInt(kKeyVersion, 1);
+    store.setInt(kKeyDefaultsV2, defaultsV2_ ? 1 : 0);
     const PredictionAccuracy a = accuracy();
     store.setInt(kKeyCount, a.count);
     store.setFloat(kKeyMean, a.meanError);
@@ -808,6 +826,7 @@ void PredictionModule::save(Store& store) const {
 
 void PredictionModule::load(const Store& store) {
     resetAccuracy();
+    defaultsV2_ = store.getInt(kKeyDefaultsV2, 0) != 0;
     if (!store.has(kKeyCount)) return;
     const long long count = store.getInt(kKeyCount, 0);
     const float mean = store.getFloat(kKeyMean, 0.f);

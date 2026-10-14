@@ -82,7 +82,7 @@ const FocusInfo kFocus[] = {
      {"Petit saut, nez un peu levé", "Flip avant au ras du sol", "Powerslide gardé, ressaute", "Pas de boost"},
      "Pause au sol de 0,2 s maximum au niveau 1, 0,08 s au niveau 10. Niveau 1 : 2 dashes et 54 km/h (1500 uu/s) ; "
      "niveau 10 : 4 dashes, supersonique (79 km/h, 2200 uu/s), zéro boost. Départ à 36 km/h (1000 uu/s) au niveau 1. "
-     "L'essai s'arrête au bout du couloir.",
+     "L'essai s'arrête avant le mur du fond.",
      "Le nombre de dashes demandé et la vitesse à atteindre montent avec le niveau, la vitesse de départ et le temps "
      "disponible baissent."},
     {Focus::ZapDash, "zapdash", "Zap dash", "Sol",
@@ -98,7 +98,8 @@ const FocusInfo kFocus[] = {
      "Des wavedashes sur le mur : tu te décolles à peine et tu flippes aussitôt, tu accélères sans boost.",
      "Clé : deux appuis sur saut très rapprochés, flip en diagonale vers l'avant, côté mur.", Mech::WallDash,
      Tier::Advanced, "Tape saut, flip côté mur, recommence",
-     {"Monte sur le mur", "Longe la bande bleue", "Tape saut", "Flip vers l'avant, côté mur", "Recommence"},
+     {"Monte sur le mur", "Longe le mur sans monter ni descendre", "Tape saut", "Flip vers l'avant, côté mur",
+      "Recommence"},
      "Deux appuis sur saut en moins de 0,25 s au niveau 1, 0,09 s au niveau 10 ; premier appui tenu moins de 0,09 s ; "
      "roues sur le mur au plus 0,17 s après le flip. Un wall dash au niveau 1, trois à la suite au niveau 10. "
      "Hauteur de départ 7 m au niveau 1, 5 m au niveau 10.",
@@ -166,7 +167,7 @@ const Tutorial kTutorials[] = {
      "qu'avec un flip normal. C'est le départ des bons kickoffs.",
      {{"Pendant le décompte, garde l'accélérateur et {boost} appuyés.", "La voiture part à fond dès le GO.",
        "La voiture bondit au GO et ta jauge de boost descend."},
-      {"Au tout début, tourne un tout petit peu vers la balle en suivant la ligne au sol.",
+      {"Au tout début, tourne un tout petit peu vers la balle.",
        "Sur les diagonales, la voiture ne vise pas pile la balle au départ, et en l'air tu ne peux plus corriger.",
        "Ton capot pointe sur la balle avant de sauter."},
       {"Saute avec un appui court sur {jump}.", "Un petit saut garde la voiture près du sol, tu retombes vite.",
@@ -249,7 +250,7 @@ const Tutorial kTutorials[] = {
       {nullptr, nullptr, nullptr},
       {nullptr, nullptr, nullptr}},
      "La voiture est arrêtée : tu prends de la vitesse sans boost, puis tu enchaînes les wavedashes jusqu'au bout du "
-     "couloir.",
+     "terrain.",
      "Deux wavedashes à la suite suffisent, une petite pause entre les deux est acceptée, un peu de boost est toléré.",
      {"Petit saut, nez un peu levé", "Flip avant au ras du sol", "Powerslide gardé, ressaute", "Pas de boost", nullptr,
       nullptr, nullptr}},
@@ -273,7 +274,7 @@ const Tutorial kTutorials[] = {
      "Des wavedashes sur le mur. Tu te décolles à peine du mur et tu flippes aussitôt : les roues le retouchent tout de "
      "suite et tu accélères sans boost.",
      {{"Roule vers le mur et monte dessus.", "Il faut rouler sur le mur, roues contre la paroi.", "La voiture roule sur le mur."},
-      {"Longe le mur à hauteur de la bande bleue.", "À cette hauteur, tu as la place d'enchaîner sans tomber.",
+      {"Longe le mur, assez bas, sans monter ni descendre.", "À cette hauteur, tu as la place d'enchaîner sans tomber.",
        "Tu avances le long du mur sans descendre vite."},
       {"Tape {jump} très vite, sans le garder.", "Un saut long t'éloigne du mur.", "La voiture se décolle à peine."},
       {"Tout de suite, flip en diagonale vers l'avant, côté mur.",
@@ -285,8 +286,8 @@ const Tutorial kTutorials[] = {
      "La voiture part du sol : tu montes toi-même sur le mur, tu le longes, puis tu fais tes wall dashes.",
      "La voiture est posée plus haut sur le mur, un seul wall dash suffit, et tes deux appuis peuvent être un peu plus "
      "espacés.",
-     {"Monte sur le mur", "Longe la bande bleue", "Tape saut", "Flip vers l'avant, côté mur", "Recommence", nullptr,
-      nullptr}},
+     {"Monte sur le mur", "Longe le mur sans monter ni descendre", "Tape saut", "Flip vers l'avant, côté mur", "Recommence",
+      nullptr, nullptr}},
     {Focus::FastAerial,
      "Décoller le plus vite possible pour aller chercher une balle haute.",
      {{"Saute en gardant {jump} appuyé, appuie sur {boost} en même temps et tire le stick vers toi.",

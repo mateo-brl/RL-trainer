@@ -29,7 +29,8 @@ float levelOfPlayer(int n);  // 1 -> 0, 10 -> 1
 
 constexpr int kFrConvertLevel = 5;  // flip reset: from this level the reset must be used (flip into the ball)
 constexpr int kFrTargetLevel = 8;   // flip reset: from this level the shot must be on target
-constexpr int kTargetLevel = 6;     // ceiling, flicks, pinch: from this level the shot must be on target
+constexpr int kTargetLevel = 6;     // ceiling, pinch: from this level the shot must be on target
+constexpr int kFlickTargetLevel = 3;  // flick, musty, breezi: toward the goal below this level, on target from it
 constexpr int kDtTargetLevel = 3;   // double tap: below this level touching the rebound is enough
 constexpr int kDtFullLevel = 7;     // double tap: from this level the player makes the first shot himself
 constexpr int kAdWallLevel = 6;     // air dribble: from this level some attempts start from the wall
@@ -79,6 +80,7 @@ struct DrillSetup {
     float releaseApex = 0.f;       // 0 = off
     bool pickup = false;           // shared "Ramassage" start: stopped car, ball resting or rolling toward it
     bool pickupRolling = false;
+    bool pickupChase = false;      // the pickup at speed (flick family): the car drives after the ball rolling ahead
     bool armCeiling = false;       // the car starts on the ceiling: the ceiling detector starts there too
     float gameSpeed = 1.f;         // slow motion of the first levels (restored by the engine on stop)
     float side = 0.f;              // +1 / -1: the side wall the drill uses (after the team mirror), 0 = none
@@ -103,9 +105,28 @@ DrillSetup makeDrillSetup(Mech m, float level, int team, const CarState& car, fl
 DrillSetup makeDrillSetup(Mech m, float level, int team, const CarState& car, float ballRadius, Rng& rng,
                           const std::string& flickVariant = "");
 
+// ---- Flick family: like a match --------------------------------------------------------------------------------
+// Short start ("Balle sur le toit, en dribble"): the ball on the roof, the car already driving toward the attacked goal
+// from midfield, 4500 to 5000 uu of the goal line at niveau 1 (5000 to 5500 at niveau 10, plus up to 500 at random),
+// at a dribble speed the throttle alone holds: 900 uu/s at niveau 1 up to 1300 at niveau 10. The flick must start
+// before the car is kFlickLateDist from the goal line; the first levels get a short carry assist (module).
+// Full start: the pickup at speed (pickup::makeChaseSetup) from 5500 uu of the goal line.
+constexpr float kFlickDistMin = 4500.f;
+constexpr float kFlickDistMax = 5000.f;
+constexpr float kFlickDistSpread = 500.f;
+constexpr float kFlickLateDist = 1200.f;     // uu from the goal line: closer, the attempt ends (FL_TOO_CLOSE)
+constexpr float kFlickDirectionDeg = 25.f;   // niveaux 1-2: the shot heads toward the goal centre within this angle
+constexpr float kFlickAssistSeconds = 0.6f;  // carry assist after GO (niveaux 1-6): the ball put back on the roof...
+constexpr float kFlickAssistRadius = 40.f;   // ...while within this distance of its resting point
+constexpr int kFlickAssistLevel = 6;
+constexpr float kFlickEarlyLoss = 1.f;       // a ball that leaves the roof this soon after GO and falls: replayed
+float flickDribbleSpeed(float level);
+
 // Thresholds of the level criteria (shared by the verdict, the texts and the tests).
 float ceilingSpeedNeeded(float level);       // ball speed after a ceiling shot
-float flickPowerNeeded(Mech m, float level); // speed the flick adds to the ball (flick, musty, breezi)
+// Flick, musty, breezi: ball speed after the flick, measured like a shot in a match (the ball already rides at the
+// dribble speed): 1500 uu/s (54 km/h) at niveau 1 up to 2400 (86 km/h) at niveau 10; breezi from niveau 3.
+float flickPowerNeeded(Mech m, float level);
 float airDribbleSeconds(float level);        // air dribble duration (0 below niveau 4)
 float pinchSpeedNeeded(float level);         // pinch exit speed in the drill (free play keeps rlt_bm_pinch_speed)
 float airRollSpeedNeeded(float level);

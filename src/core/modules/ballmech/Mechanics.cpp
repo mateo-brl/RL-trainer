@@ -31,7 +31,7 @@ const std::array<MechInfo, kMechCount> kMechs = {{
      "Stabilise la balle au centre du toit, saute avec {jump}, tourne d'environ 45° puis flippe stick à fond.",
      "Garde la balle sur le toit, saute avec {jump} puis flippe dans la balle.", Family::Flick, 8.f, false,
      {"ball_dv", "delay", "yaw_deg", "dodge_to_touch"}, Difficulty::Intermediate,
-     {"Pose la balle au centre du toit et roule doucement.", "Saute avec {jump} quand la balle ne bouge plus.",
+     {"Garde la balle au centre du toit en roulant vers le but.", "Saute avec {jump} quand la balle ne bouge plus.",
       "Tourne un peu la voiture (stick sur le côté).",
       "Flippe vers la balle, stick à fond : elle part devant toi."}},
     {Mech::Musty, "musty", "ball.musty", "Musty flick",

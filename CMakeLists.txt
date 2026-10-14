@@ -121,7 +121,7 @@ if(RLT_BUILD_PLUGIN)
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${BAKKESMOD_SDK_DIR}/include
         ${RLT_IMGUI_DIR})
-    target_link_libraries(RLTrainer PRIVATE rlt_engine "${BAKKESMOD_SDK_DIR}/lib/pluginsdk.lib")
+    target_link_libraries(RLTrainer PRIVATE rlt_engine "${BAKKESMOD_SDK_DIR}/lib/pluginsdk.lib" shell32)
     target_compile_definitions(RLTrainer PRIVATE
         RLT_REPO_SLUG="${RLT_REPO_SLUG}"
         RLT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}

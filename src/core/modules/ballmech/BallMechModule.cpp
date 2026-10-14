@@ -58,8 +58,20 @@ bool tornadoOk(const bm::ParcoursState& st) {
 }
 
 bool isCriteriaCode(const std::string& c) {
-    return c == "DRILL_NEED_POWER" || c == "DRILL_NEED_TARGET" || c == "DRILL_NEED_DURATION" || c == "DRILL_NEED_SCORE";
+    return c == "DRILL_NEED_POWER" || c == "DRILL_NEED_TARGET" || c == "DRILL_NEED_DURATION" || c == "DRILL_NEED_SCORE" ||
+           c == "DRILL_NEED_DIRECTION";
 }
+
+bool flickFamily(Mech m) { return m == Mech::Flick || m == Mech::Musty || m == Mech::Breezi; }
+
+// Ball centre resting on the roof of the car (hitbox from the snapshot), as the drills place it.
+Vec3 roofRest(const Snapshot& s) {
+    const float r = s.ball.radius > 10.f ? s.ball.radius : 91.25f;
+    return s.car.pos + s.car.basis.up * (s.car.hitboxOffset.z + s.car.hitboxExtent.z * 0.5f + r) +
+           s.car.basis.fwd * s.car.hitboxOffset.x;
+}
+
+constexpr const char* kBallCamHint = "Coupe la ball cam pendant le dribble pour voir le but, remets-la après le flick";
 
 Color verdictColor(Verdict v) {
     switch (v) {
@@ -213,8 +225,11 @@ void BallMechModule::describeSettings(SettingsSchema& schema) {
                  "Affiche le conseil le plus important de la dernière tentative.");
         w.toggle("rlt_bm_hud_resets", &BallMechConfig::hudResetCounter, true, "Compteur de flip resets",
                  "Affiche le nombre de flip resets obtenus pendant la session (HUD compact désactivé).");
-        w.toggle("rlt_bm_draw_trajectory", &BallMechConfig::drawTrajectory, true, "Trajectoire du dernier tir",
-                 "Dessine en 3D la trajectoire prévue du dernier tir noté (vert = cadré).");
+        w.toggle("rlt_bm_draw_trajectory", &BallMechConfig::drawTrajectory, false, "Trajectoire du dernier tir",
+                 "Dessine en 3D la trajectoire prévue du dernier tir noté (vert = cadré). Coupé par défaut.");
+        w.toggle("rlt_bm_draw_guide", &BallMechConfig::drawGuide, false, "Guide du départ au plafond",
+                 "Départ au plafond, niveaux 1 à 4 : dessine en 3D le chemin de la balle et un cercle au point de "
+                 "rencontre. Coupé par défaut.");
         w.toggle("rlt_bm_draw_reset", &BallMechConfig::drawResetIndicator, true, "Cercle de reset disponible",
                  "Dessine un cercle vert autour de ta voiture tant que ton flip reset est disponible.");
         w.advanced();
@@ -563,9 +578,21 @@ void BallMechModule::handleGrade(bm::MechGrade& g, const TickContext& ctx, Actio
     publish(makeResult(g, mech, success, extra, ctx.profile), mech, &g, ctx, out);
 }
 
+// The previous version drew the last shot's path by default; BakkesMod saved that value in config.cfg. A player who
+// still has the old default never chose it: turn it off once. A value the player chose is kept, and the saved flag
+// stops it from running twice.
+void BallMechModule::migrateDefaults(Actions& out) {
+    defaultsV2_ = true;
+    out.requestSave = true;
+    if (!cfg_.drawTrajectory) return;
+    out.setCvars.emplace_back("rlt_bm_draw_trajectory", "0");
+    out.toasts.push_back(trajectoriesMigrationToast());  // the same toast for every trajectory (merged by the engine)
+}
+
 // ---- Callbacks ---------------------------------------------------------------------------------------------
 void BallMechModule::onTick(const TickContext& ctx, Actions& out) {
     if (ctx.hasSnapshot) lastTickTime_ = ctx.snap.time;
+    if (ctx.hasSnapshot && !defaultsV2_) migrateDefaults(out);  // ticks only come from a running game: config.cfg is loaded
     if (!cfg_.enabled || !analysing(ctx.game)) {
         detecting_ = false;
         resetAvailable_ = false;
@@ -796,6 +823,35 @@ void BallMechModule::launch(const TickContext& ctx, Actions& out) {
     resetThisTick_ = false;
     drill_.phase = DrillPhase::Live;
     drill_.phaseStart = s.time;
+    // Dribble start of the flick family: carry assist at niveaux 1-6 (the player has the time to take the speed).
+    drill_.assist = !drill_.full && flickFamily(m) && bm::playerLevel(level) <= bm::kFlickAssistLevel && length(d.car.vel) > 1.f;
+    drill_.roofSeen = false;
+    drill_.offRoofAt = -1.f;
+}
+
+void BallMechModule::flickAssist(const Snapshot& s, Actions& out) {
+    if (!drill_.assist) return;
+    const bm::ParcoursState& ps = impl_->parcours;
+    if (s.time - drill_.phaseStart > bm::kFlickAssistSeconds || ps.worldWheels < 3 || ps.airPhase || s.in.jump) {
+        drill_.assist = false;
+        return;
+    }
+    const Vec3 rest = roofRest(s);
+    if (distance(s.ball.pos, rest) > bm::kFlickAssistRadius) {
+        drill_.assist = false;
+        return;
+    }
+    BallPlacement b;
+    b.pos = rest;
+    b.vel = s.car.vel;
+    out.setBall = b;
+    impl_->pipeline.allowBallMoveUntil(s.frame + 3);  // our own placement, a few uu: not a reset
+}
+
+bool BallMechModule::flickTooClose(const Snapshot& s) const {
+    const bm::ParcoursState& ps = impl_->parcours;
+    if (ps.airPhase || ps.worldWheels < 3 || !bm::carriedOnRoof(s)) return false;  // never cut a flick in progress
+    return bm::arena::kBackWallY - bm::attackSign(s.car.team) * s.car.pos.y < bm::kFlickLateDist;
 }
 
 void BallMechModule::resolveDrill(bool success, const TickContext& ctx) {
@@ -805,6 +861,7 @@ void BallMechModule::resolveDrill(bool success, const TickContext& ctx) {
     drill_.lastSuccess = success;
     drill_.resolved = true;
     drill_.idleTimeouts = 0;
+    drill_.earlyReplays = 0;
     drill_.phase = DrillPhase::Result;
     drill_.phaseStart = ctx.snap.time;
 }
@@ -979,6 +1036,12 @@ void BallMechModule::fullTick(const TickContext& ctx, Actions& out) {
         return;  // waiting for the grade: no generic check can fail a done sequence
     }
 
+    // Flick family: the flick must start before the 12 m line (the pickup at speed starts from 55 m).
+    if (flickFamily(dm) && steps.done(pickup::kStepSettle) && flickTooClose(s)) {
+        steps.fail(now, "FL_TOO_CLOSE");
+        failDrill("FL_TOO_CLOSE", ctx, out, false);
+        return;
+    }
     // Generic checks, on only from the step that needs them (fix 2).
     const int world = impl_->parcours.worldWheels;
     const bool landOn = bm::landingCheckOn(dm, steps);
@@ -1074,13 +1137,42 @@ void BallMechModule::drillTick(const TickContext& ctx, Actions& out) {
             tornadoLanded(ctx, out);
             break;
         }
+        const bool flicks = flickFamily(dm);
+        if (!drill_.resolved && flicks) {
+            // Dribble start: carry assist after GO, when the ball left the roof, and the 12 m line.
+            flickAssist(s, out);
+            const bm::ParcoursState& ps = impl_->parcours;
+            if (!ps.airPhase && world >= 3) {
+                if (bm::carriedOnRoof(s)) {
+                    drill_.roofSeen = true;
+                    drill_.offRoofAt = -1.f;
+                } else if (drill_.roofSeen && drill_.offRoofAt < 0.f) {
+                    drill_.offRoofAt = now;
+                }
+            }
+            if (flickTooClose(s)) {
+                failDrill("FL_TOO_CLOSE", ctx, out, false);
+                break;
+            }
+        }
         if (!drill_.resolved && drill_.failAt < 0.f) {
-            const bool flickFamily = dm == Mech::Flick || dm == Mech::Musty || dm == Mech::Breezi;
             if (mi.airborneDrill && drill_.airborneSeen && world >= 3 && s.car.pos.z < 300.f) {
                 drill_.failAt = now + kLandGrace;
                 drill_.failCode = "DRILL_LANDED";
-            } else if (flickFamily && now - drill_.phaseStart > 0.3f && s.ball.pos.z < s.ball.radius + 40.f &&
+            } else if (flicks && now - drill_.phaseStart > 0.3f && s.ball.pos.z < s.ball.radius + 40.f &&
                        distance(s.car.pos, s.ball.pos) > 300.f) {
+                // A ball that fell off right after GO of the dribble start: replayed without counting (twice in a row
+                // at most, then it counts).
+                if (drill_.offRoofAt >= 0.f && drill_.offRoofAt - drill_.phaseStart <= bm::kFlickEarlyLoss &&
+                    drill_.earlyReplays < 2 && length2D(impl_->setup.car.vel) > 1.f) {
+                    ++drill_.earlyReplays;
+                    ToastMessage t;
+                    t.title = "Mécas balle";
+                    t.text = "Balle tombée au départ : essai rejoué, sans compter.";
+                    out.toasts.push_back(std::move(t));
+                    beginAttempt(ctx);
+                    break;
+                }
                 drill_.failAt = now + kLandGrace;
                 drill_.failCode = "DRILL_BALL_LOST";
             } else if (now - drill_.phaseStart > drillTimeout()) {
@@ -1327,15 +1419,22 @@ void BallMechModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
                 act.barColor = {90, 170, 255, 255};
             }
             d.lines.push_back(act);
-            // First attempt: wait for the throttle, then "Départ dans 3" (the later holds are short: the bar only).
+            // First attempt: wait for the throttle, then "Prêt ?" while the game counts 3, 2, 1 (the later holds are
+            // short: the bar only).
             // A start where the throttle spoils everything (ball balanced on a stopped car, car on the ceiling) says
             // to let go of it during the countdown, and on every hold GO waits for that (line shown then too).
             const bool releaseWait = impl_->ready.waitingRelease(now);  // "Lâche l'accélérateur pour partir"
             if (drill_.phase == DrillPhase::Ready && (impl_->ready.waiting() || impl_->readyNative || releaseWait)) {
                 std::string line = impl_->ready.hudLine(now);
                 if (impl_->ready.counting() && !releaseWait && throttleSpoilsStart(dm, impl_->setup))
-                    line += " : lâche l'accélérateur";
+                    line += line.back() == '?' ? " Lâche l'accélérateur." : " : lâche l'accélérateur";  // "Prêt ?"
                 d.lines.push_back(hudLine(line, kStepAccent));
+            }
+            // Flick family: the ball cam hides the goal while the ball is on the roof. A main line unless the last
+            // attempt's tip is already shown (compact HUD budget), then a detail line.
+            if (drill_.phase == DrillPhase::Ready && flickFamily(dm)) {
+                const bool tipShown = cfg_.hudTip && drill_.hasResult && (drillTip() || drill_.lastSuccess);
+                d.lines.push_back(hudLine(kBallCamHint, colors::Cyan, tipShown, tipShown ? 0.9f : 1.f));
             }
         }
         if (hasGauge) d.lines.push_back(gauge);
@@ -1355,7 +1454,8 @@ void BallMechModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
 
         // 3D guide of the first levels (ceiling start): the ball's path to the meeting point and a ring there.
         const bm::DrillSetup& su = impl_->setup;
-        if (!drill_.resolved && (drill_.phase == DrillPhase::Ready || drill_.phase == DrillPhase::Live) && su.hasMeet) {
+        if (cfg_.drawGuide && !drill_.resolved && (drill_.phase == DrillPhase::Ready || drill_.phase == DrillPhase::Live) &&
+            su.hasMeet) {
             const Color gc{120, 200, 255, 200};
             for (int i = 0; i + 1 < su.guideCount; ++i)
                 out.line3D(su.guide[static_cast<size_t>(i)], su.guide[static_cast<size_t>(i + 1)], gc, 2.f, occ);
@@ -1486,6 +1586,7 @@ void BallMechModule::save(Store& store) const {
         store.setInt(std::string("ballmech.mode.") + bm::mechInfo(i).id, modes_[static_cast<size_t>(i)]);
     }
     impl_->pickup.save(store, "ballmech.pickup");
+    store.setInt("ballmech.defaults_v2", defaultsV2_ ? 1 : 0);
 }
 
 void BallMechModule::load(const Store& store) {
@@ -1508,6 +1609,7 @@ void BallMechModule::load(const Store& store) {
     }
     impl_->pickup.reset();
     if (store.getInt("ballmech.pickup.attempts", 0) > 0) impl_->pickup.load(store, "ballmech.pickup");
+    defaultsV2_ = store.getInt("ballmech.defaults_v2", 0) != 0;
 }
 
 } // namespace rlt

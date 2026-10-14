@@ -4,8 +4,9 @@
 // bests) and passive analysis of kickoffs outside the drill (freeplay reset, offline matches).
 //
 // Drill state machine (one rep):
-//   Placing (1 tick: place car + ball, zero inputs, limited boost rules, every boost pad respawned)
-//   -> Countdown (freeze, re-pin, refill boost, 3/2/1 messages)
+//   Placing (1 tick: place car + ball, zero inputs, limited boost rules)
+//   -> Countdown (freeze, re-pin, boost set to the start value, 33 by default, game's 3/2/1 messages; every boost
+//      pad respawned once the car has been on its spawn for kKoPadResetDelayTicks, see placeRep)
 //   -> Live (GO: release, record until the touch or the timeout, ghost hit) -> Done (result shown, then next rep).
 
 #include <array>
@@ -42,6 +43,10 @@ constexpr int kKoGhostModeCount = 7;
 // the beginner time; each win adds 0.04, each loss removes 0.06 (60 % of wins targeted by default).
 constexpr float kKoAdaptiveStart = 0.f;
 constexpr float kKoAdaptiveStep = 0.04f;
+// Ticks between a teleport onto the spawn and the boost pad reset of the rep (0.25 s, well inside the shortest
+// countdown of 1 s). A reset sent on the teleport tick came too early: the pads the teleport ran over were still
+// missing at GO (see KickoffModule::placeRep).
+constexpr int64_t kKoPadResetDelayTicks = 30;
 
 const char* kickoffModeName(KickoffMode m);            // "Position choisie", "Aléatoire", "Série des 5", "Faiblesse"
 const char* kickoffGhostModeName(KickoffGhostMode g);  // "Désactivé", "Débutant", ... "Mon record", "Adaptatif"
@@ -122,6 +127,7 @@ public:
     bool ghostActive() const { return ghostActive_; }
     const KickoffGhost& ghost() const { return ghost_; }
     bool passiveLive() const { return passivePhase_ == PassivePhase::Live; }
+    bool padResetPending() const { return padResetPending_; }
     KickoffGhostMode effectiveGhostMode() const;
 
 private:
@@ -149,6 +155,8 @@ private:
     bool headingToBall(const Snapshot& sn) const;
     void resetRepState();
     void notePadPickups();  // keeps the last pad pickup frame of the attempt being dropped (pad respawn timer)
+    void armPadReset(int64_t teleportFrame);  // the car was moved onto its spawn from elsewhere on this tick
+    void sendPadReset(Actions& out);           // respawn every boost pad now
 
     // Passive analysis.
     void tickPassive(const TickContext& ctx, Actions& out);
@@ -167,9 +175,11 @@ private:
 
     KickoffConfig cfg_;
     int lastGhostLevelCfg_ = -1;
-    // One-time move of the old defaults (Pro ghost, Pro grading) to Adaptive / Standard, done on the first tick
-    // once config.cfg is loaded. Saved, so it never runs twice.
+    // One-time moves of old defaults saved in config.cfg, done on the first tick once config.cfg is loaded. Saved,
+    // so each runs once. v2: Pro ghost and Pro grading to Adaptive / Standard. v3: the plugin's big countdown and
+    // the lines to the ball turned off (the game's own countdown stays).
     bool defaultsV2_ = false;
+    bool defaultsV3_ = false;
     std::optional<KickoffGhostMode> ghostOverride_;
 
     // Drill state.
@@ -202,9 +212,14 @@ private:
     int64_t lastCarFrame_ = 0;
     bool haveLastCar_ = false;
     int invalidTicks_ = 0;
-    // Last boost pad pickup seen by an attempt (small pads respawn after 4 s). Cleared at PLACE, which respawns
-    // every pad: it only matters for passive kickoffs (the plugin does not touch the pads outside the drill).
+    // Last boost pad pickup seen by an attempt (small pads respawn after 4 s). Cleared when the drill respawns every
+    // pad (always before GO): it only matters for passive kickoffs (the plugin does not touch the pads outside the
+    // drill).
     int64_t lastPadFrame_ = -1;
+    // Pad reset of the current rep: armed by each teleport onto the spawn, sent from padResetFrame_ on, once the car
+    // is seen on its spawn (or at GO at the latest).
+    bool padResetPending_ = false;
+    int64_t padResetFrame_ = 0;
 
     // Passive analysis state.
     PassivePhase passivePhase_ = PassivePhase::Waiting;

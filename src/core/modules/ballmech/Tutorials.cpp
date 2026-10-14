@@ -41,7 +41,8 @@ Tutorial ceiling() {
     t.blocks = {
         {"Départ au plafond (pour travailler la frappe seule)",
          "Tu commences collé au plafond, près du mur. Au début, ne fais rien : ne boost pas, ne saute pas. Tu tombes "
-         "et la balle monte vers toi. Le cercle montre où vous allez vous croiser. Quand la balle est juste devant ton "
+         "et la balle monte vers toi. Avec « Guide du départ au plafond » (réglages, Affichage), un cercle montre où "
+         "vous allez vous croiser. Quand la balle est juste devant ton "
          "nez, à ta hauteur, flippe."},
     };
     t.errors = {
@@ -54,7 +55,7 @@ Tutorial ceiling() {
     t.level1 =
         "Parcours complet : quand tu quittes le plafond, la balle est relancée juste devant toi. Pas besoin de "
         "boost pendant la chute : attends qu'elle soit devant ton nez et flippe. Prends ton temps pour monter. "
-        "Départ au plafond : le jeu est ralenti et un cercle montre le point de rencontre.";
+        "Départ au plafond : le jeu est ralenti.";
     t.tech = {
         "Parcours complet, niveaux 1 à 3 : voiture à 12 m du mur (1200 uu), lancée à 22 km/h (600 uu/s), boost plein. "
         "Balle suspendue à 14,5 m de haut (1450 uu), 15 m plus loin vers le but adverse. 0,3 s après que tu as "
@@ -223,39 +224,52 @@ Tutorial doubleTap() {
 Tutorial flick() {
     Tutorial t;
     t.principle =
-        "La balle est posée sur ton toit. Tu sautes, puis tu flippes : le toit et le nez projettent la balle d'un coup.";
-    t.goodToKnow = "Choisis le flick demandé sous la liste des mécas (Tableau de bord). « Tous » accepte n'importe lequel.";
+        "Comme en match : la balle est sur ton toit et tu roules déjà vers le but. Tu sautes, puis tu flippes : le toit "
+        "et le nez projettent la balle d'un coup, comme un tir.";
+    t.goodToKnow =
+        "Coupe la ball cam pendant le dribble : avec elle, la caméra vise la balle sur ton toit et le but sort de "
+        "l'écran. Remets-la après le flick. Choisis le flick demandé sous la liste des mécas (Tableau de bord). « Tous » "
+        "accepte n'importe lequel.";
     t.before = "Frappe puissante, puis Dribble sur le toit (Parcours).";
     t.steps = {
-        {"Balle stable sur le toit.",
-         "Aux niveaux 1 et 2, ne touche pas à l'accélérateur. Plus tard, accélère doucement pour rouler à la même "
-         "vitesse que la balle.",
+        {"Balle stable sur le toit, vitesse gardée.",
+         "Au GO, accélère un peu, juste assez pour rouler à la même vitesse que la balle. Ball cam coupée, tu vois le "
+         "but devant toi.",
          "Si la balle glisse, le flick part de travers ou rate.", "La balle ne bouge plus sur le toit.", ""},
         {"Saute.", "Un appui court sur {jump}.", "La voiture monte avec la balle toujours sur le toit.",
          "Tu es en l'air, la balle encore sur toi.", ""},
         {"Tourne un peu (flick 45 ou 90 seulement).",
          "Juste après le saut, pousse le stick sur le côté. Un huitième de tour pour le 45, un quart de tour pour le 90.",
          "La rotation donne l'angle et de la puissance.", "Le capot regarde un peu de côté.", ""},
-        {"Flippe.",
+        {"Flippe vers le but.",
          "Vite après le saut, appuie sur {jump} avec le stick à fond dans la direction voulue : vers l'avant pour le "
          "flick avant, en diagonale pour le 45.",
-         "Le flip fait taper le toit et le nez dans la balle.",
-         "La balle part fort devant toi, vers le but à partir du niveau 6.", ""},
+         "Le flip fait taper le toit et le nez dans la balle.", "La balle part fort vers le but.",
+         "Attention : flick avant d'arriver devant le but, sinon l'essai s'arrête. Remets la ball cam après le flick."},
     };
     t.errors = {
-        {"Balle perdue", "tu as trop accéléré au départ, ou pas assez."},
+        {"Balle perdue", "garde ta vitesse : sans accélérer, la balle glisse vers l'avant ; en accélérant fort, vers "
+                         "l'arrière."},
         {"Saut pas stable", "attends que la balle soit immobile sur le toit avant de sauter."},
         {"Flip trop tôt ou trop tard", "le flip vient très vite après le saut."},
         {"Flick faible", "stick à fond au moment du flip."},
+        {"Trop près du but", "flick plus tôt, dès que la balle est stable."},
+        {"Tir pas vers le but", "oriente la voiture vers le but avant de sauter."},
     };
-    t.level1 = "Voiture à l'arrêt, balle posée au centre du toit. Rien ne bouge tant que tu n'appuies sur rien.";
+    t.level1 = "Tu roules déjà vers le but, pas trop vite, et la balle est aidée à rester sur le toit au tout début. Le "
+               "tir doit partir vers le but, pas forcément cadré.";
     t.tech = {
         "Délai saut-flip conseillé : 0,10 à 0,40 s (45 : 0,12 à 0,45 s ; 90 : 0,12 à 0,50 s).",
         "Rotation : 25 à 65° pour le 45, 65 à 115° pour le 90.",
-        "Puissance demandée : 25 km/h (700 uu/s) ajoutés à la balle au niveau 1, jusqu'à 54 km/h (1500 uu/s) au "
-        "niveau 10.",
-        "Vitesse de départ : 0 aux niveaux 1 et 2, 400 uu/s aux niveaux 3 et 4, 700 aux niveaux 5 et 6, puis 900 à 1400.",
-        "Plein gaz depuis l'arrêt : la balle tombe derrière en moins d'une demi-seconde.",
+        "Vitesse de la balle demandée, comme un tir en match : 54 km/h (1500 uu/s) au niveau 1, jusqu'à 86 km/h "
+        "(2400 uu/s) au niveau 10. Niveaux 1 et 2 : tir vers le but (moins de 25° d'écart avec le centre du but) ; "
+        "cadré à partir du niveau 3.",
+        "Départ en dribble : à 45 à 50 m du but (4500 à 5000 uu), 32 km/h (900 uu/s) au niveau 1 ; 50 à 55 m (5000 à "
+        "5500 uu), 47 km/h (1300 uu/s) au niveau 10. L'accélérateur seul tient cette vitesse. Le flick doit partir avant "
+        "12 m du but (1200 uu).",
+        "Aide au départ jusqu'au niveau 6 : pendant 0,6 s, la balle est remise au centre du toit tant qu'elle n'a pas "
+        "glissé de plus de 40 uu. Balle tombée dans la première seconde : l'essai est rejoué, deux fois de suite au "
+        "plus.",
     };
     return t;
 }
@@ -268,7 +282,8 @@ Tutorial musty() {
     t.goodToKnow = "";
     t.before = "Flick.";
     t.steps = {
-        {"Balle stable sur le toit.", "Aux niveaux 1 et 2, ne touche à rien, la balle est posée.",
+        {"Balle stable sur le toit.",
+         "Au GO, garde ta vitesse : accélère juste assez. Coupe ta ball cam pour voir le but, remets-la après le flick.",
          "Une balle qui glisse part de travers.", "La balle ne bouge plus.", ""},
         {"Saute.", "Un appui sur {jump}.", "Il faut un peu de hauteur pour avoir la place de basculer.",
          "Tu es en l'air avec la balle sur toi.", ""},
@@ -282,14 +297,17 @@ Tutorial musty() {
     t.errors = {
         {"Nez pas assez bas", "garde le stick vers l'avant plus longtemps avant le flip."},
         {"Flip arrière simple", "tu as flippé avant de baisser le nez."},
-        {"Départ trop rapide", "un musty se fait sans aller vite."},
+        {"Trop près du but", "flick plus tôt, dès que la balle est stable."},
     };
-    t.level1 = "Voiture à l'arrêt, balle posée. Réussi si le geste est bon et que la balle part un peu.";
+    t.level1 = "Tu roules déjà vers le but avec la balle sur le toit, pas trop vite. Réussi si le geste est bon et que la "
+               "balle part vers le but, assez vite.";
     t.tech = {
         "Nez à au moins 35° vers le bas au moment du flip, idéal entre 50 et 120°.",
         "Flip arrière entre 0,2 et 0,7 s après le saut.",
-        "Puissance : 25 km/h (700 uu/s) ajoutés à la balle au niveau 1, jusqu'à 54 km/h (1500 uu/s) au niveau 10.",
-        "Vitesse de départ : 0 aux niveaux 1 et 2, 400 uu/s aux niveaux 3 à 5, puis 600 à 1000.",
+        "Vitesse de la balle demandée : 54 km/h (1500 uu/s) au niveau 1, jusqu'à 86 km/h (2400 uu/s) au niveau 10 ; "
+        "vers le but aux niveaux 1 et 2, cadré ensuite.",
+        "Départ en dribble comme le flick : 32 km/h (900 uu/s) au niveau 1 jusqu'à 47 km/h (1300 uu/s) au niveau 10, "
+        "flick avant 12 m du but (1200 uu).",
     };
     return t;
 }
@@ -302,7 +320,8 @@ Tutorial breezi() {
     t.goodToKnow = "";
     t.before = "Musty flick, et l'hélico (Mécas mouvement).";
     t.steps = {
-        {"Balle stable sur le toit.", "Au début, voiture à l'arrêt ; plus tard, roule doucement, sans traînée de vitesse.",
+        {"Balle stable sur le toit.",
+         "Au GO, garde ta vitesse, sans traînée de supersonique. Coupe ta ball cam pour voir le but, remets-la après.",
          "La tornade part mieux d'une balle stable.", "La balle ne bouge plus.", ""},
         {"Saut maintenu.", "Saute et garde {jump} enfoncé.", "Tu montes plus haut, ce qui te laisse le temps de tourner.",
          "Tu montes plus haut qu'un saut court.", ""},
@@ -326,8 +345,10 @@ Tutorial breezi() {
         "Tornade comptée à 230° de rotation, air roll tenu au moins 30 % du temps en l'air, balle à moins de 2,8 m "
         "(280 uu) au moins 70 % du temps.",
         "Flip arrière entre 0,5 et 1,2 s après le saut. Départ sous 79 km/h (2200 uu/s).",
-        "Puissance : 25 km/h (700 uu/s) ajoutés au niveau 3, jusqu'à 54 km/h (1500 uu/s) au niveau 10.",
-        "Voiture à l'arrêt jusqu'au niveau 3, puis 500 à 1100 uu/s.",
+        "Vitesse de la balle demandée : 54 km/h (1500 uu/s) au niveau 3, jusqu'à 86 km/h (2400 uu/s) au niveau 10, "
+        "cadré.",
+        "Départ en dribble : 32 km/h (900 uu/s) au niveau 1 jusqu'à 47 km/h (1300 uu/s) au niveau 10, flick avant 12 m "
+        "du but (1200 uu).",
     };
     return t;
 }
@@ -512,18 +533,22 @@ const char* progressRule() {
 const TutorialBlock& pickupBlock() {
     static const TutorialBlock b{
         "Parcours complet : ramasse la balle",
-        "Ta voiture est à l'arrêt et la balle est par terre devant toi (plus tard, elle roule vers toi). Roule doucement "
-        "vers elle, nez bien droit : elle monte sur le capot puis sur le toit. Garde la balle au centre du toit : si "
-        "elle glisse vers l'arrière, lâche un peu l'accélérateur ; si elle glisse vers l'avant, accélère un peu. Quand "
-        "elle ne bouge plus, enchaîne la méca. Un ramassage raté ne fait pas baisser le niveau de la méca : il a son "
-        "propre niveau."};
+        "Flick, musty et breezi, comme en match : ta voiture roule déjà vers le but, derrière la balle qui roule devant "
+        "toi. Rattrape-la un peu plus vite qu'elle, nez bien droit : elle monte sur le capot puis sur le toit. Air "
+        "dribble : ta voiture est à l'arrêt et la balle est par terre devant toi (plus tard, elle roule vers toi) ; "
+        "roule doucement vers elle. Garde ensuite la balle au centre du toit : si elle glisse vers l'arrière, lâche un "
+        "peu l'accélérateur ; si elle glisse vers l'avant, accélère un peu. Quand elle ne bouge plus, enchaîne la méca. "
+        "Un ramassage raté ne fait pas baisser le niveau de la méca : il a son propre niveau."};
     return b;
 }
 
 const std::vector<const char*>& pickupTech() {
     static const std::vector<const char*> t = {
-        "Ramassage : balle posée à 6 m devant toi (600 uu) aux niveaux 1 à 3 du ramassage, puis qui arrive vers toi "
-        "depuis 15 m à 13 à 16 km/h (350 à 450 uu/s).",
+        "Ramassage en course (flick, musty, breezi) : départ à 55 m du but (5500 uu). Niveau 1 du ramassage : balle 5 m "
+        "devant toi (500 uu) qui roule à 16 km/h (450 uu/s), ta voiture à 25 km/h (700 uu/s). Niveau 10 : 7 m (700 uu), "
+        "balle à 19 km/h (520 uu/s), voiture à 33 km/h (920 uu/s). Le flick doit partir avant 12 m du but (1200 uu).",
+        "Ramassage de l'air dribble : balle posée à 6 m devant toi (600 uu) aux niveaux 1 à 3 du ramassage, puis qui "
+        "arrive vers toi depuis 15 m à 13 à 16 km/h (350 à 450 uu/s).",
         "Balle sur le toit 0,5 s (8 s pour y arriver), puis stable 0,3 s : moins de 5 km/h (150 uu/s) par rapport à la "
         "voiture et à moins de 40 uu du centre du toit.",
     };

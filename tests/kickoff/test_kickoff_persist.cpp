@@ -236,6 +236,8 @@ TEST(ko_draw_output_sanity) {
     h.tick(makeSnap(++f));
     h.command("start", {"offcenter_left"});
     for (int i = 0; i < 10; ++i) h.tick(restingSnap(++f, KickoffSpawn::OffCenterLeft, KickoffTeam::Blue));
+    // Countdown with the defaults: the game's countdown is the only one (the panel does not count, no big number)
+    // and no line is drawn, only the ghost box.
     {
         DrawList dl;
         DrawContext dc{h.settings, h.game, h.profile, h.latest, true, true, 1.f};
@@ -247,22 +249,50 @@ TEST(ko_draw_output_sanity) {
             CHECK_NEAR(dl.panels[0].pos.y, 0.12f * 1080.f, 1e-3);
             bool countdown = false;
             for (const auto& l : dl.panels[0].lines) {
-                countdown = countdown || l.text.find("Decompte : 3") != std::string::npos;
+                countdown = countdown || l.text.find("Decompte") != std::string::npos;
                 CHECK(!hasEmDash(l.text));
                 for (unsigned char c : l.text) CHECK(c < 128);  // folded to ASCII (accents off)
             }
-            CHECK(countdown);
+            CHECK(!countdown);
         }
-        bool big = false;
-        for (const auto& t : dl.texts2D) big = big || (t.text == "3" && t.align == Align::Center && t.scale >= 4.f);
-        CHECK(big);
-        CHECK(dl.lines3D.size() >= 12 + 1 + 3 + 16);  // ghost box, path, split ticks, contact circle
-        CHECK(dl.lines3D.size() < 1500);
+        CHECK(dl.texts2D.empty());
+        CHECK_EQ(dl.lines3D.size(), size_t(12));  // ghost box
         bool occluded = false;
         for (const auto& l : dl.lines3D) occluded = occluded || l.occluder.enabled;
         CHECK(occluded);
     }
-    // Live: GO text, chrono; then the result card after the touch.
+    // Options: the big number (the panel still does not count) and the lines to the ball.
+    h.set("rlt_ko_big_countdown", "1");
+    h.set("rlt_ko_show_path", "1");
+    {
+        DrawList dl;
+        DrawContext dc{h.settings, h.game, h.profile, h.latest, true, true, 1.f};
+        h.mod.draw(view, dc, dl);
+        bool countdown = false;
+        for (const auto& l : dl.panels[0].lines) countdown = countdown || l.text.find("Decompte") != std::string::npos;
+        CHECK(!countdown);
+        bool big = false;
+        for (const auto& t : dl.texts2D) big = big || (t.text == "3" && t.align == Align::Center && t.scale >= 4.f);
+        CHECK(big);
+        CHECK(dl.lines3D.size() >= 12 + 1 + 3 + 16 + 1);  // ghost box, path, split ticks, contact circle, ghost path
+        CHECK(dl.lines3D.size() < 1500);
+    }
+    // Game countdown and big number both off: the panel is the only countdown, as a main line.
+    h.set("rlt_ko_native_countdown", "0");
+    h.set("rlt_ko_big_countdown", "0");
+    {
+        DrawList dl;
+        DrawContext dc{h.settings, h.game, h.profile, h.latest, true, true, 1.f};
+        h.mod.draw(view, dc, dl);
+        bool countdown = false;
+        for (const auto& l : dl.panels[0].lines)
+            countdown = countdown || (l.text.find("Decompte : 3") != std::string::npos && !l.detail);
+        CHECK(countdown);
+        CHECK(dl.texts2D.empty());
+    }
+    h.set("rlt_ko_native_countdown", "1");
+    h.set("rlt_ko_big_countdown", "1");
+    // Live (big countdown on): GO text, chrono; then the result card after the touch.
     const int64_t go = h.runCountdown(f);
     const SimOut sim = simulate(KickoffSpawn::OffCenterLeft, KickoffTeam::Blue, Script{}, go, 4.f);
     h.tick(sim.snaps[0]);

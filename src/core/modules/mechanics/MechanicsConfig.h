@@ -45,7 +45,7 @@ struct MechanicsConfig {
     bool drillAutoReset = true;
     float drillDelay = 1.5f;      // seconds the result stays before the next attempt
     bool drillAdaptive = true;
-    bool showGuides = true;
+    bool showGuides = false;      // 3D lines of the drills (lane, line to the ball, target, wall band), off by default
 
     // Expert
     float speedflipAngle = 30.f;

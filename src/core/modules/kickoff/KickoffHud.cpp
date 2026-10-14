@@ -1,6 +1,8 @@
-// Drawing of the kickoff module: HUD panel (top-left drill zone), big centred countdown, ghost box, path line.
+// Drawing of the kickoff module: HUD panel (top-left drill zone), ghost box, and the options off by default: the
+// plugin's big centred countdown and the lines to the ball.
 // Compact HUD: the panel keeps at most 3 main lines (result or chrono, the one tip in words, what comes next); the
 // mode, the ghost, the split times, the measures and the other tips are `detail` lines.
+// One countdown on screen: the game's own (default), else the big number, else the panel line.
 #include <algorithm>
 #include <cmath>
 
@@ -202,7 +204,8 @@ void KickoffModule::drawDrillHud(const ViewContext& view, const DrawContext& ctx
     }
     p.title = hudText(title, acc);
 
-    // Main lines, at most 3: countdown or chrono (or the result), the one tip, what to do now or what comes next.
+    // Main lines, at most 3: chrono (or the result, or the countdown when no other one is shown), the one tip, what
+    // to do now or what comes next.
     const KickoffTipLoss* reminder = reminderTip(last_);
     const int countdownSecs = std::max(1, cfg_.countdownSeconds);
     if (phase_ == KickoffPhase::Placing) {
@@ -210,7 +213,9 @@ void KickoffModule::drawDrillHud(const ViewContext& view, const DrawContext& ctx
     } else if (phase_ == KickoffPhase::Countdown) {
         const int64_t left = nominalGo_ - frame;
         const int n = std::clamp(static_cast<int>((left + 119) / 120), 1, countdownSecs);
-        addLine(p, "Décompte : " + std::to_string(n), colors::White, acc, 1.2f);
+        // The game's countdown or the big number already counts: the panel would be a second timer.
+        if (!cfg_.nativeCountdown && !cfg_.bigCountdown)
+            addLine(p, "Décompte : " + std::to_string(n), colors::White, acc, 1.2f);
         if (reminder) addLine(p, kickoffTipText(reminder->tip), kTip, acc);
         addLine(p,
                 "Appuie déjà sur " + actionPrompt(ctx.profile, GameAction::Boost, style) + " + " +

@@ -46,6 +46,12 @@ struct Harness {
     Harness() {
         PredictionModule::describeSettings(schema);
         schema.applyDefaults(settings);
+        // The module is off by default: these tests drive it switched on, like a player who turned it on, whose
+        // saved settings were already moved (the one-time move has its own test, pr_old_default_migrated_once).
+        schema.apply(settings, "rlt_pr_enabled", "1");
+        Store migrated;
+        migrated.setInt("prediction.defaults_v2", 1);
+        mod.load(migrated);
         game.mode = GameMode::Freeplay;
         game.worldControlAllowed = true;
         mod.attach(&host);

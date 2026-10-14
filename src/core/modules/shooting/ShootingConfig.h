@@ -24,9 +24,9 @@ struct ShootingConfig {
 
     // ---- Flicks
     int flickRequested = 0; // 0 any, else 1 + shoot::FlickType index (Front .. Reverse, see FlickAnalyzer.h)
-    int flickStart = 0; // 0 stationary car, 1 driving towards the goal, 2 random
+    int flickStart = 1; // 0 stationary car (learn the motion), 1 dribble start towards the goal (match-like), 2 random
     bool flickAdaptive = true; // car speed / distance follow the adaptive level
-    float flickCarSpeed = 800.f; // uu/s when not adaptive and driving
+    float flickCarSpeed = 1100.f; // uu/s of the dribble start when not adaptive
     int flickTarget = 0; // 0 whole goal, 1 zone chosen for "Cibles", 2 random zone
     bool flickRequireOnTarget = true;
     bool roofGuide = true; // small circle on the roof centre
@@ -39,7 +39,7 @@ struct ShootingConfig {
     float targetLevel = 0.3f; // fixed level (0..1) when not adaptive
     float targetMinSpeedKph = 0.f; // minimum shot speed for a success (0 = off, advanced)
     bool showAllZones = true;
-    bool showPrediction = true; // predicted impact marker on the goal plane
+    bool showPrediction = false; // predicted impact marker on the goal plane (a prediction: off by default)
 
     // ---- Puissance
     float powerBallSpeedKph = 25.f; // speed of the ball rolling towards the player
@@ -52,6 +52,7 @@ struct ShootingConfig {
     float hudY = 0.12f;
     float hudScale = 1.f;
     bool freeAnalysis = false; // predicted impact marker outside drills (freeplay, workshop, replays)
+    bool floorMarks = false; // circles on the floor: next bounces, meeting point, run-up point (predictions: off)
     Color zoneColor{200.f, 200.f, 200.f, 140.f};
     Color targetColor{255.f, 200.f, 40.f, 255.f};
     Color markerColor{0.f, 220.f, 255.f, 255.f};

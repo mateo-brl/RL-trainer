@@ -54,8 +54,8 @@ Tutorial ringsGround() {
     };
     t.panel = {"1/3 Regarde l'anneau suivant", "2/3 Garde ta vitesse", "3/3 Mur : arrive en biais"};
     t.level1 = "Seulement des arches au sol, larges. Les arches sur les murs arrivent au niveau 4 : elles sont marquées "
-               "MUR, avec une ligne au sol qui montre où tourner vers le mur. C'est la conduite au mur qui prépare le "
-               "ceiling shot (Mécas balle).";
+               "MUR. La ligne guide (coupée par défaut, réglages Affichage) montre au sol où tourner vers le mur. "
+               "C'est la conduite au mur qui prépare le ceiling shot (Mécas balle).";
     t.full = "Une seule arche, sur le mur de côté. Ta voiture part à l'arrêt, de biais par rapport au mur. Roule vers le "
              "mur en biais, monte dessus, passe l'arche, puis redescends en roulant.";
     t.fullSteps = {"Roule vers le mur en biais", "Monte sur le mur", "Passe l'arche", "Redescends en roulant"};

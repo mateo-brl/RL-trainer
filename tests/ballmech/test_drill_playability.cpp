@@ -371,7 +371,7 @@ CeilingRun playCeilingRoute(Harness& h, bool jumpOff) {
 } // namespace
 
 TEST(bm_play_roof_start_waits_for_the_throttle_release) {
-    // Ball balanced on a stopped car (flick, départ court, niveau 1): the player presses the throttle to start the
+    // Ball balanced on a stopped car (air dribble, départ court, niveau 1): the player presses the throttle to start the
     // countdown and keeps it held (the kickoff habit). GO waits until he lets go, the HUD says so, and GO comes on the
     // release tick: the held throttle never throws the ball off the roof. Same on the automatic restarts.
     auto releaseLine = [](Harness& h) {
@@ -383,7 +383,7 @@ TEST(bm_play_roof_start_waits_for_the_throttle_release) {
     };
     Harness h;
     warmUp(h);
-    h.command("drill", {"flick", "court"});
+    h.command("drill", {"airdribble", "court"});
     CHECK(!h.mod.uiState().drill.full);
     h.throttleTick(0.f);
     for (int i = 0; i < 6 * 120; ++i) {
@@ -803,26 +803,105 @@ TEST(bm_play_airdribble_niv1) {
 // =============================================================================================================
 // Flick family and the shared pickup
 // =============================================================================================================
-TEST(bm_play_flick_family_static_start) {
-    // Niveaux 1-2 (1-3 breezi): stopped car, ball centred on the roof, nothing moves until the player acts.
+TEST(bm_play_flick_family_dribble_start) {
+    // Like a match: the ball on the roof of a car already driving toward the attacked goal from midfield, 4500 to
+    // 5500 uu of the goal line, at 900 uu/s (niveau 1) up to 1300 (niveau 10), a speed the throttle alone holds.
     for (Mech m : {Mech::Flick, Mech::Musty, Mech::Breezi}) {
-        const int last = m == Mech::Breezi ? 3 : 2;
         for (int n = 1; n <= 10; ++n) {
-            Rng rng(11);
-            const DrillSetup d = setupAt(m, n, 0, rng);
-            const float v = length(d.car.vel);
-            CHECK_MSG(v < 2200.f, mechInfo(m).id);
-            if (n > last) continue;
-            CHECK_MSG(v < 1e-3f && length(d.ball.vel) < 1e-3f, mechInfo(m).id);
-            Snapshot s;
-            s.car.valid = s.ball.valid = true;
-            s.car.pos = d.car.pos;
-            s.car.rot = d.car.rot;
-            s.car.basis = basisFromRot(d.car.rot);
-            s.ball.pos = d.ball.pos;
-            CHECK(carryGeometry(s));
-            const Vec3 L = s.car.basis.toLocal(d.ball.pos - d.car.pos);
-            CHECK_NEAR(L.x, s.car.hitboxOffset.x, 5.f);
+            for (int team : {0, 1}) {
+                Rng rng(11 + static_cast<uint64_t>(n));
+                const DrillSetup d = setupAt(m, n, team, rng);
+                const std::string what = std::string(mechInfo(m).id) + " niveau " + std::to_string(n);
+                const float v = length(d.car.vel);
+                const float sign = team == 1 ? -1.f : 1.f;
+                const float dist = bm::arena::kBackWallY - sign * d.car.pos.y;
+                CHECK_NEAR(v, flickDribbleSpeed(levelOfPlayer(n)), 1e-2f);
+                CHECK_MSG(v >= 899.f && v <= 1301.f && pb::throttleAccel(v) > 100.f, what);
+                CHECK_MSG(dist >= 4499.f && dist <= 5501.f, what + " " + std::to_string(dist));
+                CHECK_MSG(distance(d.ball.vel, d.car.vel) < 1e-3f, what);
+                const Vec3 toGoal = normalize(flat(Vec3{0.f, sign * bm::arena::kBackWallY, 0.f} - d.car.pos));
+                CHECK_MSG(dot(normalize(flat(d.car.vel)), toGoal) > std::cos(16.f * kDegToRad), what);
+                // Several seconds of dribble before the 12 m line at that speed.
+                CHECK_MSG((dist - kFlickLateDist) / v >= (n == 1 ? 3.6f : 2.9f), what);
+                Snapshot s;
+                s.car.valid = s.ball.valid = true;
+                s.car.pos = d.car.pos;
+                s.car.rot = d.car.rot;
+                s.car.basis = basisFromRot(d.car.rot);
+                s.car.vel = d.car.vel;
+                s.ball.pos = d.ball.pos;
+                s.ball.vel = d.ball.vel;
+                CHECK_MSG(carryGeometry(s), what);
+                const Vec3 L = s.car.basis.toLocal(d.ball.pos - d.car.pos);
+                CHECK_NEAR(L.x, s.car.hitboxOffset.x, 5.f);
+                CHECK(d.label == "Balle sur le toit, en dribble");
+            }
+        }
+    }
+}
+
+// The shot asked from the dribble start is a real shot and a reachable one: at the bar speed a ball sent toward the
+// goal centre scores from the 12 m line and from 25 m (core physics, best elevation), and the ball stays on the roof
+// of a car holding its speed until the 12 m line (core physics for the ball, the roof as a plane under it with the
+// ball-vs-arena friction of the core physics: car-ball contacts are not in it).
+TEST(bm_play_flick_dribble_with_the_core_physics) {
+    for (int n = 1; n <= 10; ++n) {
+        const float L = levelOfPlayer(n);
+        const float bar = flickPowerNeeded(Mech::Flick, L);
+        CHECK(bar >= 1499.f && bar <= 2401.f);
+        for (float dist : {kFlickLateDist, 2500.f}) {
+            const Vec3 start{0.f, bm::arena::kBackWallY - dist, 160.f};
+            bool scored = false;
+            for (float e = 0.f; e <= 40.f && !scored; e += 2.5f) {
+                const auto path = pb::simBall(start, Vec3{0.f, std::cos(e * kDegToRad), std::sin(e * kDegToRad)} * bar, 4.f);
+                for (size_t i = 1; i < path.size(); ++i) {
+                    if (path[i - 1].p.y < bm::arena::kBackWallY && path[i].p.y >= bm::arena::kBackWallY) {
+                        scored = std::fabs(path[i].p.x) < 856.f && path[i].p.z < 615.f;
+                        break;
+                    }
+                }
+            }
+            CHECK_MSG(scored, std::to_string(n) + " " + std::to_string(dist));
+        }
+        for (uint64_t seed = 1; seed <= 6; ++seed) {
+            Rng rng(seed);
+            const DrillSetup d = setupAt(Mech::Flick, n, 0, rng);
+            CarState car;
+            const Basis B = basisFromRot(d.car.rot);
+            const float rest = car.hitboxOffset.z + car.hitboxExtent.z * 0.5f + 91.25f;
+            pr::SimBall b;
+            b.pos = d.ball.pos;
+            b.vel = d.ball.vel;
+            Vec3 carPos = d.car.pos;
+            float t = 0.f;
+            const float until = (bm::arena::kBackWallY - d.car.pos.y - kFlickLateDist) / length(d.car.vel);
+            bool kept = true;
+            for (; t < until && kept; t += kTickDt) {
+                pr::stepBall(b);
+                carPos += d.car.vel * kTickDt;
+                const Vec3 l = B.toLocal(b.pos - carPos);
+                if (l.z < rest && std::fabs(l.x - car.hitboxOffset.x) <= car.hitboxExtent.x * 0.5f &&
+                    std::fabs(l.y) <= car.hitboxExtent.y * 0.5f) {
+                    b.pos += B.up * (rest - l.z);
+                    if (b.vel.z < 0.f) {
+                        const float jn = -b.vel.z;
+                        b.vel.z = 0.f;
+                        const Vec3 rel = flat(b.vel - d.car.vel);
+                        const float r = length(rel);
+                        if (r > 1e-4f) b.vel -= rel * (std::min(r, 0.35f * jn) / r);
+                    }
+                }
+                Snapshot s;
+                s.car.valid = s.ball.valid = true;
+                s.car.pos = carPos;
+                s.car.rot = d.car.rot;
+                s.car.basis = B;
+                s.car.vel = d.car.vel;
+                s.ball.pos = b.pos;
+                s.ball.vel = b.vel;
+                kept = carriedOnRoof(s);
+            }
+            CHECK_MSG(kept && t >= until - 0.02f, std::to_string(n) + ": " + std::to_string(t) + " / " + std::to_string(until));
         }
     }
 }
@@ -858,17 +937,30 @@ TEST(bm_play_musty_and_breezi_levels) {
     g.variant = "musty";
     g.success = true;
     g.score = 0.5f;
-    g.metrics = {makeMetric("ball_dv", "", 800.f, "uu/s")};
+    g.metrics = {makeMetric("ball_dv", "", 800.f, "uu/s"), makeMetric("ball_speed_after", "", 1600.f, "uu/s")};
     CHECK(judgeDrill(Mech::Musty, g, levelOfPlayer(1), drillMinScore(50, levelOfPlayer(1)), 4000.f).success);
     const DrillVerdict hard = judgeDrill(Mech::Musty, g, levelOfPlayer(4), drillMinScore(50, levelOfPlayer(4)), 4000.f);
     CHECK(!hard.success && !hard.extraErrors.empty() && hard.extraErrors[0] == "DRILL_NEED_POWER");
-    // Breezi: tornado alone at niveaux 1-2, then 700 at niveau 3 up to 1500.
-    CHECK_NEAR(flickPowerNeeded(Mech::Breezi, levelOfPlayer(3)), 700.f, 1e-3f);
-    CHECK_NEAR(flickPowerNeeded(Mech::Breezi, 1.f), 1500.f, 1e-3f);
+    // Like a shot: toward the goal at niveaux 1-2, on target from niveau 3.
+    g.projection.valid = true;
+    g.projection.onTarget = false;
+    g.projection.angleErrDeg = 40.f;
+    const DrillVerdict wide = judgeDrill(Mech::Musty, g, levelOfPlayer(1), drillMinScore(50, levelOfPlayer(1)), 4000.f);
+    CHECK(!wide.success && !wide.extraErrors.empty() && wide.extraErrors[0] == "DRILL_NEED_DIRECTION");
+    g.projection.angleErrDeg = 10.f;  // toward the goal, over the bar
+    CHECK(judgeDrill(Mech::Musty, g, levelOfPlayer(2), drillMinScore(50, levelOfPlayer(2)), 4000.f).success);
+    g.metrics[1] = makeMetric("ball_speed_after", "", 2400.f, "uu/s");
+    const DrillVerdict off = judgeDrill(Mech::Musty, g, levelOfPlayer(3), drillMinScore(50, levelOfPlayer(3)), 4000.f);
+    CHECK(!off.success && !off.extraErrors.empty() && off.extraErrors[0] == "DRILL_NEED_TARGET");
+    CHECK(tipTemplate("DRILL_NEED_DIRECTION") != nullptr && tipTemplate("FL_TOO_CLOSE") != nullptr);
+    // Breezi: tornado alone at niveaux 1-2, then 1500 at niveau 3 up to 2400.
+    CHECK_NEAR(flickPowerNeeded(Mech::Breezi, levelOfPlayer(3)), 1500.f, 1e-3f);
+    CHECK_NEAR(flickPowerNeeded(Mech::Breezi, 1.f), 2400.f, 1e-3f);
+    CHECK_NEAR(flickPowerNeeded(Mech::Flick, 0.f), 1500.f, 1e-3f);
     Rng rng(4);
     for (int n = 1; n <= 10; ++n) {
         const float v = length(setupAt(Mech::Breezi, n, 0, rng).car.vel);
-        CHECK(n <= 3 ? v < 1e-3f : (v > 0.f && v < 2200.f));
+        CHECK(v >= 899.f && v <= 1301.f);  // never supersonic
     }
 }
 
@@ -882,9 +974,14 @@ void playTornado(Harness& h) {
     sc.place(*h.last.setCar);
     ground(sc.s.car);
     sc.s.ball.pos = h.last.setBall->pos;
-    sc.s.ball.vel = {};
+    sc.s.ball.vel = sc.s.car.vel;  // dribble start: the ball rides with the car
     const Vec3 offset = sc.s.ball.pos - sc.s.car.pos;
-    for (int i = 0; i < 48; ++i) sc.step();  // reaction, ball resting on the roof
+    for (int i = 0; i < 48; ++i)  // reaction, the speed held, ball resting on the roof
+        sc.step([&](Snapshot& x) {
+            x.car.pos += x.car.vel * DT;
+            x.ball.pos = x.car.pos + offset;
+            x.ball.vel = x.car.vel;
+        });
     const float spin = 260.f * kDegToRad / 0.7f;
     const int airTicks = static_cast<int>(0.7f * kTickRate);
     for (int i = 0; i < airTicks; ++i) {
@@ -938,15 +1035,22 @@ TEST(bm_play_breezi_tornado_step) {
 }
 
 namespace {
-// Scripted pickup with a resting ball: 0.4 s reaction, drive at 300 uu/s, the ball climbs the hood when the bumper
-// reaches it (put on the roof by script: the climb itself is not in the core physics), stop, wait until stable.
+// Scripted pickup: 0.4 s reaction (the car keeps its start speed), then the car drives 250 uu/s faster than the ball
+// along its nose (at least 300 uu/s: resting ball, ball rolling toward it, or the pickup at speed of the flicks); the
+// ball climbs the hood when the bumper reaches it (put on the roof by script: the climb itself is not in the core
+// physics) and rides there, the car keeping its speed (stopped for a resting or incoming ball), until stable.
 // Returns false when the drill never got there.
 bool doPickup(Script& sc, const BallPlacement& ball0) {
     sc.s.ball.pos = ball0.pos;
     sc.s.ball.vel = ball0.vel;
-    for (int i = 0; i < 48; ++i) sc.step([&](Snapshot& x) { x.ball.pos += x.ball.vel * DT; });
+    for (int i = 0; i < 48; ++i)
+        sc.step([&](Snapshot& x) {
+            x.car.pos += x.car.vel * DT;
+            x.ball.pos += x.ball.vel * DT;
+        });
     const Vec3 fwd = flat(sc.s.car.basis.fwd);
-    sc.s.car.vel = fwd * 300.f;
+    const float ballAlong = dot(sc.s.ball.vel, fwd);
+    sc.s.car.vel = fwd * std::max(300.f, ballAlong + 250.f);
     for (int i = 0; i < 600; ++i) {
         const float gap = dot(sc.s.ball.pos - sc.s.car.pos, fwd);
         if (gap < 91.25f + 73.f) break;
@@ -957,9 +1061,10 @@ bool doPickup(Script& sc, const BallPlacement& ball0) {
         });
     }
     const Vec3 roof = sc.s.car.basis.up * 132.f + sc.s.car.basis.fwd * sc.s.car.hitboxOffset.x;
-    sc.s.car.vel = {};
+    if (ballAlong < 1.f) sc.s.car.vel = {};
     for (int i = 0; i < 120; ++i) {
         sc.step([&](Snapshot& x) {
+            x.car.pos += x.car.vel * DT;
             x.ball.pos = x.car.pos + roof;
             x.ball.vel = x.car.vel;
         });
@@ -982,7 +1087,11 @@ TEST(bm_play_flick_pickup_route) {
     Script sc(h);
     sc.place(*h.last.setCar);
     ground(sc.s.car);
-    CHECK(distance(h.last.setBall->pos, h.last.setCar->pos) > 500.f);  // niveau 1 of the pickup: ball resting ahead
+    // Niveau 1 of the pickup at speed: the car drives toward the goal, the ball rolls ahead of it, slower.
+    CHECK(distance(h.last.setBall->pos, h.last.setCar->pos) > 450.f);
+    CHECK(length(h.last.setCar->vel) >= 699.f && length(h.last.setCar->vel) <= 921.f);
+    CHECK(dot(h.last.setBall->vel, h.last.setCar->vel) > 0.f && length(h.last.setBall->vel) < length(h.last.setCar->vel));
+    CHECK(h.mod.uiState().drill.steps[0].find(pickup::kRoofLabelChase) != std::string::npos);
     doPickup(sc, *h.last.setBall);
     auto u = h.mod.uiState();
     CHECK(stepOk(u, 0) && stepOk(u, 1));
@@ -1076,7 +1185,7 @@ TEST(bm_play_musty_pickup_route) {
         x.ball.pos = x.car.pos + roof;
     }, true);
     const float sign = h.latest.car.team == 1 ? -1.f : 1.f;
-    sc.s.ball.vel = {0.f, 1000.f * sign, 1000.f};
+    sc.s.ball.vel = {0.f, 1400.f * sign, 900.f};
     for (int i = 0; i < 30; ++i)
         sc.step([&](Snapshot& x) {
             x.car.pos += x.car.vel * DT;
@@ -1105,8 +1214,8 @@ TEST(bm_play_pickup_failure_feeds_its_own_staircase) {
     CHECK_NEAR(h.mod.drillLevel("flick"), flick0, 1e-6f);
     const auto u = h.mod.uiState();
     CHECK(u.drill.lastVerdict == "Ramassage raté");
-    CHECK(u.drill.tip == pickup::kRoofTip);
-    CHECK(u.drill.missing.find(pickup::kRoofLabel) != std::string::npos);
+    CHECK(u.drill.tip == pickup::kRoofTipChase);  // the flick family picks the ball up at speed
+    CHECK(u.drill.missing.find(pickup::kRoofLabelChase) != std::string::npos);
     Store st;
     h.mod.save(st);
     CHECK_EQ(st.getInt("ballmech.pickup.attempts", 0), 1);
@@ -1851,4 +1960,215 @@ TEST(bm_play_tutorial_texts) {
     CHECK(std::string(c.steps[3].note).find("tire le stick vers toi") != std::string::npos);
     CHECK(std::string(c.goodToKnow).find("stick vers toi") != std::string::npos);
     CHECK(std::string(lexicon()).find("Air roll") != std::string::npos);
+}
+
+// =============================================================================================================
+// Round 2: flicks like a match (dribble start, 12 m line, ball cam hint), predictions off by default, saved
+// defaults moved once
+// =============================================================================================================
+namespace {
+bool hudHas(Harness& h, const std::string& sub, bool mainOnly = true) {
+    for (const auto& p : drawHud(h, true).panels)
+        for (const auto& l : p.lines)
+            if ((!mainOnly || !l.detail) && l.text.find(sub) != std::string::npos) return true;
+    return false;
+}
+
+// Script positioned at GO of a flick dribble start: the car keeps its speed, the ball rides on the roof.
+struct Dribble {
+    Script sc;
+    Vec3 offset;
+    Vec3 fwd;
+    explicit Dribble(Harness& h) : sc(h) {
+        sc.place(*h.last.setCar);
+        ground(sc.s.car);
+        sc.s.ball.pos = h.last.setBall->pos;
+        sc.s.ball.vel = sc.s.car.vel;
+        offset = sc.s.ball.pos - sc.s.car.pos;
+        fwd = sc.s.car.basis.fwd;
+    }
+    // One tick; the ball slides `slide` uu forward on the roof; a re-placement by the module is applied.
+    bool ride(float slide = 0.f) {
+        offset += fwd * slide;
+        const Actions& a = sc.step([&](Snapshot& x) {
+            x.car.pos += x.car.vel * DT;
+            x.ball.pos = x.car.pos + offset;
+            x.ball.vel = x.car.vel;
+        });
+        if (!a.setBall) return false;
+        offset = a.setBall->pos - sc.s.car.pos;
+        return true;
+    }
+};
+} // namespace
+
+TEST(bm_round2_flick_dribble_assist_hint_and_12m_line) {
+    Harness h;
+    warmUp(h);
+    h.command("drill", {"flick"});
+    CHECK(hudHas(h, "ball cam"));  // during the get-ready hold, a main line
+    h.skipReady();
+    CHECK(h.last.setCar.has_value() && h.last.setBall.has_value());
+    if (!h.last.setCar || !h.last.setBall) return;
+    CHECK(length(h.last.setCar->vel) > 899.f);
+    Dribble d(h);
+    const float go = d.sc.s.time;
+    // No throttle at first: the ball slides forward a little; for 0.6 s it is put back on the roof (niveau 1).
+    int replaced = 0, lastReplaced = -1;
+    for (int i = 0; i < 120; ++i) {
+        if (d.ride(0.25f)) {
+            ++replaced;
+            lastReplaced = i;
+        }
+    }
+    CHECK(replaced >= 60);
+    CHECK(lastReplaced >= 0 && lastReplaced <= static_cast<int>(kFlickAssistSeconds * kTickRate) + 1);
+    CHECK(h.results.empty());
+    // No flick: the dribble into the goal mouth ends at the 12 m line, after several seconds, a failure with its tip.
+    for (int i = 0; i < 12 * 120 && h.results.empty(); ++i) d.ride();
+    CHECK_EQ(h.results.size(), 1u);
+    if (!h.results.empty()) {
+        CHECK(!h.results[0].success);
+        CHECK(hasTip(h.results[0], "bm.fl_too_close"));
+    }
+    CHECK(d.sc.s.time - go >= 3.6f);
+    CHECK(bm::arena::kBackWallY - d.sc.s.car.pos.y < kFlickLateDist + 20.f);
+    CHECK_EQ(h.mod.uiState().drill.attempts, 1);
+}
+
+TEST(bm_round2_flick_ball_lost_at_go_is_replayed_twice) {
+    // The ball falls off right after GO (the player did not take the speed): replayed without counting, twice in a
+    // row at most; the third time it counts.
+    Harness h;
+    warmUp(h);
+    h.command("level", {"flick", levelArg(7)});  // no carry assist above niveau 6
+    h.command("drill", {"flick"});
+    int toasts = 0;
+    for (int k = 0; k < 3; ++k) {
+        h.skipReady();
+        if (!h.last.setCar || !h.last.setBall) return;
+        Dribble d(h);
+        for (int i = 0; i < 30; ++i) d.ride();
+        Vec3 ballVel = d.sc.s.car.vel + d.fwd * 600.f;
+        Vec3 ballPos = d.sc.s.ball.pos;
+        for (int i = 0; i < 240 && h.mod.uiState().drill.phase == "À toi !"; ++i) {
+            d.sc.step([&](Snapshot& x) {
+                x.car.pos += x.car.vel * DT;
+                ballVel.z -= 650.f * DT;
+                ballPos += ballVel * DT;
+                if (ballPos.z < 93.15f) {
+                    ballPos.z = 93.15f;
+                    ballVel.z = 0.f;
+                }
+                x.ball.pos = ballPos;
+                x.ball.vel = ballVel;
+            });
+        }
+        int now = 0;
+        for (const auto& t : h.toasts) now += t.text.find("rejoué") != std::string::npos ? 1 : 0;
+        if (k < 2) {
+            CHECK(h.results.empty());
+            CHECK_EQ(now, toasts + 1);
+        }
+        toasts = now;
+    }
+    CHECK_EQ(h.results.size(), 1u);
+    if (!h.results.empty()) CHECK(hasTip(h.results[0], "bm.drill_ball_lost"));
+    CHECK_EQ(toasts, 2);
+}
+
+TEST(bm_round2_flick_parcours_starts_at_speed_far_from_goal) {
+    for (Mech m : {Mech::Flick, Mech::Musty, Mech::Breezi}) {
+        for (int pu = 1; pu <= 10; ++pu) {
+            Rng rng(5 + static_cast<uint64_t>(pu));
+            const DrillSetup d = setupAt(m, 1, 0, rng, DrillMode::Full, pu);
+            CHECK(d.pickup && d.pickupChase && !d.pickupRolling);
+            CHECK_NEAR(bm::arena::kBackWallY - d.car.pos.y, 5500.f, 1.f);
+            const float vc = length(d.car.vel), vb = length(d.ball.vel);
+            CHECK(vc >= 699.f && vc <= 921.f && vb >= 449.f && vb <= 521.f);
+            CHECK(dot(d.ball.vel, d.car.vel) > 0.f);
+            // Core physics: the ball keeps rolling ahead; the car at its speed meets it within 2 s, gently, far out.
+            const auto ball = pb::simBall(d.ball.pos, d.ball.vel, 3.f, d.ball.angVel);
+            const Vec3 f = normalize(d.car.vel);
+            bool met = false;
+            for (size_t i = 1; i < ball.size() && !met; ++i) {
+                const float t = static_cast<float>(i) * kTickDt;
+                const Vec3 car = d.car.pos + d.car.vel * t;
+                if (dot(ball[i].p - car, f) <= 13.88f + 59.f + 91.25f) {
+                    met = true;
+                    CHECK(t <= 2.f);
+                    const float rel = vc - dot(ball[i].v, f);
+                    CHECK_MSG(rel >= 200.f && rel <= 450.f, std::to_string(rel));
+                    CHECK(bm::arena::kBackWallY - car.y > 3500.f);
+                }
+            }
+            CHECK(met);
+        }
+        // The steps name the pickup at speed.
+        const auto labels = parcoursLabels(m, 1, "");
+        CHECK(!labels.empty() && labels[0].find(pickup::kRoofLabelChase) != std::string::npos);
+    }
+    // The air dribble keeps its pickup with the car stopped.
+    Rng rng(3);
+    const DrillSetup ad = setupAt(Mech::AirDribble, 1, 0, rng, DrillMode::Full, 1);
+    CHECK(ad.pickup && !ad.pickupChase && length(ad.car.vel) < 1e-3f);
+}
+
+TEST(bm_round2_ceiling_guide_and_trajectory_off_by_default) {
+    SettingsSchema schema;
+    BallMechModule::describeSettings(schema);
+    CHECK(schema.find("rlt_bm_draw_trajectory")->defaultValue == "0");
+    CHECK(schema.find("rlt_bm_draw_guide")->defaultValue == "0");
+    // Ceiling start, niveau 1: the predicted path and its ring are only drawn with "Guide du départ au plafond".
+    Harness h;
+    warmUp(h);
+    h.command("drill", {"ceiling", "court"});
+    CHECK(drawHud(h, true).lines3D.empty());
+    h.set("rlt_bm_draw_guide", "1");
+    CHECK(drawHud(h, true).lines3D.size() >= 15);
+    CHECK(drillLevelNote(Mech::Ceiling, 0.f).find("cercle") == std::string::npos);
+}
+
+TEST(bm_round2_old_defaults_migrated_once) {
+    // A player of the previous version: config.cfg holds the old default (trajectory drawn). The first tick turns it
+    // off once; a reload never does it again; a value chosen differently is kept.
+    auto oneTick = [](Harness& h) {
+        Sim sim;
+        sim.step(1);
+        h.run(continueFrom(h, sim.out));
+        return h.last;
+    };
+    Harness h;
+    h.mod.load(Store{});  // save of the previous version: no flag
+    h.set("rlt_bm_draw_trajectory", "1");
+    CHECK(!h.mod.defaultsMigrated());
+    const Actions first = oneTick(h);
+    CHECK_EQ(first.setCvars.size(), 1u);
+    if (!first.setCvars.empty()) {
+        CHECK(first.setCvars[0].first == "rlt_bm_draw_trajectory" && first.setCvars[0].second == "0");
+        h.set(first.setCvars[0].first, first.setCvars[0].second);
+    }
+    CHECK(first.requestSave);
+    CHECK_EQ(first.toasts.size(), 1u);
+    CHECK(!first.toasts.empty() && noDash(first.toasts[0].text));
+    if (!first.toasts.empty())  // the toast shared by every trajectory (one line once merged by the engine)
+        CHECK(first.toasts[0].title == "Trajectoires" && first.toasts[0].migration &&
+              first.toasts[0].text.find("page HUD, section Trajectoires") != std::string::npos);
+    CHECK(!h.mod.config().drawTrajectory);
+    const Actions second = oneTick(h);
+    CHECK(second.setCvars.empty() && second.toasts.empty());
+    Store st;
+    h.mod.save(st);
+    CHECK_EQ(st.getInt("ballmech.defaults_v2", 0), 1);
+    Harness again;
+    again.mod.load(st);
+    again.set("rlt_bm_draw_trajectory", "1");  // the player turned it back on
+    CHECK(oneTick(again).setCvars.empty());
+    CHECK(again.mod.config().drawTrajectory);
+    Harness chosen;
+    chosen.mod.load(Store{});
+    chosen.set("rlt_bm_draw_trajectory", "0");
+    const Actions kept = oneTick(chosen);
+    CHECK(kept.setCvars.empty() && kept.toasts.empty() && kept.requestSave);
+    CHECK(chosen.mod.defaultsMigrated());
 }

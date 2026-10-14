@@ -73,7 +73,8 @@ TEST(courses_hud_compact_countdown_keeps_start_goal_and_tip) {
     h.tick();
     p = compactPanel(h);
     checkCompact(p);
-    CHECK(has(p, "Départ dans 3"));
+    CHECK(has(p, "Prêt ?"));  // the game counts 3, 2, 1: no second countdown in the panel
+    CHECK(!has(p, "Départ dans"));
     // Ground arches: the ball cam tip.
     Harness g;
     g.command("rings", {"ground", courses::encodeCourseCode(42, courses::CourseType::GroundWall, 0)});

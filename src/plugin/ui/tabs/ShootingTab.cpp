@@ -64,6 +64,33 @@ void wrappedColored(const Color& c, const std::string& text) {
 
 std::string levelText(float level) { return "niveau " + std::to_string(shoot::shootPlayerLevel(level)) + "/10"; }
 
+// YouTube search of a drill's mechanic (English names: most tutorials are in English).
+const char* drillVideoQuery(shoot::ShootDrill d) {
+    switch (d) {
+    case shoot::ShootDrill::Flick: return "flick rocket league tutorial";
+    case shoot::ShootDrill::Roof: return "dribble flick rocket league tutorial";
+    case shoot::ShootDrill::Rolling: return "shooting accuracy rocket league tutorial";
+    case shoot::ShootDrill::Bouncing: return "bounce shot rocket league tutorial";
+    case shoot::ShootDrill::Pass: return "one touch shot rocket league tutorial";
+    case shoot::ShootDrill::Power: return "power shot rocket league tutorial";
+    default: return "shooting rocket league tutorial";
+    }
+}
+
+const char* flickVideoQuery(shoot::FlickType t) {
+    switch (t) {
+    case shoot::FlickType::Front: return "front flick rocket league tutorial";
+    case shoot::FlickType::Flick45: return "45 degree flick rocket league tutorial";
+    case shoot::FlickType::Flick90: return "90 degree flick rocket league tutorial";
+    case shoot::FlickType::Backflip: return "backflip flick rocket league tutorial";
+    case shoot::FlickType::Delayed: return "delayed flick rocket league tutorial";
+    case shoot::FlickType::Musty: return "musty flick rocket league tutorial";
+    case shoot::FlickType::Breezi: return "breezi flick rocket league tutorial";
+    case shoot::FlickType::Reverse: return "reverse 45 flick rocket league tutorial";
+    default: return "flick rocket league tutorial";
+    }
+}
+
 // One measure of a result: "Puissance : 52 km/h (objectif 47)"; 0/1 flags read "oui" / "non".
 std::string metricText(const Metric& m) {
     std::string value;
@@ -128,6 +155,7 @@ void drillCard(UiContext& ctx, const ShootingView& v, shoot::ShootDrill d, float
     ImGui::SameLine();
     if (ImGui::SmallButton("Revenir au niveau 1")) ctx.post("shooting", "reset_level", {shoot::shootDrillId(d)});
     ui::helpMarker("Remet l'exercice et son parcours complet au niveau 1. Tes stats et records ne bougent pas.");
+    ui::videoSearchButton("Voir des tutos vidéo", drillVideoQuery(d));
     if (ImGui::TreeNode("Comment faire")) {
         tutorialSection(v, d);
         ImGui::TreePop();
@@ -143,7 +171,7 @@ void statusSection(UiContext& ctx, const ShootingView& v) {
         if (st.full) running += std::string(", parcours complet : ") + shoot::shootDrillTitle(static_cast<shoot::ShootDrill>(st.fullKind));
         ui::textColored(colors::Green, running + " (" + shootPhaseLabel(st.phase) + ")");
         if (!st.readyLine.empty()) ui::textColored(colors::Yellow, st.readyLine);
-        if (st.movingStart) ui::textColored(colors::Yellow, "Départ en mouvement");
+        if (st.movingStart) ui::textColored(colors::Yellow, "Départ en dribble");
         for (const auto& line : st.steps) ImGui::BulletText("%s", line.c_str());
         if (st.mode == ShootMode::Flick) {
             ImGui::Text("Flick demandé : %s",
@@ -189,8 +217,12 @@ void statusSection(UiContext& ctx, const ShootingView& v) {
 
 void flickSection(UiContext& ctx, const ShootingView& v) {
     ImGui::TextWrapped(
-        "La balle est posée sur ton toit. Saute puis flip : le plugin reconnaît le flick, le note et te donne un "
-        "conseil. Commence par le flick avant, voiture à l'arrêt. Aux niveaux 1 et 2, n'importe quel flick cadré compte.");
+        "Comme en match : la balle est sur ton toit et ta voiture roule déjà vers le but depuis le milieu du terrain. "
+        "Saute puis flip avant d'arriver devant le but : le plugin reconnaît le flick, le note comme un tir et te donne "
+        "un conseil. Aux niveaux 1 et 2, n'importe quel flick cadré compte. Pour apprendre le geste sans vitesse, "
+        "choisis Départ : Voiture à l'arrêt dans les réglages des flicks.");
+    wrappedColored(colors::Yellow, "Coupe la ball cam pendant le dribble pour voir le but, remets-la après le flick. "
+                                   "Le plugin ne touche jamais à ta caméra.");
     drillCard(ctx, v, shoot::ShootDrill::Flick, v.status.flickLevel, "flick", {"any"});
     drillCard(ctx, v, shoot::ShootDrill::Roof, v.status.setupLevels[static_cast<size_t>(shoot::TargetSetup::Roof)],
               "targets", {"roof"});
@@ -216,6 +248,8 @@ void flickSection(UiContext& ctx, const ShootingView& v) {
                     ImGui::TextDisabled("Record : %s, %d essais (%d réussis)", speedText(rec.bestPower, v).c_str(),
                                         rec.count, rec.successes);
                 if (ImGui::Button("Entraîner ce flick")) ctx.post("shooting", "flick", {shoot::flickTypeId(type)});
+                ImGui::SameLine();
+                ui::videoSearchButton("Voir des tutos vidéo", flickVideoQuery(type));
                 if (ImGui::CollapsingHeader("Détails techniques##flick_tech")) {
                     ImGui::PushTextWrapPos(0.f);
                     ImGui::TextUnformatted(shoot::flickTechNote(type, v.cfg.delayedSec, v.cfg.mustyPitchDeg,
@@ -235,9 +269,10 @@ void flickSection(UiContext& ctx, const ShootingView& v) {
 
 void targetsSection(UiContext& ctx, const ShootingView& v) {
     ImGui::TextWrapped(
-        "Des zones sont dessinées dans le but adverse. Tire dans la zone en couleur. Un marqueur montre où la "
-        "balle va arriver pendant qu'elle vole. Au niveau 1 les zones sont grandes et la balle lente ; elles "
-        "rétrécissent quand tu réussis. Commence par la balle roulante.");
+        "Des zones sont dessinées dans le but adverse. Tire dans la zone en couleur : après ton tir, un point montre "
+        "où la balle a passé la ligne de but (vert dans la zone). Au niveau 1 les zones sont grandes et la balle "
+        "lente ; elles rétrécissent quand tu réussis. Commence par la balle roulante. Le marqueur d'impact prévu et "
+        "les cercles au sol sont coupés par défaut (réglages ci-dessous et Affichage).");
     const char* zoneButtons[] = {"Lucarne gauche",   "Lucarne droite", "Poteau bas gauche",
                                  "Poteau bas droit", "Centre",         "Aléatoire"};
     const char* zoneArgs[] = {"tl", "tr", "bl", "br", "center", "random"};

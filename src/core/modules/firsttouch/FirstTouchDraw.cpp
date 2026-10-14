@@ -330,8 +330,9 @@ void FirstTouchModule::drawDrillWorld(const DrawContext& ctx, DrawList& out) con
     const Vec3 up{0.f, 0.f, 1.f};
     const Color pathColor{0, 200, 255, 170};
     const Color circleColor{255, 199, 64, 230};
-    // The ball's predicted path during the hold, so the player sees where it goes before it moves.
-    if (drill_.phase == DrillPhase::Ready && drill_.path.points.size() >= 2) {
+    // The ball's predicted path during the hold, so the player sees where it goes before it moves (opt-in, like every
+    // trajectory). The circles below are the spots the exercise asks to reach: always drawn.
+    if (cfg_.drillPath && drill_.phase == DrillPhase::Ready && drill_.path.points.size() >= 2) {
         std::vector<Vec3> pts;
         const size_t n = std::min<size_t>(drill_.path.points.size(), 180);  // 3 s
         for (size_t k = 0; k < n; k += 3) pts.push_back(drill_.path.points[k] - Vec3{0.f, 0.f, 80.f});

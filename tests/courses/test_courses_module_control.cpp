@@ -378,3 +378,127 @@ TEST(courses_draw_sanity) {
     c.mod.draw(view, cc, cm);
     CHECK(cm.lines3D.size() >= 24u);
 }
+
+
+namespace {
+
+int countColor(const DrawList& dl, const Color& c) {
+    int n = 0;
+    for (const auto& l : dl.lines3D) n += l.color == c ? 1 : 0;
+    return n;
+}
+
+bool hasDash(const std::string& s) {
+    return s.find("\xE2\x80\x94") != std::string::npos || s.find("\xE2\x80\x93") != std::string::npos;
+}
+
+ViewContext courseView() {
+    ViewContext view;
+    view.valid = true;
+    view.screenW = 1920.f;
+    view.screenH = 1080.f;
+    view.fovDeg = 110.f;
+    view.camPos = {0.f, -5000.f, 300.f};
+    view.camBasis = basisFromRot(rotFromYawDeg(90.f));
+    view.carValid = true;
+    view.carVisualPos = {0.f, -4000.f, 17.f};
+    view.ballValid = true;
+    view.ballVisualPos = {0.f, -4800.f, 1200.f};
+    view.ballRadius = 91.25f;
+    return view;
+}
+
+} // namespace
+
+// Trajectories are opt-in: the dashed guide lines (car to the next ring, ball down to its landing point) are off by
+// default. The rings and the catch circle are the exercise itself and stay drawn.
+TEST(courses_guide_lines_off_by_default) {
+    Harness h;
+    CHECK(!h.mod.config().guideLine);
+    const SettingDef* def = h.schema.find("rlt_co_guide_line");
+    CHECK(def && def->defaultValue == "0");
+    h.command("rings", {"air", courses::encodeCourseCode(99, courses::CourseType::Aerial, 100)});
+    h.runCountdown();
+    h.tick();
+    CHECK(h.mod.phase() == CoursesPhase::Running);
+    const ViewContext view = courseView();
+    DrawContext dctx{h.settings, h.game, h.profile, h.snap, true, true, 1.f};
+    DrawList off;
+    h.mod.draw(view, dctx, off);
+    CHECK(countColor(off, h.mod.config().nextColor) > 0);  // the next ring
+    CHECK_EQ(countColor(off, h.mod.config().guideColor), 0);
+    h.set("rlt_co_guide_line", "1");
+    DrawList on;
+    h.mod.draw(view, dctx, on);
+    CHECK(countColor(on, h.mod.config().guideColor) > 0);
+    CHECK(on.lines3D.size() > off.lines3D.size());
+
+    // Catch: the circle where to stop stays; the line from the ball down to it follows the guide line setting.
+    Harness c;
+    c.command("control", {"catch"});
+    c.tick();
+    DrawContext cc{c.settings, c.game, c.profile, c.snap, true, true, 1.f};
+    const Color dash = c.mod.config().guideColor.withAlpha(120.f);
+    DrawList circleOnly;
+    c.mod.draw(view, cc, circleOnly);
+    CHECK(countColor(circleOnly, c.mod.config().guideColor) >= 24);
+    CHECK_EQ(countColor(circleOnly, dash), 0);
+    c.set("rlt_co_guide_line", "1");
+    DrawList withLine;
+    c.mod.draw(view, cc, withLine);
+    CHECK(countColor(withLine, c.mod.config().guideColor) >= 24);
+    CHECK(countColor(withLine, dash) > 0);
+}
+
+TEST(courses_old_default_migrated_once) {
+    // A player of the previous version: config.cfg holds the old default (guide lines on) and the Store has no flag.
+    // The first tick turns them off once; a reload never does it again; a value chosen differently is kept.
+    auto cvar = [](const Actions& a, const std::string& name) {
+        for (const auto& cv : a.setCvars)
+            if (cv.first == name) return cv.second;
+        return std::string();
+    };
+    Harness h;
+    h.mod.load(Store{});  // save of the previous version: no flag
+    h.set("rlt_co_guide_line", "1");
+    CHECK(!h.mod.defaultsMigrated());
+    const Actions first = h.tick();
+    CHECK_EQ(first.setCvars.size(), static_cast<size_t>(1));
+    CHECK(cvar(first, "rlt_co_guide_line") == "0");
+    CHECK(first.requestSave);
+    CHECK_EQ(first.toasts.size(), static_cast<size_t>(1));
+    CHECK(!first.toasts.empty() && !hasDash(first.toasts[0].text) &&
+          first.toasts[0].text.find("Trajectoires") != std::string::npos);
+    // The value the engine sets back through the cvar is a valid setting.
+    for (const auto& cv : first.setCvars) CHECK_MSG(h.set(cv.first, cv.second), cv.first);
+    CHECK(!h.mod.config().guideLine);
+    CHECK(h.mod.defaultsMigrated());
+    const Actions second = h.tick();
+    CHECK(second.setCvars.empty() && second.toasts.empty());
+    // The flag is saved: a reload where the player turned them back on does not migrate again.
+    Store st;
+    h.mod.save(st);
+    CHECK_EQ(st.getInt("courses.defaults_v2", 0), 1);
+    Harness again;
+    again.mod.load(st);
+    again.set("rlt_co_guide_line", "1");
+    CHECK(again.mod.defaultsMigrated());
+    const Actions reloaded = again.tick();
+    CHECK(reloaded.setCvars.empty() && reloaded.toasts.empty());
+    CHECK(again.mod.config().guideLine);
+    // A value chosen differently (already off) is kept; only the flag is set.
+    Harness chosen;
+    chosen.mod.load(Store{});
+    chosen.set("rlt_co_guide_line", "0");
+    const Actions kept = chosen.tick();
+    CHECK(kept.setCvars.empty() && kept.toasts.empty() && kept.requestSave);
+    CHECK(chosen.mod.defaultsMigrated());
+    // Also during an exercise, and the exercise goes on.
+    Harness busy;
+    busy.mod.load(Store{});
+    busy.set("rlt_co_guide_line", "1");
+    busy.command("rings", {"air", courses::encodeCourseCode(99, courses::CourseType::Aerial, 100)});
+    const Actions during = busy.tick();
+    CHECK(cvar(during, "rlt_co_guide_line") == "0");
+    CHECK(busy.mod.phase() != CoursesPhase::Idle);
+}

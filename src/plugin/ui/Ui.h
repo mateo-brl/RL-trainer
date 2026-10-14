@@ -87,6 +87,10 @@ ImVec4 accentColor();      // amber #FFC740, same as the HUD panel titles
 ImVec4 accentSelectedBg(); // background of a selected item (sidebar, filter buttons)
 // Opens a page of the menu on the next frame (UiTab id, e.g. "hud").
 void goToPage(const char* id);
+// Opens `url` in the default browser (Windows); elsewhere copies it to the clipboard. Returns true when opened.
+bool openUrl(const std::string& url);
+// Button that opens a YouTube search for `query` (e.g. "ceiling shot rocket league tutorial"). Tooltip explains it.
+void videoSearchButton(const char* label, const std::string& query);
 
 } // namespace ui
 

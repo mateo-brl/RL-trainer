@@ -284,9 +284,27 @@ void GameBridge::execute(const Actions& a, void* params, bool hudAccents) {
         gw_->Toast(hudText(a.chat.front().sender, hudAccents), hudText(text, hudAccents), "default",
                    std::min(10.f, 3.5f + 1.5f * (lines - 1.f)), ToastType_Info, 360.f, 60.f + 20.f * (lines - 1.f));
     }
-    for (const auto& t : a.toasts)
+    for (const auto& t : a.toasts) {
+        if (t.text.find('\n') == std::string::npos) {
+            gw_->Toast(hudText(t.title, hudAccents), hudText(t.text, hudAccents), "default", t.seconds,
+                       static_cast<uint8_t>(t.kind));
+            continue;
+        }
+        // Several sentences (the merged migration toast): sized like the chat batch above, a long sentence counted
+        // as several lines (about 60 characters per line at 360 px, not measured in game).
+        int lines = 0, chars = 0;
+        for (size_t i = 0; i <= t.text.size(); ++i) {
+            if (i == t.text.size() || t.text[i] == '\n') {
+                lines += std::max(1, (chars + 59) / 60);
+                chars = 0;
+            } else if ((static_cast<unsigned char>(t.text[i]) & 0xC0) != 0x80) {
+                ++chars;  // one UTF-8 character
+            }
+        }
+        lines = std::min(lines, 12);
         gw_->Toast(hudText(t.title, hudAccents), hudText(t.text, hudAccents), "default", t.seconds,
-                   static_cast<uint8_t>(t.kind));
+                   static_cast<uint8_t>(t.kind), 360.f, 60.f + 20.f * static_cast<float>(lines - 1));
+    }
     for (const auto& c : a.consoleCommands) runConsole(c);
 }
 

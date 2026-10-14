@@ -1,5 +1,6 @@
 #include "core/common/Pickup.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace rlt::pickup {
@@ -31,6 +32,29 @@ Setup makeSetup(const Vec3& carPos, float yawDeg, int niveau, Rng& rng, float ba
         su.ball.pos = Vec3{carPos.x, carPos.y, 0.f} + fwd * kRestAhead;
         su.ball.pos.z = restZ;
     }
+    su.heldBall.pos = su.ball.pos;
+    return su;
+}
+
+Setup makeChaseSetup(const Vec3& carPos, float yawDeg, int niveau, Rng& rng, float ballRadius) {
+    if (!(ballRadius > 1.f)) ballRadius = 91.25f;
+    const float t = clamp01(static_cast<float>(std::clamp(niveau, 1, 10) - 1) / 9.f);
+    Setup su;
+    su.chase = true;
+    su.car.pos = carPos;
+    su.car.rot = rotFromYawDeg(yawDeg);
+    su.car.angVel = {};
+    const Vec3 fwd{std::cos(yawDeg * kDegToRad), std::sin(yawDeg * kDegToRad), 0.f};
+    const Vec3 right{fwd.y, -fwd.x, 0.f};
+    const float ballSpeed = lerpf(kChaseBallSpeedMin, kChaseBallSpeedMax, t);
+    su.carSpeed = ballSpeed + lerpf(kChaseRelMin, kChaseRelMax, t);
+    su.car.vel = fwd * su.carSpeed;
+    const float offset = niveau >= kChaseOffsetNiveau ? rng.range(-1.f, 1.f) * kChaseOffsetMax * t : 0.f;
+    su.ball.pos = Vec3{carPos.x, carPos.y, 0.f} + fwd * lerpf(kChaseGapMin, kChaseGapMax, t) + right * offset;
+    su.ball.pos.z = ballRadius + kArenaMargin;
+    su.ball.vel = fwd * ballSpeed;
+    su.ball.angVel = rollingSpin(su.ball.vel, ballRadius);
+    su.rollSpeed = ballSpeed;
     su.heldBall.pos = su.ball.pos;
     return su;
 }
@@ -74,6 +98,15 @@ Options options(bool rolling) {
     }
     return o;
 }
+
+Options chaseOptions() {
+    Options o;
+    o.roofLabel = kRoofLabelChase;
+    o.roofTip = kRoofTipChase;
+    return o;
+}
+
+Options optionsFor(const Setup& su) { return su.chase ? chaseOptions() : options(su.rolling); }
 
 Step roofStep(const Options& o) {
     Step st;

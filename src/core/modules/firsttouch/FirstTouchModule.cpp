@@ -110,6 +110,10 @@ void FirstTouchModule::describeSettings(SettingsSchema& schema) {
     d.toggle("rlt_ft_drill_reset_car", &C::drillResetCar, true, "Replacer la voiture à chaque essai",
              "Remet ta voiture à l'arrêt sur sa position de départ avant chaque balle.");
     d.toggle("rlt_ft_drill_boost", &C::drillFullBoost, true, "Boost plein à chaque essai", "Remplit ton boost à chaque placement.");
+    d.toggle("rlt_ft_drill_path", &C::drillPath, false, "Trajectoire de la balle avant l'essai",
+             "Dessine le chemin prévu de la balle pendant l'attente avant chaque balle. Coupée par défaut, comme "
+             "toutes les trajectoires. Les cercles au sol (point de chute, point de rencontre) restent : ce sont les "
+             "endroits où l'exercice te demande d'aller.");
     d.number("rlt_ft_drill_hud_x", &C::drillHudX, 0.01f, 0.f, 1.f, "Panneau exercice : X",
              "Position horizontale du panneau d'exercice (fraction de l'écran).", 2);
     d.number("rlt_ft_drill_hud_y", &C::drillHudY, 0.12f, 0.f, 1.f, "Panneau exercice : Y",

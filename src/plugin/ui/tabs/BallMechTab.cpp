@@ -282,11 +282,34 @@ void drawRecords(UiContext& ctx, const BallMechModule::UiState& st, SpeedUnit un
     }
 }
 
+// YouTube search of a mechanic (English names: most tutorials are in English).
+const char* videoQuery(bm::Mech m) {
+    switch (m) {
+    case bm::Mech::FlipReset: return "flip reset rocket league tutorial";
+    case bm::Mech::Ceiling: return "ceiling shot rocket league tutorial";
+    case bm::Mech::Flick: return "flick rocket league tutorial";
+    case bm::Mech::Musty: return "musty flick rocket league tutorial";
+    case bm::Mech::Breezi: return "breezi flick rocket league tutorial";
+    case bm::Mech::DoubleTap: return "double tap rocket league tutorial";
+    case bm::Mech::AirDribble: return "air dribble rocket league tutorial";
+    case bm::Mech::AirRoll: return "air roll shot rocket league tutorial";
+    case bm::Mech::Aerial: return "aerial rocket league tutorial";
+    case bm::Mech::Pinch: return "pinch rocket league tutorial";
+    case bm::Mech::PowerShot: return "power shot rocket league tutorial";
+    default: return "rocket league mechanics tutorial";
+    }
+}
+
 void drawTutorial(UiContext& ctx, const BallMechModule::UiState& st, const BallMechModule::MechView& m, bm::Mech mech,
                   const PlayerProfile& profile, bool worldControl, SpeedUnit unit) {
     const bm::Tutorial& t = bm::tutorial(mech);
     auto fill = [&](const char* text) { return bm::fillButtons(text, profile, st.keyStyle); };
     ImGui::TextWrapped("%s", m.what.c_str());
+    ui::videoSearchButton("Voir des tutos vidéo", videoQuery(mech));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("Démo automatique : disponible pour les mécas de déplacement seulement, ici regarde les tutos "
+                       "vidéo.");
+    ImGui::PopStyleColor();
     if (t.before && *t.before) {
         ui::textColored(kAccent, "Conseillé avant :");
         ImGui::SameLine();

@@ -81,6 +81,8 @@ const TipDef kTips[] = {
      "Tourne la voiture vers le but avant de sauter", 15.f},
     {"FL_STEP_JUMP", "Saute avec {jump} quand la balle ne bouge plus au centre du toit.",
      "Saute quand la balle est stable sur le toit", 40.f},
+    {"FL_TOO_CLOSE", "Flick plus tôt : avant d'arriver à 12 m du but. Garde la balle stable, puis choisis ton moment.",
+     "Flick avant d'arriver devant le but", 35.f},
     {"BZ_STEP_HOLD", "Garde {jump} enfoncé au saut : tu montes plus haut et tu as le temps de tourner.",
      "Garde le saut enfoncé", 40.f},
     // ---- Double tap
@@ -175,6 +177,9 @@ const TipDef kTips[] = {
      "Presque : frappe plus fort pour ce niveau", 18.f},
     {"DRILL_NEED_TARGET", "Bonne base ! Pour valider ce niveau, cadre ton tir.",
      "Presque : cadre ton tir pour ce niveau", 18.f},
+    {"DRILL_NEED_DIRECTION", "Bonne base ! Pour valider ce niveau, envoie la balle vers le but : oriente la voiture vers "
+     "lui avant de sauter.",
+     "Presque : envoie la balle vers le but", 18.f},
     {"DRILL_NEED_DURATION", "Bonne base ! Pour valider ce niveau, garde la balle en l'air plus longtemps.",
      "Presque : garde la balle en l'air plus longtemps", 18.f},
     {"DRILL_NEED_CONVERT", "Reset obtenu ! Pour valider ce niveau, flippe dans la balle avec {jump}.",

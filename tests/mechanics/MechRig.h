@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -100,6 +101,10 @@ struct Rig {
     Snapshot last;
     bool hasSnap = false;
     bool frozen = false;
+    // Actions::overrideInputs routed on the previous tick: they replace the player's inputs for the next physics step
+    // (the glue writes them into the SetVehicleInput params). `applied` = what the car really got on the last tick.
+    std::optional<Inputs> overrideIn;
+    Inputs applied;
     bool ballAtCentre = false;   // the drill ball (game axes, centre spot) for touches
     Vec3 ballGame{1e5f, 1e5f, 92.75f};
     Vec3 ballVel;                // game axes
@@ -190,7 +195,8 @@ struct Rig {
         }
     }
     Actions tick(const Inputs& playerIn, bool paused = false) {
-        sim.tick(frozen ? Inputs{} : playerIn);
+        applied = frozen ? Inputs{} : (overrideIn ? *overrideIn : playerIn);
+        sim.tick(applied);
         if (frozen) {
             sim.vel = {};
             sim.w = {};
@@ -208,6 +214,7 @@ struct Rig {
         raw = a;
         routed = route(a);
         frozen = routed.freezeCar;
+        overrideIn = routed.overrideInputs;
         if (routed.setCar) sim.place(*routed.setCar);
         if (routed.setBall) {
             ballGame = routed.setBall->pos;

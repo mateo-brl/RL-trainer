@@ -95,6 +95,8 @@ void addFallTip(courses::FallSide side, bool slalom, std::vector<Tip>& tips) {
 
 // ---- Tick dispatch -----------------------------------------------------------------------------------------
 void CoursesModule::onTick(const TickContext& ctx, Actions& out) {
+    // Ticks only come from a running game: config.cfg is loaded.
+    if (ctx.hasSnapshot && !defaultsV2_) migrateDefaults(out);
     if (phase_ == CoursesPhase::Idle) return;
     if (!cfg_.enabled) {
         stopExercise(true);

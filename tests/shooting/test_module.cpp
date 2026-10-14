@@ -290,6 +290,7 @@ TEST(shooting_stationary_flick_waits_for_the_throttle_release) {
     // Ball balanced on a stopped car: the player keeps the throttle held from his press through the countdown (the
     // kickoff habit). GO waits until he lets go (HUD "Lâche l'accélérateur pour partir"), then comes on that tick.
     Harness h;
+    h.set("rlt_sh_flick_start", "0");  // stopped car (the default is the dribble start)
     World w;
     h.tick(w.snap());
     h.command("flick", {"front"});
@@ -360,6 +361,7 @@ TEST(shooting_flick_drill_full_attempt) {
 
 TEST(shooting_flick_drill_wrong_type_and_lost_ball) {
     Harness h;
+    h.set("rlt_sh_flick_start", "0");  // stopped car: a ball lost at once is a real failure (see the dribble replay test)
     Store st;  // niveau 4: the requested type counts (niveaux 1 and 2 accept any flick)
     st.setFloat("shooting.stair.flick.level", 1.f / 3.f);
     st.setInt("shooting.stair.flick.attempts", 1);
@@ -708,10 +710,18 @@ TEST(shooting_draw_budget_panel_and_modes) {
     h.set("rlt_sh_show_zones", "0");
     CHECK_EQ(h.draw(viewFor(w)).lines3D.size(), static_cast<size_t>(8));
     h.set("rlt_sh_show_zones", "1");
-    // Shot in flight: the predicted impact marker is added.
+    // Shot in flight: the predicted impact marker is a prediction, off by default (no marker, no HUD line)...
     const GoalFrame g = h.mod.goal();
     shootAt(h, w, g.toWorld(0.f, 300.f), 1.2f);
     runTicks(h, w, 3);
+    CHECK(h.mod.hasPrediction());
+    {
+        const DrawList off = h.draw(viewFor(w));
+        CHECK_EQ(off.lines3D.size(), static_cast<size_t>(24));
+        for (const auto& l : off.panels.front().lines) CHECK(l.text.find("Impact prévu") != 0);
+    }
+    // ...and added with "Marqueur d'impact prévu".
+    h.set("rlt_sh_show_prediction", "1");
     DrawList flying = h.draw(viewFor(w));
     CHECK(flying.lines3D.size() >= 24 + 20);
     bool predictionLine = false;
@@ -809,4 +819,194 @@ TEST(shooting_fixed_level_when_not_adaptive) {
     CHECK_NEAR(h.mod.flickLevel(), 0.3f, 1e-6f);
     const ShootingStatus st = h.mod.status();
     CHECK_NEAR(st.setupLevels[static_cast<size_t>(TargetSetup::Roof)], 0.8f, 1e-6f);
+}
+
+// ---- Round 2: flicks like a match, predictions off by default, saved defaults moved once ---------------------------
+namespace {
+std::vector<std::string> mainLines(Harness& h, const World& w) {
+    std::vector<std::string> out;
+    for (const auto& p : h.draw(viewFor(w)).panels)
+        for (const auto& l : p.lines)
+            if (!l.detail) out.push_back(l.text);
+    return out;
+}
+bool anyLine(const std::vector<std::string>& lines, const std::string& sub) {
+    for (const auto& l : lines)
+        if (l.find(sub) != std::string::npos) return true;
+    return false;
+}
+} // namespace
+
+TEST(shooting_dribble_flick_like_a_match) {
+    // Default start: the ball on the roof, the car already driving toward the goal from midfield at 900 uu/s
+    // (niveau 1). The countdown says to turn the ball cam off; a flick measured as a shot succeeds.
+    Harness h;
+    World w;
+    h.tick(w.snap());
+    h.command("flick", {"front"});
+    runTicks(h, w, 3);
+    CHECK(h.mod.phase() == ShootPhase::Countdown);
+    CHECK(h.mod.movingStart());
+    CHECK(anyLine(mainLines(h, w), "ball cam"));
+    CHECK(anyLine(mainLines(h, w), "dribble"));
+    runToLive(h, w);
+    CHECK(h.mod.phase() == ShootPhase::Live);
+    CHECK_NEAR(length(w.car.vel), 900.f, 1.f);
+    CHECK(h.mod.goal().distanceToPlane(w.car.pos) > 4400.f);
+    w.ballRides = true;
+    runTicks(h, w, 120);  // one second of dribble, the speed held
+    FlickScript s;
+    s.carSpeed = length(w.car.vel);
+    s.launch = {1600.f, 0.f, 350.f};
+    playFlick(h, w, s);
+    CHECK_EQ(h.results.size(), static_cast<size_t>(1));
+    if (!h.results.empty()) {
+        CHECK_MSG(h.results[0].success, h.results[0].title);
+        CHECK(metricOf(h.results[0], "power") >= 54.f);  // km/h, a real shot
+    }
+    // Next attempt: dribbling into the goal mouth without a flick ends at the 12 m line, a failure with its tip.
+    runTicks(h, w, 200);
+    runToLive(h, w);
+    CHECK(h.mod.phase() == ShootPhase::Live);
+    w.ballRides = true;
+    int ticks = 0;
+    while (ticks < 10 * 120 && h.mod.phase() == ShootPhase::Live) {
+        runTicks(h, w, 1);
+        ++ticks;
+    }
+    CHECK(h.mod.phase() == ShootPhase::Result);
+    CHECK_MSG(ticks >= static_cast<int>(3.6f * kTickRate), std::to_string(ticks));  // several seconds of dribble first
+    CHECK_EQ(h.results.size(), static_cast<size_t>(2));
+    if (h.results.size() == 2) {
+        CHECK(!h.results[1].success);
+        CHECK(h.results[1].title == "Trop près du but");
+        CHECK(hasTip(h.results[1], "shooting.flick_too_close"));
+        CHECK(h.results[1].skill == "shoot.flick.front");
+    }
+    CHECK(h.mod.goal().distanceToPlane(w.car.pos) < kFlickLateDist + 20.f);
+    CHECK_EQ(h.mod.flickStaircase().attempts(), 2);
+    // The stopped-car start never ends on the line (it does not drive by itself).
+    Harness g;
+    g.set("rlt_sh_flick_start", "0");
+    World v;
+    g.tick(v.snap());
+    g.command("flick");
+    runToLive(g, v);
+    CHECK(!g.mod.movingStart());
+    CHECK(!anyLine(mainLines(g, v), "ball cam"));
+}
+
+TEST(shooting_predictions_and_floor_marks_off_by_default) {
+    SettingsSchema schema;
+    ShootingModule::describeSettings(schema);
+    CHECK(schema.find("rlt_sh_show_prediction")->defaultValue == "0");
+    CHECK(schema.find("rlt_sh_floor_marks")->defaultValue == "0");
+    CHECK(schema.find("rlt_sh_free_analysis")->defaultValue == "0");
+    CHECK(schema.find("rlt_sh_flick_start")->defaultValue == "1");
+    // Outside drills on a shooting map: no predicted marker unless asked for.
+    Harness h;
+    h.game.category = MapCategory::Shooting;
+    World w;
+    h.tick(w.snap());
+    w.ball = ballAt({0.f, 2000.f, 300.f});
+    runTicks(h, w, 1);  // the ball placed by the test is not a shot
+    shootAt(h, w, h.mod.goal().toWorld(0.f, 300.f), 1.2f);
+    runTicks(h, w, 3);
+    CHECK(h.mod.hasPrediction());
+    CHECK(h.draw(viewFor(w)).lines3D.empty());
+    h.set("rlt_sh_show_prediction", "1");
+    CHECK(!h.draw(viewFor(w)).lines3D.empty());
+}
+
+TEST(shooting_old_defaults_migrated_once) {
+    // A player of the previous version: config.cfg holds the old defaults (stopped car, 800 uu/s, marker on). The
+    // first tick moves them once; a reload never does it again; a value chosen differently is kept.
+    auto oldDefaults = [](Harness& h) {
+        h.set("rlt_sh_flick_start", "0");
+        h.set("rlt_sh_flick_speed", "800");
+        h.set("rlt_sh_show_prediction", "1");
+    };
+    auto cvar = [](const Actions& a, const std::string& name) {
+        for (const auto& c : a.setCvars)
+            if (c.first == name) return c.second;
+        return std::string();
+    };
+    Harness h;
+    h.mod.load(Store{});  // save of the previous version: no flag
+    oldDefaults(h);
+    CHECK(!h.mod.defaultsMigrated());
+    World w;
+    const Actions first = h.tick(w.snap());
+    CHECK_EQ(first.setCvars.size(), static_cast<size_t>(3));
+    CHECK(cvar(first, "rlt_sh_flick_start") == "1");
+    CHECK(cvar(first, "rlt_sh_show_prediction") == "0");
+    float speed = 0.f;
+    CHECK(parseFloatValue(cvar(first, "rlt_sh_flick_speed"), speed) && std::fabs(speed - 1100.f) < 0.5f);
+    CHECK(first.requestSave);
+    CHECK_EQ(first.toasts.size(), static_cast<size_t>(1));
+    CHECK(!first.toasts.empty() && !containsEmDash(first.toasts[0].text));
+    if (!first.toasts.empty()) {  // everything moved: both sentences, flagged for the engine's merge
+        CHECK(first.toasts[0].migration && first.toasts[0].seconds == 8.f);
+        CHECK(first.toasts[0].text.find("en dribble") != std::string::npos);
+        CHECK(first.toasts[0].text.find("marqueur d'impact") != std::string::npos);
+    }
+    // The values the engine sets back through the cvars are valid settings.
+    for (const auto& c : first.setCvars) CHECK_MSG(h.set(c.first, c.second), c.first);
+    CHECK_EQ(h.mod.config().flickStart, 1);
+    CHECK(!h.mod.config().showPrediction);
+    CHECK(h.mod.defaultsMigrated());
+    w.advance();
+    const Actions second = h.tick(w.snap());
+    CHECK(second.setCvars.empty() && second.toasts.empty());
+    // The flag is saved: a reload with the old values (the player set them back) does not migrate again.
+    Store st;
+    h.mod.save(st);
+    CHECK_EQ(st.getInt("shooting.defaults_v2", 0), 1);
+    Harness again;
+    again.mod.load(st);
+    oldDefaults(again);
+    CHECK(again.tick(w.snap()).setCvars.empty());
+    CHECK_EQ(again.mod.config().flickStart, 0);
+    // Values chosen differently are kept; only the flag is set.
+    Harness chosen;
+    chosen.mod.load(Store{});
+    chosen.set("rlt_sh_flick_start", "2");
+    chosen.set("rlt_sh_flick_speed", "950");
+    chosen.set("rlt_sh_show_prediction", "0");
+    const Actions kept = chosen.tick(w.snap());
+    CHECK(kept.setCvars.empty() && kept.toasts.empty() && kept.requestSave);
+    CHECK(chosen.mod.defaultsMigrated());
+    // Only the old default among custom values: just that one moves.
+    Harness mixed;
+    mixed.mod.load(Store{});
+    mixed.set("rlt_sh_flick_start", "0");
+    mixed.set("rlt_sh_flick_speed", "1250");
+    const Actions one = mixed.tick(w.snap());
+    CHECK_EQ(one.setCvars.size(), static_cast<size_t>(1));
+    CHECK(cvar(one, "rlt_sh_flick_start") == "1");
+    CHECK(one.toasts.size() == 1 && one.toasts[0].text.find("marqueur") == std::string::npos);
+    // His own start (Aléatoire) with the old marker: only the marker moves, and the toast says only that.
+    Harness random;
+    random.mod.load(Store{});
+    random.set("rlt_sh_flick_start", "2");
+    random.set("rlt_sh_flick_speed", "950");
+    random.set("rlt_sh_show_prediction", "1");
+    const Actions marker = random.tick(w.snap());
+    CHECK_EQ(marker.setCvars.size(), static_cast<size_t>(1));
+    CHECK(cvar(marker, "rlt_sh_show_prediction") == "0");
+    CHECK_EQ(marker.toasts.size(), static_cast<size_t>(1));
+    if (!marker.toasts.empty()) {
+        CHECK(marker.toasts[0].text.find("dribble") == std::string::npos);
+        CHECK(marker.toasts[0].text.find("section Trajectoires") != std::string::npos);
+    }
+    // Only the old speed with his own start: the speed sentence, not the dribble start.
+    Harness slow;
+    slow.mod.load(Store{});
+    slow.set("rlt_sh_flick_start", "2");
+    slow.set("rlt_sh_flick_speed", "800");
+    slow.set("rlt_sh_show_prediction", "0");
+    const Actions sp = slow.tick(w.snap());
+    CHECK_EQ(sp.setCvars.size(), static_cast<size_t>(1));
+    CHECK(sp.toasts.size() == 1 && sp.toasts[0].text.find("1100 uu/s") != std::string::npos &&
+          sp.toasts[0].text.find("milieu du terrain") == std::string::npos);
 }

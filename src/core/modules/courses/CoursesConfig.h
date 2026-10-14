@@ -45,7 +45,7 @@ struct CoursesConfig {
     float lineWidth = 3.f;
     int lookahead = 4;             // upcoming rings drawn after the next one
     bool showPassed = true;
-    bool guideLine = true;
+    bool guideLine = false;        // dashed guide lines (next ring, wall arch, catch landing point): opt-in
     bool ringNumbers = true;
     bool hud = true;
     float hudX = 0.01f;            // HUD panel anchor, screen fractions (top-left zone)

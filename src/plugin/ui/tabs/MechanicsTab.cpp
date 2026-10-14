@@ -55,6 +55,34 @@ const MechanicsModule::StatRow* rowOf(const std::vector<MechanicsModule::StatRow
     return nullptr;
 }
 
+// YouTube search of a family's tutorials, with its English name ("half flip rocket league tutorial").
+std::string videoQuery(mech::Focus f) {
+    const char* name = "";
+    switch (f) {
+    case mech::Focus::SpeedFlip: name = "speed flip"; break;
+    case mech::Focus::HalfFlip: name = "half flip"; break;
+    case mech::Focus::FlipCancel: name = "flip cancel"; break;
+    case mech::Focus::Wavedash: name = "wavedash"; break;
+    case mech::Focus::ChainDash: name = "chain wavedash"; break;
+    case mech::Focus::ZapDash: name = "zap dash"; break;
+    case mech::Focus::WallDash: name = "wall dash"; break;
+    case mech::Focus::FastAerial: name = "fast aerial"; break;
+    case mech::Focus::Stall: name = "stall"; break;
+    case mech::Focus::Helicopter: name = "helicopter tornado spin"; break;
+    case mech::Focus::Recovery: name = "aerial recovery landing"; break;
+    case mech::Focus::Powerslide: name = "powerslide turn"; break;
+    case mech::Focus::Boost: name = "boost management"; break;
+    default: name = "movement mechanics"; break;
+    }
+    return std::string(name) + " rocket league tutorial";
+}
+
+// What the demo is, honestly: standard inputs replayed, not a recording of a pro.
+const char* kDemoNote =
+    "Voir la démo : ta voiture fait la méca toute seule, au ralenti, avec l'étape en cours écrite à l'écran. Elle "
+    "rejoue des timings standards (ceux que la notation de l'exercice attend) et corrige seulement la réception à "
+    "l'air roll : selon ta voiture ou ton framerate, le résultat peut être un peu différent. Reset pour l'arrêter.";
+
 void numberedSteps(const std::vector<std::string>& steps, int current) {
     for (size_t k = 0; k < steps.size(); ++k) {
         const std::string text = std::to_string(k + 1) + ". " + steps[k];
@@ -69,11 +97,38 @@ void numberedSteps(const std::vector<std::string>& steps, int current) {
 }
 
 void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, const std::vector<MechanicsModule::StatRow>& rows,
-                  bool worldControl) {
+                  bool worldControl, bool demoAllowed) {
     ui::separatorText("Statut");
     if (!st.enabled) {
         ui::textColored(colors::Orange, "Module désactivé : active-le dans les réglages plus bas.");
         return;
+    }
+    if (st.demoActive) {
+        const mech::FocusInfo& fi = mech::focusInfo(st.demoFocus);
+        ui::textColored(kTitle, std::string("Démo : ") + fi.title);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", st.demoPhase.c_str());
+        ImGui::TextDisabled("Démo automatique (timings standards)%s%s", st.demoVariant.empty() ? "" : " : ",
+                            st.demoVariant.c_str());
+        if (!st.demoSteps.empty()) {
+            ui::textColored(kHeading, "Ce que fait la voiture, dans l'ordre :");
+            numberedSteps(st.demoSteps, st.demoStep);
+        }
+        if (ImGui::Button("Arrêter la démo")) ctx.post("mechanics", "stop");
+        tooltipText("Rend la voiture et remet la vitesse du jeu à 1. Le bouton Reset du freeplay l'arrête aussi.");
+        return;
+    }
+    if (st.demoEnded) {
+        const mech::FocusInfo& fi = mech::focusInfo(st.demoFocus);
+        ui::textColored(kGood, std::string("Démo terminée : ") + fi.title);
+        if (worldControl) {
+            if (demoAllowed) {
+                if (ImGui::Button("Rejouer la démo")) ctx.post("mechanics", "demo", {fi.id});
+                ImGui::SameLine();
+            }
+            if (ImGui::Button("À toi : lancer l'exercice")) ctx.post("mechanics", "drill", {fi.id});
+            tooltipText("Lance l'exercice de cette méca, à ton niveau.");
+        }
     }
     if (st.focus == mech::Focus::None) {
         ImGui::TextUnformatted("Mode libre : toutes les mécas activées sont détectées et notées.");
@@ -116,7 +171,7 @@ void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, const std::
             numberedSteps(r.steps, -1);
         }
     }
-    if (st.gameSpeed < 0.999f) {
+    if (st.gameSpeed < 0.999f && !st.demoActive) {
         ImGui::Text("Ralenti : x%s", frNum(st.gameSpeed, 2).c_str());
         ImGui::SameLine();
         if (ImGui::SmallButton("Vitesse normale")) ctx.setCvar("rlt_me_slowmo", "1");
@@ -199,10 +254,14 @@ void renderLexicon() {
 }
 
 // Beginner path: every exercise in order, with its buttons (exercise, "parcours complet", back to level 1).
-void renderPath(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& rows, bool worldControl) {
+void renderPath(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& rows, bool worldControl,
+                bool demoAllowed) {
     ui::separatorText("Parcours conseillé");
     ui::textColored(kGood, mech::pathRule());
     ImGui::TextDisabled("Exercice : la voiture est placée pour toi. Parcours complet : tu fais toutes les étapes toi-même.");
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextDisabled("%s", kDemoNote);
+    ImGui::PopTextWrapPos();
     const char* block = "";
     int n = 0;
     for (const mech::PathEntry& e : mech::mechanicsPath()) {
@@ -221,6 +280,12 @@ void renderPath(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& row
         ImGui::SameLine();
         ImGui::TextDisabled("(%s, niveau %d/10)", mech::tierLabel(r->tier), r->levelNumber);
         if (worldControl) {
+            if (r->hasDemo && demoAllowed) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Voir la démo")) ctx.post("mechanics", "demo", {r->id});
+                tooltipText("Ta voiture fait la méca toute seule, au ralenti (freeplay). Démo automatique (timings "
+                            "standards) : elle peut être un peu différente selon ta voiture ou ton framerate.");
+            }
             ImGui::SameLine();
             if (ImGui::SmallButton("Exercice")) {
                 if (kickoffEntry) ctx.post("mechanics", "drill", {r->id, "kickoff"});
@@ -304,7 +369,7 @@ void renderGrid(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& row
     ImGui::Columns(1);
 }
 
-void renderGuides(const std::vector<MechanicsModule::StatRow>& rows) {
+void renderGuides(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& rows, bool demoAllowed) {
     ui::separatorText("Tutoriels");
     ImGui::TextWrapped("Ouvre une méca pour savoir quoi faire, dans l'ordre, pourquoi, et comment savoir que c'est bon. "
                        "Elles sont rangées dans l'ordre du parcours conseillé.");
@@ -314,6 +379,16 @@ void renderGuides(const std::vector<MechanicsModule::StatRow>& rows) {
         if (!ImGui::CollapsingHeader(header.c_str())) continue;
         ImGui::PushID(r.id.c_str());
         ImGui::Indent();
+        if (r.hasDemo) {
+            if (demoAllowed) {
+                if (ImGui::Button("Voir la démo")) ctx.post("mechanics", "demo", {r.id});
+                tooltipText(kDemoNote);
+            } else {
+                ImGui::TextDisabled("Démo automatique : disponible en freeplay");
+            }
+            ImGui::SameLine();
+        }
+        ui::videoSearchButton("Voir des tutos vidéo", videoQuery(r.focus));
         ui::textColored(kHeading, "Ce que c'est :");
         ImGui::TextWrapped("%s", r.intro.c_str());
         for (size_t k = 0; k < r.tutorial.size(); ++k) {
@@ -368,6 +443,8 @@ void renderCommands(UiContext& ctx) {
     ImGui::BulletText("rlt mechanics focus <méca> : ne noter que cette méca (\"off\" pour revenir au mode libre)");
     ImGui::BulletText("rlt mechanics drill <méca> : lancer l'exercice (freeplay)");
     ImGui::BulletText("rlt mechanics drill <méca> full : lancer le parcours complet (toutes les étapes toi-même)");
+    ImGui::BulletText("rlt mechanics demo <méca> : voir la démo automatique (speedflip, flipcancel, halfflip, wavedash, "
+                      "fastaerial, powerslide ; freeplay)");
     ImGui::BulletText("rlt mechanics retry : replacer la voiture pour un nouvel essai");
     ImGui::BulletText("rlt mechanics reset_level <méca> [full|all] : revenir au niveau 1 (exercice, parcours complet ou les deux)");
     ImGui::BulletText("rlt mechanics stop : arrêter le focus et l'exercice (vitesse du jeu remise à 1)");
@@ -397,6 +474,7 @@ void renderMechanicsTab(UiContext& ctx) {
     MechanicsModule::LastAttempt last;
     bool found = false;
     bool worldControl = false;
+    bool freeplay = false;
     {
         auto lk = ctx.engine.lock();
         auto* mod = ctx.engine.get<MechanicsModule>();
@@ -407,7 +485,10 @@ void renderMechanicsTab(UiContext& ctx) {
             last = mod->lastAttempt();
         }
         worldControl = ctx.engine.worldControlAllowed();
+        freeplay = ctx.engine.context().mode == GameMode::Freeplay;
     }
+    // The demos run in freeplay only (Stadium positions), even where the exercises are allowed.
+    const bool demoAllowed = worldControl && freeplay;
     if (!found) {
         ImGui::TextDisabled("Module Mécas mouvement indisponible.");
         return;
@@ -415,13 +496,14 @@ void renderMechanicsTab(UiContext& ctx) {
     ImGui::TextWrapped("Joue normalement : tes mécas de déplacement (réceptions, powerslides, wavedashes, speedflips...) "
                        "sont détectées et notées toutes seules, avec un conseil à chaque fois. Pour t'entraîner sur une "
                        "méca, lance son exercice : la voiture est placée pour toi, elle t'attend jusqu'à ce que tu "
-                       "appuies sur accélérer, et le niveau s'adapte à tes essais.");
+                       "appuies sur accélérer, et le niveau s'adapte à tes essais. Pour voir le geste avant de "
+                       "l'essayer, « Voir la démo » : ta voiture le fait toute seule, au ralenti.");
     renderLexicon();
-    renderStatus(ctx, st, rows, worldControl);
+    renderStatus(ctx, st, rows, worldControl, demoAllowed);
     renderLastAttempt(last);
-    renderPath(ctx, rows, worldControl);
+    renderPath(ctx, rows, worldControl, demoAllowed);
     renderGrid(ctx, rows, st);
-    renderGuides(rows);
+    renderGuides(ctx, rows, demoAllowed);
     renderCommands(ctx);
     ui::separatorText("Réglages");
     ui::moduleSettings(ctx, "mechanics");

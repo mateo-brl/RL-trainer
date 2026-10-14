@@ -463,6 +463,9 @@ TEST(bm_module_hud_panel) {
         for (const auto& l : p.lines) measures = measures || (l.detail && l.text.find("Vitesse de sortie") != std::string::npos);
         CHECK(measures);
     }
+    CHECK(dl.lines3D.empty());  // the projected path of the shot is a prediction: off by default
+    h.set("rlt_bm_draw_trajectory", "1");
+    dl = drawNow(h);
     CHECK(!dl.lines3D.empty() && dl.lines3D.size() <= 100);  // projected path of the shot
     // HUD position follows the settings.
     h.set("rlt_bm_hud_x", "0.5");

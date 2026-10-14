@@ -7,6 +7,10 @@
 // leaves the cached prediction (touch, reset, teleport). draw() only reads the cache. With no physics ticks
 // (replays, local car demolished) the path is computed at draw time from the camera view, at most every 6 frames,
 // without the intercept part.
+//
+// Off by default since v1.0.8. Saved settings of the previous version (config.cfg, which still holds the old "on")
+// are moved once on the first tick (flag "prediction.defaults_v2" in the Store): only a value still equal to the old
+// default changes.
 
 #include <array>
 #include <cstdint>
@@ -24,7 +28,7 @@ namespace rlt {
 
 // Live state for the UI tab (plain copy, take it under the engine lock).
 struct PredictionStatus {
-    bool enabled = true;
+    bool enabled = false;
     bool hidden = false;          // "toggle" / "hide" command
     bool active = false;          // a prediction is available
     bool fromView = false;        // computed from the camera view (replay, no physics ticks)
@@ -116,6 +120,8 @@ public:
     const pr::PredictedPath& path() const { return path_; }
     const pr::PredictedPath& viewPath() const { return viewPath_; }
     const pr::InterceptResult& intercept() const { return intercept_; }
+    // The one-time move of the previous version's saved default ran (flag "prediction.defaults_v2").
+    bool defaultsMigrated() const { return defaultsV2_; }
 
     // Collision world for a setting (0 auto, 1 standard, 2 floor only, 3 none), the map and the ball size.
     static pr::ArenaMode chooseArena(int setting, const GameContext& game, float ballRadius);
@@ -143,6 +149,8 @@ public:
     Color zoneColorOver(const Color& pathBase) const;
 
 private:
+    // Saved settings of the previous version (config.cfg): turn the old default "on" off once (see migrateDefaults).
+    void migrateDefaults(Actions& out);
     void invalidate();
     void updateFrozen(const Snapshot& s, float arenaRadius);
     void onForcedRecompute(const Snapshot& s, int elapsed, float dv, float dp);
@@ -160,6 +168,7 @@ private:
                    const DrawContext& ctx, DrawList& out) const;
 
     PredictionConfig cfg_;
+    bool defaultsV2_ = false;     // migrateDefaults ran (saved)
     pr::CarReachModel reach_;
     pr::PredictedPath path_;      // tick-mode cache
     pr::PredictedPath viewPath_;  // draw-time cache (replays)

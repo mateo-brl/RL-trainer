@@ -102,8 +102,9 @@ void MechanicsModule::describeSettings(SettingsSchema& schema) {
                  "Temps pour lire le résultat avant la relance automatique.", 1);
     drill.toggle("rlt_me_drill_adaptive", &MechanicsConfig::drillAdaptive, true, "Difficulté adaptative",
                  "Ajuste la difficulté de chaque exercice pour que tu réussisses environ 3 essais sur 4.");
-    drill.toggle("rlt_me_guides", &MechanicsConfig::showGuides, true, "Repères 3D",
-                 "Dessine les repères des exercices (couloir, cible, bande sur le mur).");
+    drill.toggle("rlt_me_guides", &MechanicsConfig::showGuides, false, "Repères 3D",
+                 "Dessine les repères des exercices : ligne vers la balle, couloir, cible, bande sur le mur. Désactivé "
+                 "par défaut.");
 
     auto exp = schema.section(&Settings::mechanics, "mechanics", "Réglages experts");
     exp.advanced();
@@ -195,14 +196,16 @@ void MechanicsModule::toast(Actions& out, const std::string& title, const std::s
 // ---- Tick ----------------------------------------------------------------------------------------------
 void MechanicsModule::onTick(const TickContext& ctx, Actions& out) {
     worldControl_ = ctx.worldControlAllowed;
+    // Ticks only come from a running game: config.cfg is loaded, the saved values are the player's.
+    if (ctx.hasSnapshot && !defaultsV2_) migrateDefaults(out);
     if (pendingRelease_) {
         pendingRelease_ = false;
-        if (!drill_.active && !focusSpeedOwned_ && ctx.ownsActivity) releaseActivity();
+        if (!drill_.active && !focusSpeedOwned_ && !demo_.active && ctx.ownsActivity) releaseActivity();
     }
     if (!cfg_.enabled) {
         focusSpeedWanted_ = false;
         restoreWanted_ = false;
-        if (drill_.active || focusSpeedOwned_) stopWorld(ctx, out);
+        if (drill_.active || focusSpeedOwned_ || demo_.active) stopWorld(ctx, out);
         return;
     }
     // Wishes that wait for another module's exercise to end (never stolen from it).
@@ -217,12 +220,15 @@ void MechanicsModule::onTick(const TickContext& ctx, Actions& out) {
         hasPrevSnap_ = false;
         return;
     }
-    if (drill_.active || focusSpeedOwned_) runWorld(ctx, out);
+    if (drill_.active || focusSpeedOwned_ || demo_.active) runWorld(ctx, out);
 
     // While the drill holds its start pose the detectors see nothing (the player may press anything, the car is held).
-    const bool holding = drill_.active && (drill_.phase == Phase::Setup || drill_.phase == Phase::Countdown);
+    // A demo drives the car itself: nothing is graded until the car is back on its wheels after it.
+    const bool holding = (drill_.active && (drill_.phase == Phase::Setup || drill_.phase == Phase::Countdown)) ||
+                         demo_.active;
+    if (quietUntilGrounded_ && !demo_.active && mech::grounded(s.car)) quietUntilGrounded_ = false;
     const bool fullRunning = drill_.active && drill_.full && drill_.phase == Phase::Running && live_;
-    if (holding) {
+    if (holding || quietUntilGrounded_) {
         coach_.reset();
     } else if (resetTicks_ > 0) {
         --resetTicks_;
@@ -274,14 +280,20 @@ void MechanicsModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, A
             held_.reset();
             focusSpeedWanted_ = false;  // a wish made on the previous map does not take the activity on this one
             restoreWanted_ = false;
-            if (drill_.active || focusSpeedOwned_) stopWorld(ctx, out);
-        } else if (!ctx.worldControlAllowed && (drill_.active || focusSpeedOwned_)) {
+            if (drill_.active || focusSpeedOwned_ || demo_.active) stopWorld(ctx, out);
+        } else if (!ctx.worldControlAllowed && (drill_.active || focusSpeedOwned_ || demo_.active)) {
             stopWorld(ctx, out);
         }
         break;
     }
     case GameEventKind::ResetShot:
     case GameEventKind::CarSpawned:
+        // Reset during a demo: the player takes the car back.
+        if (demo_.active) {
+            stopWorld(ctx, out);
+            toast(out, "Mécas mouvement", "Démo arrêtée.", ToastKind::Info);
+            break;
+        }
         // A kickoff speedflip still waiting for the ball (missed, then reset at once) is graded, not dropped.
         if (cfg_.enabled) flushBeforeReset(ctx, out);
         coach_.reset();
@@ -306,12 +318,15 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
     const std::string arg = cmd.args.empty() ? std::string() : cmd.args[0];
     const std::string arg2 = cmd.args.size() > 1 ? cmd.args[1] : std::string();
     if (cmd.name == "stop") {
+        const bool wasDemo = demo_.active;
         const bool wasRunning = drill_.active || focus_ != Focus::None;
         stopWorld(ctx, out);
         restoreWanted_ = false;
         focus_ = Focus::None;
+        demoDone_ = Focus::None;
         applyDetectConfig();
-        if (wasRunning) toast(out, "Mécas mouvement", "Focus et exercice arrêtés.", ToastKind::Info);
+        if (wasDemo) toast(out, "Mécas mouvement", "Démo arrêtée.", ToastKind::Info);
+        else if (wasRunning) toast(out, "Mécas mouvement", "Focus et exercice arrêtés.", ToastKind::Info);
         return;
     }
     if (cmd.name == "reset_stats") {
@@ -363,9 +378,10 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
         restoreSpeed(ctx, out);
         return;
     }
-    if (cmd.name != "focus" && cmd.name != "drill") {
+    if (cmd.name != "focus" && cmd.name != "drill" && cmd.name != "demo") {
         toast(out, "Mécas mouvement",
-              "Commande inconnue : " + cmd.name + " (focus, drill, stop, retry, reset_level, reset_stats, restore_speed).",
+              "Commande inconnue : " + cmd.name +
+                  " (focus, drill, demo, stop, retry, reset_level, reset_stats, restore_speed).",
               ToastKind::Warning);
         return;
     }
@@ -384,6 +400,10 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
     }
     if (cmd.name == "focus") {
         setFocus(f, ctx, out);
+        return;
+    }
+    if (cmd.name == "demo") {
+        startDemo(f, ctx, out);
         return;
     }
     // "drill speedflip kickoff": straight to the kickoff step (niveau 4) for a player who already has the flip.
@@ -405,7 +425,7 @@ void MechanicsModule::setFocus(Focus f, const TickContext& ctx, Actions& out) {
     focusFromDrill_ = false;
     focus_ = f;
     applyDetectConfig();
-    if (cfg_.slowMotion < 0.999f && !drill_.active && !focusSpeedOwned_) {
+    if (cfg_.slowMotion < 0.999f && !drill_.active && !focusSpeedOwned_ && !demo_.active) {
         takeFocusSpeed(ctx, out);
         if (focusSpeedWanted_)
             toast(out, "Mécas mouvement", "Un autre exercice est en cours : le ralenti s'appliquera quand il se terminera.",
@@ -429,6 +449,9 @@ void MechanicsModule::startDrill(Focus f, const TickContext& ctx, Actions& out, 
     focusSpeedOwned_ = false;
     focusSpeedWanted_ = false;  // the drill applies the slow motion itself
     restoreWanted_ = false;
+    clearDemo();                // a running demo gives way to the drill
+    demoDone_ = Focus::None;
+    quietUntilGrounded_ = false;
     drill_ = Drill{};
     drill_.active = true;
     drill_.full = full;
@@ -451,7 +474,8 @@ void MechanicsModule::emitSpeed(float speed, Actions& out) {
 
 void MechanicsModule::takeFocusSpeed(const TickContext& ctx, Actions& out) {
     focusSpeedWanted_ = false;
-    if (focus_ == Focus::None || drill_.active || focusSpeedOwned_ || cfg_.slowMotion >= 0.999f) return;  // obsolete
+    if (focus_ == Focus::None || drill_.active || focusSpeedOwned_ || demo_.active || cfg_.slowMotion >= 0.999f)
+        return;  // obsolete
     restoreWanted_ = false;  // the newer slow motion wish replaces a waiting "restore_speed"
     if (ctx.worldControlAllowed && ctx.otherActivityRunning) {
         focusSpeedWanted_ = true;  // slow motion is not worth stopping another exercise: retried every tick
@@ -480,6 +504,7 @@ void MechanicsModule::stopWorld(const TickContext& ctx, Actions& out) {
     focusSpeedWanted_ = false;
     if (drill_.active && focusFromDrill_) focus_ = Focus::None;  // the drill chose the focus: it ends with it
     focusFromDrill_ = false;
+    clearDemo();
     drill_ = Drill{};
     setup_ = mech::DrillSetup{};
     ready_.stop();
@@ -501,6 +526,7 @@ void MechanicsModule::onActivityStopped() {
     focusSpeedWanted_ = false;
     if (drill_.active && focusFromDrill_) focus_ = Focus::None;
     focusFromDrill_ = false;
+    clearDemo();
     drill_ = Drill{};
     setup_ = mech::DrillSetup{};
     ready_.stop();
@@ -552,6 +578,10 @@ void MechanicsModule::runWorld(const TickContext& ctx, Actions& out) {
         stopWorld(ctx, out);
         return;
     }
+    if (demo_.active) {
+        runDemo(ctx, out);
+        return;
+    }
     const float desired = clampf(cfg_.slowMotion, 0.25f, 1.f);
     if (std::fabs(desired - appliedSpeed_) > 0.001f) emitSpeed(desired, out);
     if (focusSpeedOwned_ && !drill_.active) {
@@ -597,13 +627,14 @@ void MechanicsModule::beginAttempt(const TickContext& ctx, Actions& out, Start s
     applyHold(hold_, nullptr, out);
     if (setup_.kickoffRules) {
         // Match conditions: limited boost (the freeplay unlimited boost would falsify the times; the engine puts the
-        // player's rules back when the activity ends) and every boost pad respawned.
+        // player's rules back when the activity ends). The boost pads are respawned at GO (launch), not on this
+        // teleport tick: the pads the teleport runs over are taken after a reset sent now (KickoffModule::placeRep).
         out.boostRules = BoostRules{false, false};
-        out.resetPickups = true;
     }
     coach_.kickoff().setManual(setup_.kickoff);
     coach_.reset();
     resetTicks_ = 0;
+    quietUntilGrounded_ = false;
     held_.reset();
     heldFor_ = HeldFor::None;
     hanging_.stop();
@@ -643,6 +674,10 @@ void MechanicsModule::beginAttempt(const TickContext& ctx, Actions& out, Start s
 
 void MechanicsModule::launch(const TickContext& ctx, Actions& out) {
     const Snapshot& s = ctx.snap;
+    // Every pad back at GO: the car was held on its spawn during the whole countdown (a reset on the teleport tick
+    // came before the pads the teleport took, see KickoffModule::placeRep). The kickoff car is still at GO, so this
+    // tick sends no setCar.
+    if (setup_.kickoffRules) out.resetPickups = true;
     // Launch velocity (a car held still, like the kickoff, needs nothing: its inputs simply start to count).
     if (length(setup_.car.vel) > 1e-3f || length(setup_.car.angVel) > 1e-3f) {
         CarPlacement c = setup_.car;
@@ -813,6 +848,10 @@ void MechanicsModule::flushBeforeReset(const TickContext& ctx, Actions& out) {
 
 void MechanicsModule::restoreSpeed(const TickContext& ctx, Actions& out) {
     restoreWanted_ = false;
+    if (demo_.active) {
+        toast(out, "Mécas mouvement", "La démo remet la vitesse à 1 quand elle se termine.", ToastKind::Info);
+        return;
+    }
     if (drill_.active || focusSpeedOwned_ || focusSpeedWanted_) {
         toast(out, "Mécas mouvement", "Le ralenti suit le réglage « Ralenti » : mets-le à 1 ou arrête l'exercice.",
               ToastKind::Info);
@@ -831,6 +870,173 @@ void MechanicsModule::restoreSpeed(const TickContext& ctx, Actions& out) {
     emitSpeed(1.f, out);
     pendingRelease_ = true;  // owner during this callback: the restore is routed, the activity is given back next tick
     toast(out, "Mécas mouvement", "Vitesse du jeu remise à 1.", ToastKind::Ok);
+}
+
+// ---- Demo ----------------------------------------------------------------------------------------------------
+void MechanicsModule::startDemo(Focus f, const TickContext& ctx, Actions& out) {
+    if (!mech::hasDemo(f)) {
+        toast(out, "Mécas mouvement",
+              "Pas de démo automatique pour " + focusTitle(f) + " : regarde les tutos vidéo de la page Mécas mouvement.",
+              ToastKind::Info);
+        return;
+    }
+    // Freeplay only: the demo places the car at Stadium positions (kickoff diagonal...), which can be inside the
+    // geometry of a workshop or custom training map even when the player allowed the exercises there.
+    if (!ctx.worldControlAllowed || ctx.game.mode != GameMode::Freeplay) {
+        toast(out, "Mécas mouvement", "Démo disponible en freeplay uniquement.", ToastKind::Warning);
+        return;
+    }
+    if (!requestActivity("Mécas : démo " + focusTitle(f))) {
+        toast(out, "Mécas mouvement", "Impossible de lancer la démo ici.", ToastKind::Warning);
+        return;
+    }
+    // A drill or the focus slow motion of this module gives way to the demo (the activity stays ours).
+    if (drill_.active && focusFromDrill_) focus_ = Focus::None;
+    focusFromDrill_ = false;
+    drill_ = Drill{};
+    setup_ = mech::DrillSetup{};
+    ready_.stop();
+    hanging_.stop();
+    tracker_.clear();
+    live_.reset();
+    held_.reset();
+    heldFor_ = HeldFor::None;
+    resetTicks_ = 0;
+    coach_.kickoff().setManual(false);
+    focusSpeedOwned_ = false;
+    focusSpeedWanted_ = false;
+    restoreWanted_ = false;
+    pendingRelease_ = false;
+    demo_ = Demo{};
+    demo_.active = true;
+    demo_.focus = f;
+    demo_.phase = DemoPhase::Setup;
+    demoDone_ = Focus::None;
+    applyDetectConfig();
+    toast(out, "Démo : " + focusTitle(f),
+          "Regarde ta voiture : elle fait la méca toute seule, au ralenti. Reset pour arrêter.", ToastKind::Info);
+}
+
+void MechanicsModule::runDemo(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
+    const mech::DemoScript& d = demo_.script;
+    switch (demo_.phase) {
+    case DemoPhase::Setup: {
+        demo_.script = mech::makeDemo(demo_.focus, s.car.team, cfg_.speedflipAngle);
+        hold_ = HoldPose{};
+        hold_.car = demo_.script.car;
+        hold_.ball = demo_.script.ball;  // parked out of the way
+        hold_.boost = demo_.script.car.boost;
+        applyHold(hold_, nullptr, out);
+        if (demo_.script.kickoffBoost) out.boostRules = BoostRules{false, false};  // restored by the engine
+        if (std::fabs(demo_.script.speed - appliedSpeed_) > 0.001f) emitSpeed(demo_.script.speed, out);
+        ready_.start(s.time, ReadyPhase::timed(demo_.script.countdown));
+        demo_.phase = DemoPhase::Countdown;
+        break;
+    }
+    case DemoPhase::Countdown:
+        if (!ready_.update(s, out)) {
+            applyHold(hold_, &s, out);
+            break;
+        }
+        // GO: launch velocity (a floor car keeps the height its suspension settled at), then the inputs of tick 0.
+        if (length(d.car.vel) > 1e-3f) {
+            CarPlacement c = d.car;
+            c.boost.reset();
+            if (c.pos.z <= kSettleMaxZ && s.car.valid && length2D(s.car.pos - c.pos) <= 30.f)
+                c.pos.z = clampf(s.car.pos.z, c.pos.z - kSettleBand, c.pos.z + kSettleBand);
+            out.setCar = c;
+        }
+        demo_.phase = DemoPhase::Playing;
+        demo_.goFrame = s.frame;
+        demo_.tick = 0;
+        pilot_.start(s.frame);
+        out.overrideInputs = pilot_.update(d, s);
+        break;
+    case DemoPhase::Playing:
+        demo_.tick = static_cast<int>(s.frame - demo_.goFrame);
+        if (demo_.tick >= d.length) {
+            finishDemo(ctx, out);
+            break;
+        }
+        out.overrideInputs = pilot_.update(d, s);
+        break;
+    }
+}
+
+void MechanicsModule::finishDemo(const TickContext& ctx, Actions& out) {
+    demoDone_ = demo_.focus;
+    demoDoneTime_ = ctx.hasSnapshot ? ctx.snap.time : nowTime_;
+    clearDemo();
+    // Normal end, still the owner: the speed restore is routed now, the activity is given back on the next tick.
+    if (appliedSpeed_ != 1.f) emitSpeed(1.f, out);
+    pendingRelease_ = true;
+    ready_.stop();
+    coach_.reset();
+    // A focus with its slow motion takes it back once the demo is over.
+    if (focus_ != Focus::None && cfg_.slowMotion < 0.999f) focusSpeedWanted_ = true;
+    // The HUD only keeps the panel of the module with the latest result once the activity is released: say it here too.
+    toast(out, "Démo terminée : " + focusTitle(demoDone_),
+          "À toi ! Menu, page Mécas mouvement : « Rejouer la démo » ou « À toi : lancer l'exercice ».", ToastKind::Ok);
+}
+
+void MechanicsModule::clearDemo() {
+    if (demo_.active) quietUntilGrounded_ = true;  // the car may still be in the air: not the player's move
+    demo_ = Demo{};
+}
+
+bool MechanicsModule::showDemoEnd(float now) const {
+    if (demoDone_ == Focus::None || demo_.active || drill_.active) return false;
+    if (last_.valid && last_.time > demoDoneTime_) return false;  // a newer result of the player
+    const float age = now - demoDoneTime_;
+    return age >= -0.05f && age <= 8.f;
+}
+
+void MechanicsModule::drawDemo(float now, DrawPanel& p) const {
+    const Color white = colors::White, cyan(0, 220, 255, 255), green(80, 230, 80, 255), accent(255, 199, 64, 255),
+                light(215, 215, 215, 255), done(150, 150, 150, 255);
+    auto line = [&p](std::string text, Color c, float scale = 1.f) {
+        PanelLine l;
+        l.text = std::move(text);
+        l.color = c;
+        l.scale = scale;
+        p.lines.push_back(std::move(l));
+    };
+    if (!demo_.active) {
+        p.title = "Démo terminée : " + focusTitle(demoDone_);
+        p.titleColor = cyan;
+        line("À toi ! Dans le menu, page Mécas mouvement :", green);
+        line("« Rejouer la démo » ou « À toi : lancer l'exercice »", white);
+        return;
+    }
+    p.title = "Démo : " + focusTitle(demo_.focus);
+    p.titleColor = cyan;
+    line("Démo automatique (timings standards)", light, 0.85f);
+    const mech::DemoScript& d = demo_.script;
+    const int current = demo_.phase == DemoPhase::Playing ? pilot_.step() : -1;
+    for (size_t i = 0; i < d.steps.size(); ++i) {
+        const int k = static_cast<int>(i);
+        const std::string text = std::to_string(i + 1) + ". " + d.steps[i];
+        line(text, k == current ? accent : (current > k ? done : white), k == current ? 1.1f : 1.f);
+    }
+    if (demo_.phase == DemoPhase::Playing) {
+        std::string speed = formatNumber(d.speed, 1);
+        std::replace(speed.begin(), speed.end(), '.', ',');
+        line("Ralenti x" + speed + ". Reset pour arrêter.", light, 0.85f);
+    } else {
+        const std::string ready = ready_.hudLine(now);
+        line(ready.empty() ? std::string("Regarde ta voiture") : "Regarde ta voiture. " + ready, cyan);
+    }
+}
+
+// The previous version drew the drills' 3D lines by default ("Repères 3D"). A player who still has that saved value
+// never chose it: move them once to the new default (off). A value the player changed is never touched.
+void MechanicsModule::migrateDefaults(Actions& out) {
+    defaultsV2_ = true;
+    out.requestSave = true;
+    if (!cfg_.showGuides) return;
+    out.setCvars.emplace_back("rlt_me_guides", "0");
+    out.toasts.push_back(trajectoriesMigrationToast());  // the same toast for every trajectory (merged by the engine)
 }
 
 // ---- "Parcours complet" ----------------------------------------------------------------------------------
@@ -1084,7 +1290,8 @@ void MechanicsModule::emitAttempt(const MechGrade& g, const TickContext& ctx, Ac
 // Compact HUD (the default): at most three lines, the result (verdict and score), one tip in words, and during an
 // exercise the action to do now. Measures, levels, steps and counters are `detail` lines (detailed HUD only).
 void MechanicsModule::draw(const ViewContext& view, const DrawContext& ctx, DrawList& out) {
-    if (!cfg_.enabled || !cfg_.hud) return;
+    // The demo's steps are part of the demo: shown even when the "Dernière méca" panel is turned off.
+    if (!cfg_.enabled || (!cfg_.hud && !demo_.active)) return;
     if (ctx.game.mode == GameMode::Replay) return;  // no live data in replays
     const float now = ctx.hasSnapshot ? ctx.snap.time : nowTime_;
     const SpeedUnit unit = speedUnit();
@@ -1128,6 +1335,11 @@ void MechanicsModule::draw(const ViewContext& view, const DrawContext& ctx, Draw
     bool showResult = last_.valid && (persistent || (age >= -0.05f && age <= cfg_.hudSeconds));
     const AttemptResult& r = last_.result;
 
+    if (demo_.active || showDemoEnd(now)) {
+        drawDemo(now, p);
+        out.panel(std::move(p));
+        return;
+    }
     if (drill_.active) {
         const int lvl = mech::displayLevel(levelFor(drill_.focus, drill_.full));
         p.title = std::string(drill_.full ? "Parcours complet " : "Exercice ") + focusTitle(drill_.focus) + " : niveau " +
@@ -1311,6 +1523,20 @@ MechanicsModule::Status MechanicsModule::status() const {
     s.speedWaiting = speedWaiting();
     s.chainDashes = coach_.chainCount();
     s.sessionAttempts = stats_.sessionTotal();
+    if (demo_.active) {
+        s.demoActive = true;
+        s.demoFocus = demo_.focus;
+        s.gameSpeed = appliedSpeed_;
+        s.demoPhase = demo_.phase == DemoPhase::Playing ? "Démo en cours" : "Mise en place";
+        if (demo_.phase != DemoPhase::Setup) {
+            s.demoVariant = demo_.script.variant;
+            s.demoSteps = demo_.script.steps;
+        }
+        if (demo_.phase == DemoPhase::Playing) s.demoStep = pilot_.step();
+    } else if (showDemoEnd(nowTime_)) {
+        s.demoEnded = true;
+        s.demoFocus = demoDone_;
+    }
     if (drill_.active) {
         s.full = drill_.full;
         s.level = levelFor(drill_.focus, drill_.full);
@@ -1399,6 +1625,7 @@ std::vector<MechanicsModule::StatRow> MechanicsModule::statRows() const {
         r.checksFirst = mech::drillCheckLines(mech::makeDrill(f, 0.f, 0, 0, rng), coach_.cfg, speedUnit());
         r.checksLast = mech::drillCheckLines(mech::makeDrill(f, 1.f, 0, 0, rng), coach_.cfg, speedUnit());
         r.checksNow = mech::drillCheckLines(mech::makeDrill(f, r.level, 0, 0, rng), coach_.cfg, speedUnit());
+        r.hasDemo = mech::hasDemo(f);
         rows.push_back(std::move(r));
     }
     return rows;
@@ -1407,6 +1634,7 @@ std::vector<MechanicsModule::StatRow> MechanicsModule::statRows() const {
 // ---- Persistence ---------------------------------------------------------------------------------------
 void MechanicsModule::save(Store& store) const {
     store.setInt("mechanics.version", 1);
+    store.setInt("mechanics.defaults_v2", defaultsV2_ ? 1 : 0);
     stats_.save(store);
     for (int i = 0; i < mech::kFocusCount; ++i) {
         const std::string id = mech::focusInfo(static_cast<Focus>(i)).id;
@@ -1416,6 +1644,7 @@ void MechanicsModule::save(Store& store) const {
 }
 
 void MechanicsModule::load(const Store& store) {
+    defaultsV2_ = store.getInt("mechanics.defaults_v2", 0) != 0;
     stats_.load(store);
     for (int i = 0; i < mech::kFocusCount; ++i) {
         const std::string id = mech::focusInfo(static_cast<Focus>(i)).id;

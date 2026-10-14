@@ -94,14 +94,28 @@ Spawn facing(const Vec3& carPos, const Vec3& dir, const GoalFrame& goal) {
 
 } // namespace
 
-float movingRoofSpeed(float level, float firstMovingLevel) {
+float dribbleSpeed(float level) { return lerpf(kDribbleSpeedMin, kDribbleSpeedMax, clamp01(level)); }
+
+Spawn dribbleSpawn(float level, float fixedSpeed, const GoalFrame& goal, const RoofParams& roof, Rng& rng) {
     const float d = clamp01(level);
-    const float first = clamp01(firstMovingLevel);
-    if (d < first + 0.1f) return 300.f;
-    return lerpf(400.f, 1100.f, clamp01((d - first - 0.1f) / std::max(0.05f, 0.9f - first)));
+    const float dist = lerpf(kDribbleDistMin, kDribbleDistMax, d) + rng.range(0.f, kDribbleDistSpread);
+    const float xr = lerpf(200.f, 1000.f, d);
+    Vec3 carPos{rng.range(-xr, xr), goal.sign * (kGoalLineY - dist), kCarRestZ};
+    carPos = clampToField(carPos, 300.f);
+    carPos.z = kCarRestZ;
+    const Vec3 aim{0.f, goal.planeY(), 0.f};
+    Spawn sp = facing(carPos, normalize(flat(aim - carPos), {0.f, goal.sign, 0.f}), goal);
+    const Basis b = basisFromRot(sp.car.rot);
+    sp.ball = heldBall(roofSpawn(carPos, b, roof.hb, roof.ballRadius, roof.gap));
+    sp.ballOnRoof = true;
+    const float speed = fixedSpeed >= 0.f ? fixedSpeed : dribbleSpeed(d);
+    sp.carReleaseVel = flat(b.fwd) * speed;
+    sp.ballReleaseVel = sp.carReleaseVel;
+    return sp;
 }
 
 Spawn flickSpawn(float level, bool moving, float fixedSpeed, const GoalFrame& goal, const RoofParams& roof, Rng& rng) {
+    if (moving) return dribbleSpawn(level, fixedSpeed, goal, roof, rng);
     const float d = clamp01(level);
     const float dist = lerpf(2000.f, 4500.f, d);
     const float xr = lerpf(200.f, 1400.f, d);
@@ -113,14 +127,10 @@ Spawn flickSpawn(float level, bool moving, float fixedSpeed, const GoalFrame& go
     const Basis b = basisFromRot(sp.car.rot);
     sp.ball = heldBall(roofSpawn(carPos, b, roof.hb, roof.ballRadius, roof.gap));
     sp.ballOnRoof = true;
-    const float speed = moving ? (fixedSpeed >= 0.f ? fixedSpeed : movingRoofSpeed(d, 0.f)) : 0.f;
-    sp.carReleaseVel = flat(b.fwd) * speed;
-    sp.ballReleaseVel = sp.carReleaseVel;
     return sp;
 }
 
-Spawn targetSpawn(TargetSetup setup, float level, const GoalFrame& goal, const RoofParams& roof, Rng& rng,
-                  const TargetOptions& opt) {
+Spawn targetSpawn(TargetSetup setup, float level, const GoalFrame& goal, const RoofParams& roof, Rng& rng) {
     const float d = clamp01(level);
     const float s = goal.sign;
     switch (setup) {
@@ -151,16 +161,7 @@ Spawn targetSpawn(TargetSetup setup, float level, const GoalFrame& goal, const R
         sp.carReleaseVel = {};
         return sp;
     }
-    case TargetSetup::Roof: {
-        const bool moving = opt.roofMovingAllowed && d > kRoofMovingFirstLevel && rng.chance(0.6f);
-        Spawn sp = flickSpawn(level, false, -1.f, goal, roof, rng);
-        if (moving) {
-            const float speed = movingRoofSpeed(d, kRoofMovingFirstLevel);
-            sp.carReleaseVel = flat(basisFromRot(sp.car.rot).fwd) * speed;
-            sp.ballReleaseVel = sp.carReleaseVel;
-        }
-        return sp;
-    }
+    case TargetSetup::Roof: return dribbleSpawn(level, -1.f, goal, roof, rng);
     case TargetSetup::Rolling:
     case TargetSetup::Mix:
     default: {

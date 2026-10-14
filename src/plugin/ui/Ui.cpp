@@ -6,6 +6,14 @@
 
 #include "imgui.h"
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 namespace rlt {
 
 // ---- UiContext -------------------------------------------------------------------------------------------
@@ -343,6 +351,28 @@ void moduleSettings(const UiContext& ctx, const std::string& module) {
         }
         first = false;
     }
+}
+
+bool openUrl(const std::string& url) {
+#ifdef _WIN32
+    const int n = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
+    if (n > 0) {
+        std::wstring w(static_cast<size_t>(n), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, &w[0], n);
+        const auto r = reinterpret_cast<intptr_t>(ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+        if (r > 32) return true;
+    }
+#endif
+    ImGui::SetClipboardText(url.c_str());
+    return false;
+}
+
+void videoSearchButton(const char* label, const std::string& query) {
+    std::string q;
+    for (char c : query) q += c == ' ' ? '+' : c;
+    if (ImGui::Button(label)) openUrl("https://www.youtube.com/results?search_query=" + q);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Ouvre une recherche YouTube de tutos dans ton navigateur (le jeu reste ouvert).");
 }
 
 } // namespace ui

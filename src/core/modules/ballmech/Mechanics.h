@@ -24,6 +24,10 @@ enum class Mech : int {
 };
 constexpr int kMechCount = static_cast<int>(Mech::Count);
 
+// How hard a mechanic is to learn, shown as a plain tag in the tab ("Débutant", "Intermédiaire", "Avancé").
+enum class Difficulty : int { Beginner = 0, Intermediate, Advanced };
+const char* difficultyLabel(Difficulty d);
+
 struct MechInfo {
     Mech mech;
     const char* id;          // "flipreset" (commands, persistence)
@@ -36,11 +40,15 @@ struct MechInfo {
     float drillTimeout;      // seconds per drill attempt
     bool airborneDrill;      // the drill attempt fails when the car lands back on the floor
     std::array<const char*, 4> hudKeys;  // metrics shown first in the HUD ("" = none)
+    Difficulty difficulty;
+    std::array<const char*, 4> steps;    // French: what to do, in order (tab guide, placeholders as in `key`)
 };
 
 const MechInfo& mechInfo(Mech m);
 inline const MechInfo& mechInfo(int i) { return mechInfo(static_cast<Mech>(i)); }
 bool mechFromId(const std::string& id, Mech& out);
+// Every mechanic once, easiest first (the order of the tab): basics before advanced mechanics.
+const std::array<Mech, kMechCount>& learningOrder();
 
 // Mechanic graded by a detector grade (musty / breezi / air roll shots get their own entries).
 Mech mechOf(const MechGrade& g);

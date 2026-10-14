@@ -47,7 +47,7 @@ TouchMetrics cleanMetrics() {
 std::vector<Tip> diag(TouchType type, const TouchMetrics& m, const ControlSummary& c) {
     const ScoreParams sp;
     const TouchScore s = scoreTouch(m, c, sp);
-    return diagnose(type, m, c, s, sp, DiagnosisParams{}, gamepadProfile(), KeyStyle::Auto, SpeedUnit::Kph);
+    return diagnose(type, m, c, s, sp, DiagnosisParams{}, gamepadProfile(), KeyStyle::Auto);
 }
 
 // Ground touch at the nose of a car driving +x at `carVx`, ball velocity `ballVel`, metrics computed from the
@@ -499,15 +499,52 @@ TEST(ft_diagnose_perfect_touch_has_no_tip) {
     CHECK(diag(TouchType::Ground, invalid, noControl()).empty());
 }
 
-TEST(ft_diagnose_too_fast_uses_real_boost_button_and_unit) {
+// Tips are plain words: the size of the mistake is said ("beaucoup trop vite"), the measure stays in the tab.
+TEST(ft_diagnose_too_fast_uses_real_boost_button_and_plain_words) {
     TouchMetrics m = cleanMetrics();
     m.along = 500.f;
     m.relSpeed = 500.f;
-    const auto tips = diag(TouchType::Ground, m, fullControl());
+    auto tips = diag(TouchType::Ground, m, fullControl());
     CHECK(hasTip(tips, "ft.too_fast"));
     CHECK(contains(tips.front().text, "Boost (B)"));
-    CHECK(contains(tips.front().text, "+18.0 km/h"));
+    CHECK(contains(tips.front().text, "Tu arrives trop vite"));
     CHECK(!hasTip(tips, "ft.too_slow"));
+    m.along = 700.f;
+    m.relSpeed = 700.f;
+    tips = diag(TouchType::Ground, m, fullControl());
+    CHECK(!tips.empty() && contains(tips.front().text, "beaucoup trop vite"));
+}
+
+TEST(ft_diagnose_tips_have_no_numbers) {
+    const std::vector<TouchMetrics> cases = [] {
+        std::vector<TouchMetrics> v;
+        TouchMetrics fast = cleanMetrics();
+        fast.along = 700.f;
+        fast.relSpeed = 700.f;
+        fast.boostAtContact = true;
+        v.push_back(fast);
+        TouchMetrics slow = cleanMetrics();
+        slow.along = -600.f;
+        slow.relSpeed = 600.f;
+        slow.ballAway = true;
+        v.push_back(slow);
+        TouchMetrics head = slow;
+        head.ballAway = false;
+        head.ballComing = true;
+        v.push_back(head);
+        TouchMetrics side = cleanMetrics();
+        side.cross = 500.f;
+        side.lateralOffset = 80.f;
+        v.push_back(side);
+        return v;
+    }();
+    for (const auto& m : cases)
+        for (TouchType t : {TouchType::Ground, TouchType::Bounce, TouchType::Air})
+            for (const auto& tip : diag(t, m, noControl())) {
+                CHECK_MSG(tip.text.find_first_of("0123456789") == std::string::npos, tip.text);
+                CHECK_MSG(!contains(tip.text, "km/h") && !contains(tip.text, "°"), tip.text);
+                CHECK_MSG(noEmDash(tip.text), tip.text);
+            }
 }
 
 TEST(ft_diagnose_too_slow_and_head_on) {
@@ -517,7 +554,7 @@ TEST(ft_diagnose_too_slow_and_head_on) {
     m.ballAway = true;
     auto tips = diag(TouchType::Ground, m, fullControl());
     CHECK(hasTip(tips, "ft.too_slow"));
-    CHECK(contains(tips.front().text, "-18.0 km/h"));
+    CHECK(contains(tips.front().text, "Accélère"));
     m.ballAway = false;
     m.ballComing = true;
     tips = diag(TouchType::Ground, m, fullControl());
@@ -617,11 +654,11 @@ TEST(ft_diagnose_uses_chosen_button_style) {
     m.boostAtContact = true;
     const TouchScore s = scoreTouch(m, fullControl(), sp);
     const auto ps = diagnose(TouchType::Ground, m, fullControl(), s, sp, DiagnosisParams{}, gamepadProfile(),
-                             KeyStyle::PlayStation, SpeedUnit::Kph);
+                             KeyStyle::PlayStation);
     CHECK(hasTip(ps, "ft.boost"));
     CHECK(!ps.empty() && ps.front().text == "Relâche Boost (Rond) avant le contact.");
     const auto xb = diagnose(TouchType::Ground, m, fullControl(), s, sp, DiagnosisParams{}, gamepadProfile(),
-                             KeyStyle::Xbox, SpeedUnit::Kph);
+                             KeyStyle::Xbox);
     CHECK(!xb.empty() && xb.front().text == "Relâche Boost (B) avant le contact.");
 
     TouchMetrics fast = cleanMetrics();
@@ -629,10 +666,9 @@ TEST(ft_diagnose_uses_chosen_button_style) {
     fast.relSpeed = 500.f;
     const TouchScore fs = scoreTouch(fast, fullControl(), sp);
     const auto tips = diagnose(TouchType::Ground, fast, fullControl(), fs, sp, DiagnosisParams{}, gamepadProfile(),
-                               KeyStyle::PlayStation, SpeedUnit::Mph);
+                               KeyStyle::PlayStation);
     CHECK(hasTip(tips, "ft.too_fast"));
     CHECK(!tips.empty() && contains(tips.front().text, "Boost (Rond)"));
-    CHECK(!tips.empty() && contains(tips.front().text, "mph"));
     for (const auto& t : tips) CHECK(!contains(t.text, "(B)"));
 }
 
@@ -716,6 +752,19 @@ TEST(ft_diagnose_drop_speed_air_and_control) {
     tips = diag(TouchType::Air, cleanMetrics(), lost);
     CHECK(hasTip(tips, "ft.lost_control"));
     CHECK(!hasTip(tips, "ft.oversteer"));
+}
+
+// One tip on the HUD: a ball lost because the player came in too fast gets the cause ("trop vite"), not the
+// consequence ("reste collé à la balle"). Without a cause, the control tip stays first.
+TEST(ft_diagnose_cause_comes_before_lost_control) {
+    TouchMetrics ram = cleanMetrics();
+    ram.along = 800.f;
+    ram.relSpeed = 800.f;
+    auto tips = diag(TouchType::Ground, ram, noControl());
+    CHECK(hasTip(tips, "ft.lost_control"));
+    CHECK(!tips.empty() && tips.front().code == "ft.too_fast");
+    tips = diag(TouchType::Ground, cleanMetrics(), noControl());
+    CHECK(!tips.empty() && tips.front().code == "ft.lost_control");
 }
 
 TEST(ft_diagnose_tips_sorted_by_weight_and_clean_text) {

@@ -178,6 +178,9 @@ struct TouchScore {
 };
 
 TouchScore scoreTouch(const TouchMetrics& m, const ControlSummary& c, const ScoreParams& p);
+// Score of the touch alone, 0..100: the speed and contact parts with their weights renormalised, whatever happens
+// to the ball afterwards (no control part, no lost cap). First step of the drills.
+float touchOnlyScore(const TouchScore& s, const ScoreParams& p);
 
 // ---- Diagnosis ----------------------------------------------------------------------------------------
 struct DiagnosisParams {
@@ -189,13 +192,14 @@ struct DiagnosisParams {
     float contactHighZ = 0.1f; // contactDir.z above which a ground contact is "too high"
 };
 
-// Tips in French (imperative, one short sentence) sorted by weight (points lost), most important first.
-// Uses the player's real buttons (actionPrompt with the chosen button style) and speed unit.
-// Speed tips along the ball travel: car faster -> "too_fast"; ball coming at the car -> "head_on"; ball going
-// away (or crossing while really faster than the car) -> "too_slow"; a crossing ball otherwise -> "angle" only.
+// Tips in French (imperative, one short sentence in plain words, no numbers: the measures stay in the tab) sorted
+// by weight (points lost), most important first. Uses the player's real buttons (actionPrompt with the chosen
+// button style). Speed tips along the ball travel: car faster -> "too_fast"; ball coming at the car -> "head_on";
+// ball going away (or crossing while really faster than the car) -> "too_slow"; a crossing ball otherwise ->
+// "angle" only.
 std::vector<Tip> diagnose(TouchType type, const TouchMetrics& m, const ControlSummary& c, const TouchScore& s,
                           const ScoreParams& sp, const DiagnosisParams& dp, const PlayerProfile& profile,
-                          KeyStyle style, SpeedUnit unit);
+                          KeyStyle style);
 
 // Short feedback headline for a score ("Belle touche !", "Bonne touche", "Touche correcte", "Touche ratée").
 const char* scoreHeadline(float score);

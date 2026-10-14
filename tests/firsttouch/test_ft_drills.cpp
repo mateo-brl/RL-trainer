@@ -272,6 +272,7 @@ TEST(ft_drill_unknown_type_and_disabled_module) {
 
 TEST(ft_drill_places_ball_after_grant_timeout_lowers_level_then_next_rep) {
     Harness h;
+    setDrillLevel(h.mod, DrillType::RollIn, 0.5f);  // a returning player at niveau 6 (7.5 s per ball)
     const Actions place = startDrill(h, "roll_in");
     CHECK(h.host.ownsActivity(&h.mod));
     CHECK(contains(h.host.lastName, "Roulante vers toi"));
@@ -283,24 +284,26 @@ TEST(ft_drill_places_ball_after_grant_timeout_lowers_level_then_next_rep) {
     auto st = h.mod.drillStatus();
     CHECK(st.active);
     CHECK(st.phase == FirstTouchModule::DrillPhase::WaitTouch);
-    CHECK_NEAR(st.timeLeft, 6.f, 0.02f);
-    CHECK_NEAR(h.mod.drillLevel(DrillType::RollIn).level, 0.2f, 1e-5f);
+    CHECK_NEAR(st.timeLeft, 7.5f, 0.02f);
+    CHECK(st.playerLevel == 6);
+    CHECK_NEAR(h.mod.drillLevel(DrillType::RollIn).level, 0.5f, 1e-5f);
 
-    // No touch for 6 s while driving: failed rep, level down.
-    const Actions wait = tickRange(h, 102, 101 + 724, true);
+    // No touch for 7.5 s while driving: failed rep, level down.
+    const Actions wait = tickRange(h, 102, 101 + 904, true);
     CHECK(!wait.setBall);
     st = h.mod.drillStatus();
     CHECK(st.phase == FirstTouchModule::DrillPhase::Pause);
     CHECK(contains(st.lastOutcome, "Temps"));
+    CHECK(contains(st.lastTip, "plus tôt"));
     CHECK(!st.lastSuccess);
     CHECK(st.reps == 1 && st.successes == 0);
     const auto lv = h.mod.drillLevel(DrillType::RollIn);
-    CHECK_NEAR(lv.level, 0.2f - 0.04f * 0.75f / 0.25f, 1e-4f);
+    CHECK_NEAR(lv.level, 0.5f - 0.04f * 0.75f / 0.25f, 1e-4f);
     CHECK(lv.attempts == 1);
     CHECK(lv.sessionReps == 1);
 
     // After the pause the next ball comes automatically.
-    const Actions next = tickRange(h, 826, 826 + 186, true);
+    const Actions next = tickRange(h, 1006, 1006 + 186, true);
     CHECK(next.setBall.has_value());
     CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::WaitTouch);
 }
@@ -309,11 +312,11 @@ TEST(ft_drill_idle_reps_are_ignored_then_stopped) {
     Harness h;
     startDrill(h, "pass");
     int64_t f = 102;
-    for (int rep = 0; rep < 3; ++rep) {
-        tickRange(h, f, f + 721 + 181, false);
-        f += 721 + 182;
+    for (int rep = 0; rep < 3; ++rep) {  // niveau 1: 9 s per ball, then the 1.5 s pause
+        tickRange(h, f, f + 1081 + 181, false);
+        f += 1081 + 182;
     }
-    CHECK_NEAR(h.mod.drillLevel(DrillType::Pass).level, 0.2f, 1e-5f);
+    CHECK_NEAR(h.mod.drillLevel(DrillType::Pass).level, kDrillStartLevel, 1e-5f);
     CHECK(h.mod.drillLevel(DrillType::Pass).attempts == 0);
     CHECK(!h.mod.drillStatus().active);
     CHECK(h.host.releases == 1);
@@ -336,16 +339,17 @@ TEST(ft_drill_good_touch_raises_level_and_reports_result) {
         CHECK(r.success);
         bool hasLevel = false;
         for (const auto& m : r.metrics)
-            if (m.key == "drill_level") hasLevel = std::fabs(m.value - 20.f) < 1e-3f;
+            if (m.key == "drill_level") hasLevel = std::fabs(m.value - 1.f) < 1e-3f;  // niveau 1 for a new player
         CHECK(hasLevel);
     }
     const auto st = h.mod.drillStatus();
     CHECK(st.phase == FirstTouchModule::DrillPhase::Pause);
     CHECK(st.lastSuccess);
     CHECK(contains(st.lastOutcome, "Réussi"));
+    CHECK(st.lastTip.empty());
     CHECK(st.reps == 1 && st.successes == 1);
-    CHECK_NEAR(h.mod.drillLevel(DrillType::RollIn).level, 0.24f, 1e-4f);
-    CHECK_NEAR(h.mod.drillLevel(DrillType::RollIn).best, 0.24f, 1e-4f);
+    CHECK_NEAR(h.mod.drillLevel(DrillType::RollIn).level, 0.04f, 1e-4f);
+    CHECK_NEAR(h.mod.drillLevel(DrillType::RollIn).best, 0.04f, 1e-4f);
     CHECK(h.mod.lastTouch().inDrill);
     CHECK(run.requestSave);
 
@@ -360,15 +364,25 @@ TEST(ft_drill_good_touch_raises_level_and_reports_result) {
 }
 
 TEST(ft_drill_bad_touch_fails_rep) {
+    // A ram (900 uu/s faster than the ball, ball shot away) fails even at niveau 1.
     Harness h;
     startDrill(h, "roll_away");
     const Actions run = runScenario(h, groundPickup(1700.f, 800.f, 1500.f, 2200.f, 130), 125);
     CHECK(run.results.size() == 1);
-    const auto st = h.mod.drillStatus();
+    if (!run.results.empty()) CHECK(!run.results.front().success);
+    auto st = h.mod.drillStatus();
     CHECK(st.phase == FirstTouchModule::DrillPhase::Pause);
     CHECK(!st.lastSuccess);
     CHECK(contains(st.lastOutcome, "Raté"));
-    CHECK_NEAR(h.mod.drillLevel(DrillType::RollAway).level, 0.08f, 1e-4f);
+    CHECK(contains(st.lastTip, "trop vite"));
+    CHECK_NEAR(h.mod.drillLevel(DrillType::RollAway).level, 0.f, 1e-4f);
+
+    // From a higher level the failure lowers it.
+    Harness h2;
+    setDrillLevel(h2.mod, DrillType::RollAway, 0.5f);
+    startDrill(h2, "roll_away");
+    runScenario(h2, groundPickup(1700.f, 800.f, 1500.f, 2200.f, 130), 125);
+    CHECK_NEAR(h2.mod.drillLevel(DrillType::RollAway).level, 0.38f, 1e-4f);
 }
 
 TEST(ft_drill_touch_before_placement_is_ignored) {
@@ -457,9 +471,9 @@ TEST(ft_drill_mix_records_into_concrete_drills) {
     int64_t f = 102;
     DrillType prev = h.mod.drillStatus().current;
     int changes = 0;
-    for (int rep = 0; rep < 6; ++rep) {
-        tickRange(h, f, f + 721 + 181, true);
-        f += 721 + 182;
+    for (int rep = 0; rep < 6; ++rep) {  // niveau 1 everywhere: 9 s per ball
+        tickRange(h, f, f + 1081 + 181, true);
+        f += 1081 + 182;
         const DrillType cur = h.mod.drillStatus().current;
         if (cur != prev) ++changes;
         prev = cur;
@@ -526,6 +540,7 @@ TEST(ft_drill_slow_returning_ball_is_told_to_cushion_not_accelerate) {
     CHECK(last.speedDiff > 0.f);
     for (const auto& t : last.tips) CHECK(t.code != "ft.too_slow");
     CHECK(!contains(h.mod.drillStatus().lastOutcome, "Accélère"));
+    CHECK(!contains(h.mod.drillStatus().lastTip, "Accélère"));
 }
 
 // The button style chosen in "Ma config" reaches the drill status, the drill panel and the graded tips.

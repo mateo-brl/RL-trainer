@@ -517,3 +517,168 @@ TEST(bm_drill_judge_levels) {
     CHECK(judgeDrill(Mech::AirDribble, ad, 0.2f, 50, 4000.f).success);
     CHECK(!judgeDrill(Mech::AirDribble, ad, 0.9f, 50, 4000.f).success);
 }
+
+// ---- Pedagogy: difficulty order, plain HUD texts, beginner levels --------------------------------------------------
+namespace {
+bool hasDash(const std::string& s) {
+    return s.find("\xE2\x80\x94") != std::string::npos || s.find("\xE2\x80\x93") != std::string::npos;
+}
+bool technicalText(const std::string& s) {
+    return s.find("°") != std::string::npos || s.find(" ms") != std::string::npos || s.find(" uu") != std::string::npos;
+}
+} // namespace
+
+TEST(bm_mechanics_difficulty_order) {
+    // Every mechanic once, basics first, tags never going down along the order.
+    const auto& order = learningOrder();
+    std::set<int> seen;
+    for (Mech m : order) seen.insert(static_cast<int>(m));
+    CHECK_EQ(seen.size(), static_cast<size_t>(kMechCount));
+    for (size_t i = 1; i < order.size(); ++i)
+        CHECK(static_cast<int>(mechInfo(order[i - 1]).difficulty) <= static_cast<int>(mechInfo(order[i]).difficulty));
+    CHECK(mechInfo(order[0]).difficulty == Difficulty::Beginner);
+    CHECK(mechInfo(Mech::PowerShot).difficulty == Difficulty::Beginner);
+    CHECK(mechInfo(Mech::Aerial).difficulty == Difficulty::Beginner);
+    CHECK(mechInfo(Mech::FlipReset).difficulty == Difficulty::Advanced);
+    CHECK(mechInfo(Mech::Musty).difficulty == Difficulty::Advanced);
+    CHECK(std::string(difficultyLabel(Difficulty::Beginner)) == "Débutant");
+    CHECK(std::string(difficultyLabel(Difficulty::Intermediate)) == "Intermédiaire");
+    CHECK(std::string(difficultyLabel(Difficulty::Advanced)) == "Avancé");
+    for (int i = 0; i < kMechCount; ++i) {
+        const MechInfo& mi = mechInfo(i);
+        int steps = 0;
+        for (const char* s : mi.steps) {
+            if (!s || !*s) continue;
+            ++steps;
+            CHECK_MSG(!hasDash(s), s);
+        }
+        CHECK_MSG(steps >= 3, mi.id);
+    }
+}
+
+TEST(bm_drill_player_levels) {
+    CHECK_EQ(playerLevel(0.f), 1);
+    CHECK_EQ(playerLevel(1.f), 10);
+    CHECK_EQ(playerLevel(0.5f), 6);
+    for (int n = 1; n <= 10; ++n) CHECK_EQ(playerLevel(levelOfPlayer(n)), n);
+    // Lower bar and more time at level 1, higher bar at level 10.
+    CHECK_EQ(drillMinScore(50, 0.f), 25);
+    CHECK_EQ(drillMinScore(50, 1.f), 70);
+    CHECK_EQ(drillMinScore(100, 1.f), 100);
+    CHECK_EQ(drillMinScore(0, 0.f), 0);
+    CHECK_NEAR(drillTimeFactor(0.f), 1.5f, 1e-6f);
+    CHECK_NEAR(drillTimeFactor(1.f), 1.f, 1e-6f);
+}
+
+TEST(bm_drill_texts_plain) {
+    // HUD instructions: short step lists in words, no measures. Tab texts: no dash characters.
+    const char* variants[] = {"", "front", "45", "90", "backflip", "side", "reverse"};
+    for (int i = 0; i < kMechCount; ++i) {
+        const Mech m = static_cast<Mech>(i);
+        for (int n = 1; n <= 10; ++n) {
+            for (const char* v : variants) {
+                const std::string a = drillAction(m, levelOfPlayer(n), v);
+                CHECK_MSG(!a.empty() && a.size() <= 70, a);
+                CHECK_MSG(!technicalText(a) && !hasDash(a) && a.find('{') == std::string::npos, a);
+            }
+            const std::string c = drillCriteria(m, levelOfPlayer(n), 50, 4000.f, SpeedUnit::Kph);
+            CHECK_MSG(!c.empty() && !hasDash(c), c);
+            CHECK(!hasDash(drillLevelNote(m, levelOfPlayer(n))));
+        }
+        const std::string p = drillProgression(m);
+        CHECK_MSG(p.size() > 20 && !hasDash(p), mechInfo(m).id);
+    }
+    // The flip reset drill names its first step: the reset alone.
+    CHECK(drillAction(Mech::FlipReset, 0.f).find("Flippe") == std::string::npos);
+    CHECK(drillAction(Mech::FlipReset, levelOfPlayer(kFrConvertLevel)).find("Flippe") != std::string::npos);
+    CHECK(drillCriteria(Mech::PowerShot, 0.f, 50, 4000.f, SpeedUnit::Kph).find("72 KPH") != std::string::npos);
+}
+
+TEST(bm_tips_hud_text) {
+    // Every tip has a one-line HUD version: short, in words, no button placeholder, no measure.
+    const char* codes[] = {
+        "FR_NO_RESET", "FR_POOR_ALIGNMENT", "FR_TOO_FAST_CONTACT", "FR_RESET_WASTED", "FR_FLIP_MISSED_BALL",
+        "FR_WEAK_SHOT", "FR_OFF_TARGET", "CEIL_JUMPED_OFF", "CEIL_NO_FLIP_SHOT", "CEIL_FLIP_WASTED", "CEIL_MISSED",
+        "FL_JUMP_UNSETTLED", "FL_LOST_BALL", "FL_FLIP_TOO_EARLY", "FL_FLIP_TOO_LATE", "FL_UNDER_ROTATED",
+        "FL_OVER_ROTATED", "FL_MUSTY_NOSE_NOT_DOWN", "FL_BREEZI_NO_SPIN", "FL_SUPERSONIC_START", "FL_NO_CONTACT",
+        "FL_WEAK", "FL_OFF_TARGET", "DT_LANDED", "DT_LATE_FOLLOW", "DT_LOW_BACKBOARD", "DT_NO_SECOND_TOUCH",
+        "DT_OFF_TARGET", "AD_SHORT", "AD_BALL_TOO_FAR", "AD_UNDER_BALL", "AD_BOOST_OUT", "AD_NO_FINISH",
+        "AE_OFF_TARGET", "AE_HIT_SIDE", "AE_OFF_CENTER", "AE_WEAK", "AE_ROLL_MIXED", "AE_NO_AIR_ROLL",
+        "PI_NOT_PINCHED", "PI_TIMING", "PI_OFF_TARGET", "PS_WEAK", "PS_FLIP_EARLY", "PS_SIDE_HIT", "PS_SLIDE_HELD",
+        "PS_OFF_TARGET", "DRILL_TIMEOUT", "DRILL_LANDED", "DRILL_BALL_LOST", "DRILL_WRONG_MECH", "DRILL_NEED_POWER",
+        "DRILL_NEED_TARGET", "DRILL_NEED_DURATION", "DRILL_NEED_CONVERT", "DRILL_NEED_SCORE"};
+    PlayerProfile profile;
+    for (const char* c : codes) {
+        const auto tips = buildTips({c}, profile, KeyStyle::Xbox);
+        CHECK_MSG(tips.size() == 1u, c);
+        if (tips.empty()) continue;
+        const std::string h = hudTipText(tips[0]);
+        CHECK_MSG(!h.empty() && h.size() <= 60 && h != tips[0].text, c);
+        CHECK_MSG(h.find('{') == std::string::npos && !technicalText(h) && !hasDash(h), c);
+    }
+    Tip other;
+    other.code = "ft.too_fast";
+    other.text = "Texte complet";
+    CHECK(hudTipText(other) == "Texte complet");
+}
+
+TEST(bm_drill_beginner_attempts_pass_level_1) {
+    // A rough flick (weak, late, under-rotated, off target): a success at level 1, not at level 10.
+    MechGrade fl;
+    fl.family = Family::Flick;
+    fl.variant = "45";
+    fl.success = true;  // the detector saw a flick that pushed the ball (>= 700 uu/s)
+    fl.score = 0.32f;
+    fl.metrics = {makeMetric("ball_dv", "", 820.f, "uu/s"), makeMetric("delay", "", 0.62f, "s")};
+    fl.errors = {"FL_FLIP_TOO_LATE", "FL_UNDER_ROTATED", "FL_OFF_TARGET"};
+    fl.projection.valid = true;
+    fl.projection.onTarget = false;
+    CHECK(judgeDrill(Mech::Flick, fl, 0.f, drillMinScore(50, 0.f), 4000.f).success);
+    CHECK(!judgeDrill(Mech::Flick, fl, 1.f, drillMinScore(50, 1.f), 4000.f).success);
+    // Even with a good score, level 10 asks for power and an on-target shot.
+    fl.score = 0.8f;
+    const DrillVerdict hard = judgeDrill(Mech::Flick, fl, 1.f, drillMinScore(50, 1.f), 4000.f);
+    CHECK(!hard.success);
+    CHECK(std::find(hard.extraErrors.begin(), hard.extraErrors.end(), "DRILL_NEED_POWER") != hard.extraErrors.end());
+
+    // Flip reset: wheels on the ball but no flip after it (the usual first try) passes the first step.
+    MechGrade fr;
+    fr.family = Family::FlipReset;
+    fr.variant = "wasted";
+    fr.success = false;
+    fr.score = 0.45f;
+    fr.errors = {"FR_RESET_WASTED", "FR_POOR_ALIGNMENT"};
+    CHECK(judgeDrill(Mech::FlipReset, fr, 0.f, drillMinScore(50, 0.f), 4000.f).success);
+    const DrillVerdict frHard = judgeDrill(Mech::FlipReset, fr, 1.f, drillMinScore(50, 1.f), 4000.f);
+    CHECK(!frHard.success);
+    CHECK(std::find(frHard.extraErrors.begin(), frHard.extraErrors.end(), "DRILL_NEED_CONVERT") != frHard.extraErrors.end());
+
+    // Double tap read mode: touching the rebound off target is the first step (levels 1 and 2 only).
+    MechGrade dt;
+    dt.family = Family::DoubleTap;
+    dt.variant = "read";
+    dt.hasShot = true;
+    dt.success = false;  // off target
+    dt.score = 0.35f;
+    dt.metrics = {makeMetric("ball_speed_after", "", 950.f, "uu/s")};
+    dt.projection.valid = true;
+    dt.projection.onTarget = false;
+    CHECK(judgeDrill(Mech::DoubleTap, dt, 0.f, drillMinScore(50, 0.f), 4000.f).success);
+    CHECK(judgeDrill(Mech::DoubleTap, dt, levelOfPlayer(2), drillMinScore(50, levelOfPlayer(2)), 4000.f).success);
+    CHECK(!judgeDrill(Mech::DoubleTap, dt, levelOfPlayer(kDtTargetLevel), drillMinScore(50, levelOfPlayer(3)), 4000.f).success);
+    CHECK(!judgeDrill(Mech::DoubleTap, dt, 1.f, drillMinScore(50, 1.f), 4000.f).success);
+    dt.score = 0.15f;  // a very poor touch still fails the first step, with the score advice
+    const DrillVerdict poor = judgeDrill(Mech::DoubleTap, dt, 0.f, drillMinScore(50, 0.f), 4000.f);
+    CHECK(!poor.success);
+    CHECK(std::find(poor.extraErrors.begin(), poor.extraErrors.end(), "DRILL_NEED_SCORE") != poor.extraErrors.end());
+
+    // Soft but on-target aerial: enough for level 1, too soft for level 10.
+    MechGrade ae;
+    ae.family = Family::Aerial;
+    ae.variant = "aerial_shot";
+    ae.success = true;
+    ae.score = 0.4f;
+    ae.metrics = {makeMetric("ball_speed_after", "", 1300.f, "uu/s")};
+    CHECK(judgeDrill(Mech::Aerial, ae, 0.f, drillMinScore(50, 0.f), 4000.f).success);
+    CHECK(!judgeDrill(Mech::Aerial, ae, 1.f, drillMinScore(50, 1.f), 4000.f).success);
+}

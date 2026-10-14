@@ -30,7 +30,7 @@ namespace {
 constexpr int64_t kResetDedupFrames = 36;  // 0.3 s
 constexpr float kLandGrace = 0.6f;         // seconds a held grade may still resolve a landed drill attempt
 constexpr float kStairStep = 0.04f;
-constexpr float kStairStart = 0.15f;
+constexpr float kStairStart = 0.f;         // a new player starts every drill at level 1 (the easiest)
 
 Color verdictColor(Verdict v) {
     switch (v) {
@@ -60,25 +60,45 @@ std::string metricLine(const Metric& m, SpeedUnit unit) {
     return s;
 }
 
-// Splits a sentence into lines of at most `width` characters (bytes), on spaces.
-std::vector<std::string> wrapText(const std::string& text, size_t width) {
-    std::vector<std::string> lines;
-    std::string cur;
-    size_t start = 0;
-    while (start <= text.size()) {
-        size_t end = text.find(' ', start);
-        if (end == std::string::npos) end = text.size();
-        const std::string word = text.substr(start, end - start);
-        if (!cur.empty() && cur.size() + 1 + word.size() > width) {
-            lines.push_back(cur);
-            cur.clear();
-        }
-        if (!word.empty()) cur += (cur.empty() ? "" : " ") + word;
-        start = end + 1;
-    }
-    if (!cur.empty()) lines.push_back(cur);
-    return lines;
+constexpr Color kGreen{60, 230, 90, 255};
+constexpr Color kTipColor{255, 220, 120, 255};
+constexpr const char* kWellDone = "Bien joué, continue comme ça !";
+
+PanelLine hudLine(std::string text, Color color, bool detail = false, float scale = 1.f) {
+    PanelLine l;
+    l.text = std::move(text);
+    l.color = color;
+    l.detail = detail;
+    l.scale = scale;
+    return l;
 }
+
+// Detail lines: the key measures of a result (count from rlt_bm_hud_metrics), then on target / off target.
+void addMetricLines(DrawPanel& p, const AttemptResult& r, int mech, int maxMetrics, SpeedUnit unit) {
+    int shown = 0;
+    for (const char* k : bm::mechInfo(mech).hudKeys) {
+        if (shown >= maxMetrics || !k || !*k) continue;
+        for (const auto& m : r.metrics) {
+            if (m.key != k) continue;
+            p.lines.push_back(hudLine(metricLine(m, unit), {220, 220, 220, 255}, true, 0.9f));
+            ++shown;
+            break;
+        }
+    }
+    for (const auto& m : r.metrics)
+        if (m.key == "on_target")
+            p.lines.push_back(hudLine(m.value >= 0.5f ? "Tir cadré" : "Tir non cadré",
+                                      m.value >= 0.5f ? kGreen : Color{255, 140, 0, 255}, true, 0.9f));
+}
+
+// A panel is drawn when it has a line the player will see: in compact mode the detail lines are dropped.
+bool panelHasContent(const DrawPanel& p, bool compact) {
+    for (const auto& l : p.lines)
+        if (!compact || !l.detail) return true;
+    return false;
+}
+
+std::string levelText(float level) { return "niveau " + std::to_string(bm::playerLevel(level)) + "/10"; }
 
 const char* phaseLabel(int phase) {
     switch (phase) {
@@ -131,14 +151,15 @@ void BallMechModule::describeSettings(SettingsSchema& schema) {
         w.toggle("rlt_bm_in_matches", &BallMechConfig::inMatches, true, "Analyser aussi en match hors ligne",
                  "Note aussi tes mécas pendant les matchs contre les bots (jamais en ligne).");
         w.integer("rlt_bm_success_score", &BallMechConfig::successScore, 50, 0, 100, "Score minimum d'une réussite",
-                  "Une tentative compte comme réussie si la méca est validée ET si son score atteint ce seuil.");
+                  "Une tentative compte comme réussie si la méca est validée ET si son score atteint ce seuil. En "
+                  "exercice, le seuil est 25 points plus bas au niveau 1 et 20 points plus haut au niveau 10.");
         w.choice("rlt_bm_chat", &BallMechConfig::chatMode, 1, {"Jamais", "Réussites seulement", "Toutes les tentatives"},
                  "Résumé dans le chat", "Écrit un court résumé de chaque méca détectée dans le chat du jeu.");
     }
     {
         auto w = schema.section(&Settings::ballmech, "ballmech", "Affichage");
         w.toggle("rlt_bm_hud", &BallMechConfig::hudEnabled, true, "Afficher le panneau",
-                 "Panneau à gauche de l'écran : dernière méca, score, mesures clés et conseil.");
+                 "Panneau à gauche de l'écran : dernière méca, score et conseil.");
         w.number("rlt_bm_hud_x", &BallMechConfig::hudX, 0.01f, 0.f, 1.f, "Position X du panneau",
                  "Position horizontale (fraction de la largeur de l'écran).", 3);
         w.number("rlt_bm_hud_y", &BallMechConfig::hudY, 0.60f, 0.f, 1.f, "Position Y du panneau",
@@ -146,11 +167,11 @@ void BallMechModule::describeSettings(SettingsSchema& schema) {
         w.number("rlt_bm_hud_seconds", &BallMechConfig::hudSeconds, 8.f, 0.f, 60.f, "Durée d'affichage (s)",
                  "Temps pendant lequel le dernier résultat reste affiché. 0 = toujours.", 1);
         w.integer("rlt_bm_hud_metrics", &BallMechConfig::hudMetrics, 3, 0, 4, "Mesures affichées",
-                  "Nombre de mesures clés affichées sous le score.");
+                  "Nombre de mesures détaillées sous le score, visibles quand le HUD compact est désactivé.");
         w.toggle("rlt_bm_hud_tip", &BallMechConfig::hudTip, true, "Afficher le conseil",
                  "Affiche le conseil le plus important de la dernière tentative.");
         w.toggle("rlt_bm_hud_resets", &BallMechConfig::hudResetCounter, true, "Compteur de flip resets",
-                 "Affiche le nombre de flip resets obtenus pendant la session.");
+                 "Affiche le nombre de flip resets obtenus pendant la session (HUD compact désactivé).");
         w.toggle("rlt_bm_draw_trajectory", &BallMechConfig::drawTrajectory, true, "Trajectoire du dernier tir",
                  "Dessine en 3D la trajectoire prévue du dernier tir noté (vert = cadré).");
         w.toggle("rlt_bm_draw_reset", &BallMechConfig::drawResetIndicator, true, "Cercle de reset disponible",
@@ -196,7 +217,8 @@ void BallMechModule::describeSettings(SettingsSchema& schema) {
         w.number("rlt_bm_drill_pause", &BallMechConfig::drillPause, 1.5f, 0.3f, 5.f, "Pause entre deux essais (s)",
                  "Temps pour lire le résultat avant l'essai suivant.", 1);
         w.number("rlt_bm_drill_timeout_scale", &BallMechConfig::drillTimeoutScale, 1.f, 0.5f, 3.f,
-                 "Durée max d'un essai (x)", "Multiplie le temps accordé à chaque essai.", 2);
+                 "Durée max d'un essai (x)",
+                 "Multiplie le temps accordé à chaque essai. Les premiers niveaux donnent déjà plus de temps.", 2);
         w.toggle("rlt_bm_drill_adaptive", &BallMechConfig::drillAdaptive, true, "Difficulté adaptative",
                  "Le niveau monte quand tu réussis et baisse quand tu rates, pour rester dans la zone de progrès.");
         w.toggle("rlt_bm_drill_go", &BallMechConfig::drillGo, true, "Message GO! au départ",
@@ -301,7 +323,26 @@ float BallMechModule::drillLevel(const std::string& mechId) const {
 }
 
 float BallMechModule::drillTimeout() const {
-    return bm::mechInfo(drill_.mech).drillTimeout * std::max(0.5f, cfg_.drillTimeoutScale);
+    const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
+    return bm::mechInfo(drill_.mech).drillTimeout * std::max(0.5f, cfg_.drillTimeoutScale) * bm::drillTimeFactor(level);
+}
+
+const Tip* BallMechModule::drillTip() const {
+    if (!drill_.hasResult) return nullptr;
+    const auto& tips = drill_.result.tips;
+    // "Not the requested mechanic" is already in the verdict line: the drill's own advice says what to change.
+    for (const auto& t : tips)
+        if (t.code != "bm.drill_wrong_mech" || tips.size() == 1) return &t;
+    return nullptr;
+}
+
+std::string BallMechModule::drillActionNow() const {
+    const Mech m = static_cast<Mech>(drill_.mech);
+    const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
+    if (m == Mech::FlipReset && drill_.phase == DrillPhase::Live && resetAvailable_)
+        return bm::playerLevel(level) < bm::kFrConvertLevel ? "Reset obtenu ! Tu peux flipper dedans"
+                                                            : "Reset obtenu : flippe dans la balle !";
+    return bm::drillAction(m, level, impl_->setup.flickTarget);
 }
 
 // ---- Results -----------------------------------------------------------------------------------------------
@@ -380,14 +421,19 @@ void BallMechModule::handleGrade(bm::MechGrade& g, const TickContext& ctx, Actio
         const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
         const bool matches = bm::gradeMatchesDrill(dm, g) || (dm == Mech::PowerShot && g.family == bm::Family::Pinch);
         if (matches) {
-            bm::DrillVerdict v = bm::judgeDrill(dm, g, level, cfg_.successScore, cfg_.pinchSpeed);
+            const int minScore = bm::drillMinScore(cfg_.successScore, level);
+            bm::DrillVerdict v = bm::judgeDrill(dm, g, level, minScore, cfg_.pinchSpeed);
             if (dm == Mech::PowerShot && g.family == bm::Family::Pinch) {
                 const bool onTarget = !g.projection.valid || g.projection.onTarget;
                 v.success = g.value("exit_speed") >= 2000.f + 1200.f * level && onTarget &&
-                            g.score * 100.f >= static_cast<float>(cfg_.successScore);
+                            g.score * 100.f >= static_cast<float>(minScore);
             }
             AttemptResult r = makeResult(g, drill_.mech, v.success, v.extraErrors, ctx.profile);
-            drill_.lastVerdict = r.title + " : " + verdictLabel(r.verdict) + " " + fmt0(r.score) + "/100";
+            drill_.lastVerdict = v.success ? std::string("Réussi ! ") + verdictLabel(r.verdict) + " " + fmt0(r.score) +
+                                                 "/100"
+                                           : "Raté : " + fmt0(r.score) + "/100";
+            drill_.result = r;
+            drill_.hasResult = true;
             publish(std::move(r), drill_.mech, &g, ctx, out);
             resolveDrill(v.success, ctx);
             return;
@@ -509,7 +555,10 @@ bool BallMechModule::startDrill(int mech, const TickContext& ctx, Actions& out) 
     drill_.attempts = attempts;
     drill_.successes = successes;
     beginAttempt(ctx);
-    t.text = bm::fillButtons(mi.drillHint, ctx.profile, keyStyle_);
+    const float level = stairs_[static_cast<size_t>(mech)].level();
+    const std::string note = bm::drillLevelNote(static_cast<Mech>(mech), level);
+    t.text = bm::fillButtons(mi.drillHint, ctx.profile, keyStyle_) + " Niveau " + std::to_string(bm::playerLevel(level)) +
+             "/10" + (note.empty() ? "." : " : " + note + ".");
     t.kind = ToastKind::Info;
     out.toasts.push_back(t);
     return true;
@@ -592,7 +641,9 @@ void BallMechModule::failDrill(const char* code, const TickContext& ctx, Actions
     // Nothing was measured: no record value (a 0 placeholder would read as a real, if poor, value).
     r.valueForRecord = 0.f;
     r.hasRecordValue = false;
-    drill_.lastVerdict = r.title;
+    drill_.lastVerdict = "Raté";
+    drill_.result = r;
+    drill_.hasResult = true;
     publish(std::move(r), drill_.mech, nullptr, ctx, out);
     resolveDrill(false, ctx);
 }
@@ -764,8 +815,13 @@ void BallMechModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
     const SpeedUnit unit = resolveUnit(SpeedUnit::Auto, ctx.profile.metric);
     const Occluder occ{view.ballValid, view.ballVisualPos, view.ballRadius};
 
-    // ---- Main panel
-    if (cfg_.hudEnabled) {
+    // Compact HUD: at most 3 lines per panel (result, one tip, flip reset or current action). Measures, counters
+    // and help are detail lines, shown only when the compact HUD is off. During a drill only the drill panel is
+    // drawn: it carries the attempt's result, so the main panel would repeat it.
+    const bool compact = ctx.compactHud;
+
+    // ---- Main panel (free play)
+    if (cfg_.hudEnabled && drill_.phase == DrillPhase::Off) {
         DrawPanel p;
         p.pos = {clamp01(cfg_.hudX) * W, clamp01(cfg_.hudY) * H};
         p.title = "Mécas balle";
@@ -774,123 +830,67 @@ void BallMechModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
         const bool showResult = hasLast_ && (cfg_.hudSeconds <= 0.f || (now - lastShownAt_ >= 0.f && now - lastShownAt_ <= cfg_.hudSeconds));
         if (showResult) {
             const Color vc = verdictColor(last_.verdict);
-            PanelLine head;
-            head.text = last_.title;
-            head.color = vc;
-            head.scale = 1.1f;
-            p.lines.push_back(head);
-            PanelLine score;
-            score.text = std::string(verdictLabel(last_.verdict)) + " : " + fmt0(last_.score) + "/100" +
-                         (last_.success ? "  (réussi)" : "");
-            score.color = vc;
+            p.title = last_.title;
+            PanelLine score = hudLine(std::string(verdictLabel(last_.verdict)) + " : " + fmt0(last_.score) + "/100" +
+                                          (last_.success ? "  (réussi)" : ""),
+                                      vc);
             score.bar = clamp01(last_.score / 100.f);
             score.barColor = vc;
             p.lines.push_back(score);
-            int shown = 0;
-            const auto& keys = bm::mechInfo(lastMech_).hudKeys;
-            for (const char* k : keys) {
-                if (shown >= cfg_.hudMetrics || !k || !*k) continue;
-                for (const auto& m : last_.metrics) {
-                    if (m.key != k) continue;
-                    PanelLine l;
-                    l.text = metricLine(m, unit);
-                    l.color = {220, 220, 220, 255};
-                    l.scale = 0.9f;
-                    p.lines.push_back(l);
-                    ++shown;
-                    break;
-                }
-            }
-            for (const auto& m : last_.metrics) {
-                if (m.key != "on_target") continue;
-                PanelLine l;
-                l.text = m.value >= 0.5f ? "Tir cadré" : "Tir non cadré";
-                l.color = m.value >= 0.5f ? Color{60, 230, 90, 255} : Color{255, 140, 0, 255};
-                l.scale = 0.9f;
-                p.lines.push_back(l);
-            }
             if (cfg_.hudTip) {
-                if (!last_.tips.empty()) {
-                    int n = 0;
-                    for (const auto& line : wrapText(last_.tips.front().text, 46)) {
-                        if (++n > 3) break;
-                        PanelLine l;
-                        l.text = line;
-                        l.color = {255, 220, 120, 255};
-                        l.scale = 0.9f;
-                        p.lines.push_back(l);
-                    }
-                } else if (last_.success) {
-                    PanelLine l;
-                    l.text = "Bien joué, continue comme ça !";
-                    l.color = {60, 230, 90, 255};
-                    l.scale = 0.9f;
-                    p.lines.push_back(l);
-                }
+                if (!last_.tips.empty()) p.lines.push_back(hudLine(bm::hudTipText(last_.tips.front()), kTipColor));
+                else if (last_.success) p.lines.push_back(hudLine(kWellDone, kGreen));
             }
         }
-        if (resetAvailable_ && detecting_) {
-            PanelLine l;
-            l.text = "Flip reset disponible !";
-            l.color = {60, 230, 90, 255};
-            p.lines.push_back(l);
-        }
-        if (cfg_.hudResetCounter && impl_->stats.sessionResets > 0) {
-            PanelLine l;
-            l.text = "Flip resets (session) : " + std::to_string(impl_->stats.sessionResets);
-            l.color = {180, 220, 255, 255};
-            l.scale = 0.9f;
-            p.lines.push_back(l);
-        }
-        if (!p.lines.empty()) out.panel(std::move(p));
+        if (resetAvailable_ && detecting_) p.lines.push_back(hudLine("Flip reset disponible !", kGreen));
+        if (showResult) addMetricLines(p, last_, lastMech_, cfg_.hudMetrics, unit);
+        if (cfg_.hudResetCounter && impl_->stats.sessionResets > 0)
+            p.lines.push_back(hudLine("Flip resets (session) : " + std::to_string(impl_->stats.sessionResets),
+                                      {180, 220, 255, 255}, true, 0.9f));
+        if (panelHasContent(p, compact)) out.panel(std::move(p));
     }
 
-    // ---- Drill panel (top-left exercise zone)
+    // ---- Drill panel (top-left exercise zone): last result, its main tip, then what to do now.
     if (drill_.phase != DrillPhase::Off) {
         const bm::MechInfo& mi = bm::mechInfo(drill_.mech);
+        const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
         DrawPanel d;
         d.pos = {clamp01(cfg_.drillHudX) * W, clamp01(cfg_.drillHudY) * H};
-        d.title = std::string("Exercice : ") + mi.title;
+        d.title = std::string("Exercice : ") + mi.title + " (" + levelText(level) + ")";
         d.scale = scale;
         d.minWidth = 260.f * scale;
-        PanelLine info;
-        info.text = impl_->setup.label + " | Niveau " + fmt0(stairs_[static_cast<size_t>(drill_.mech)].level() * 100.f) + " %";
-        info.color = {200, 200, 200, 255};
-        info.scale = 0.9f;
-        d.lines.push_back(info);
-        PanelLine ph;
+        if (drill_.attempts > 0 && !drill_.lastVerdict.empty()) {
+            d.lines.push_back(hudLine(drill_.lastVerdict + "   (" + std::to_string(drill_.successes) + "/" +
+                                          std::to_string(drill_.attempts) + " réussis)",
+                                      drill_.lastSuccess ? kGreen : Color{255, 100, 70, 255}));
+            if (cfg_.hudTip) {
+                if (const Tip* t = drillTip()) d.lines.push_back(hudLine(bm::hudTipText(*t), kTipColor));
+                else if (drill_.lastSuccess) d.lines.push_back(hudLine(kWellDone, kGreen));
+            }
+        }
+        PanelLine act = hudLine(drillActionNow(), colors::White);
         if (drill_.phase == DrillPhase::Ready) {
-            ph.text = std::string(phaseLabel(1)) + "...";
-            ph.color = {255, 220, 120, 255};
-            ph.bar = cfg_.drillReady > 0.f ? clamp01((now - drill_.phaseStart) / cfg_.drillReady) : 1.f;
-            ph.barColor = {255, 220, 120, 255};
+            act.bar = cfg_.drillReady > 0.f ? clamp01((now - drill_.phaseStart) / cfg_.drillReady) : 1.f;
+            act.barColor = {255, 220, 120, 255};
         } else if (drill_.phase == DrillPhase::Live) {
             const float left = std::max(0.f, drillTimeout() - (now - drill_.phaseStart));
-            ph.text = std::string(phaseLabel(2)) + " " + formatNumber(left, 1) + " s";
-            ph.color = colors::White;
-            ph.bar = clamp01(left / std::max(0.1f, drillTimeout()));
-            ph.barColor = {90, 170, 255, 255};
-        } else {
-            ph.text = drill_.lastVerdict.empty() ? phaseLabel(3) : drill_.lastVerdict;
-            ph.color = drill_.lastSuccess ? Color{60, 230, 90, 255} : Color{255, 100, 70, 255};
+            act.text += "   " + fmt0(std::ceil(left)) + " s";
+            act.bar = clamp01(left / std::max(0.1f, drillTimeout()));
+            act.barColor = {90, 170, 255, 255};
         }
-        d.lines.push_back(ph);
-        int n = 0;
-        for (const auto& line : wrapText(bm::fillButtons(mi.drillHint, ctx.profile, keyStyle_), 48)) {
-            if (++n > 3) break;
-            PanelLine l;
-            l.text = line;
-            l.color = {220, 220, 220, 255};
-            l.scale = 0.9f;
-            d.lines.push_back(l);
-        }
-        PanelLine count;
+        d.lines.push_back(act);
+        // Details (full HUD only): situation, counters, the last attempt's measures, how to stop.
+        d.lines.push_back(hudLine("Situation : " + impl_->setup.label, {220, 220, 220, 255}, true, 0.9f));
         const float rate = drill_.attempts > 0 ? static_cast<float>(drill_.successes) / static_cast<float>(drill_.attempts) : 0.f;
-        count.text = "Essais : " + std::to_string(drill_.attempts) + " | Réussis : " + std::to_string(drill_.successes) +
-                     (drill_.attempts > 0 ? " (" + formatPercent(rate) + ")" : "");
-        count.color = {180, 220, 255, 255};
-        count.scale = 0.9f;
-        d.lines.push_back(count);
+        d.lines.push_back(hudLine("Essais : " + std::to_string(drill_.attempts) + " | Réussis : " +
+                                      std::to_string(drill_.successes) +
+                                      (drill_.attempts > 0 ? " (" + formatPercent(rate) + ")" : ""),
+                                  {180, 220, 255, 255}, true, 0.9f));
+        if (drill_.hasResult) {
+            d.lines.push_back(hudLine(drill_.result.title, {220, 220, 220, 255}, true, 0.9f));
+            addMetricLines(d, drill_.result, drill_.mech, cfg_.hudMetrics, unit);
+        }
+        d.lines.push_back(hudLine("Arrêter : rlt ballmech stop", {220, 220, 220, 255}, true, 0.9f));
         out.panel(std::move(d));
     }
 
@@ -922,6 +922,11 @@ BallMechModule::UiState BallMechModule::uiState() const {
     if (hasLast_) u.last = last_;
     u.flickVariant = flickVariant_;
     u.keyStyle = keyStyle_;
+    u.successScore = cfg_.successScore;
+    u.pinchSpeed = cfg_.pinchSpeed;
+    u.timeoutScale = cfg_.drillTimeoutScale;
+    std::array<int, bm::kMechCount> order{};  // position of each mechanic in the learning order
+    for (size_t i = 0; i < order.size(); ++i) order[static_cast<size_t>(bm::learningOrder()[i])] = static_cast<int>(i);
     const std::array<bool, bm::kFamilyCount> det = {cfg_.detFlipReset, cfg_.detCeiling, cfg_.detDoubleTap, cfg_.detPinch,
                                                     cfg_.detFlick,     cfg_.detAirDribble, cfg_.detAerial, cfg_.detPowerShot};
     u.mechs.reserve(bm::kMechCount);
@@ -934,6 +939,11 @@ BallMechModule::UiState BallMechModule::uiState() const {
         v.what = mi.what;
         v.key = mi.key;
         v.drillHint = mi.drillHint;
+        for (const char* step : mi.steps)
+            if (step && *step) v.steps.emplace_back(step);
+        v.difficulty = bm::difficultyLabel(mi.difficulty);
+        v.order = order[static_cast<size_t>(i)];
+        v.progression = bm::drillProgression(static_cast<Mech>(i));
         v.attempts = ms.attempts;
         v.successes = ms.successes;
         v.sessionAttempts = ms.sessionAttempts;
@@ -942,6 +952,7 @@ BallMechModule::UiState BallMechModule::uiState() const {
         v.best = ms.best;
         v.recent = ms.recent;
         v.drillLevel = stairs_[static_cast<size_t>(i)].level();
+        v.levelNumber = bm::playerLevel(v.drillLevel);
         v.drillAttempts = stairs_[static_cast<size_t>(i)].attempts();
         v.detectionEnabled = det[static_cast<size_t>(mi.family)];
         u.mechs.push_back(std::move(v));
@@ -955,7 +966,10 @@ BallMechModule::UiState BallMechModule::uiState() const {
         d.phase = phaseLabel(static_cast<int>(drill_.phase));
         d.label = impl_->setup.label;
         d.hint = mi.drillHint;
+        d.action = drillActionNow();
+        if (const Tip* t = drillTip()) d.tip = t->text;
         d.level = stairs_[static_cast<size_t>(drill_.mech)].level();
+        d.levelNumber = bm::playerLevel(d.level);
         d.attempts = drill_.attempts;
         d.successes = drill_.successes;
         d.timeLeft = drill_.phase == DrillPhase::Live ? std::max(0.f, drillTimeout() - (lastTickTime_ - drill_.phaseStart)) : 0.f;

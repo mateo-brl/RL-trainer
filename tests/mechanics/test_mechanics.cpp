@@ -192,9 +192,14 @@ TEST(mechanics_focus_filters_other_mechanics) {
     CHECK(dl.panels.size() == 1);
     if (!dl.panels.empty()) {
         CHECK(dl.panels[0].title.find("Speedflip") != std::string::npos);
-        bool target = false;
-        for (const auto& l : dl.panels[0].lines) target = target || l.text.find("Objectif") == 0;
+        // The numbers of the targets are detail lines; the compact HUD says what to do in words.
+        bool target = false, todo = false;
+        for (const auto& l : dl.panels[0].lines) {
+            if (l.text.find("Objectif") == 0) target = target || l.detail;
+            todo = todo || (!l.detail && l.text.find("À faire") == 0);
+        }
         CHECK(target);
+        CHECK(todo);
     }
     rig.command("focus", {"off"});
     CHECK(rig.mod.focus() == Focus::None);
@@ -326,8 +331,9 @@ TEST(mechanics_focus_slow_motion_needs_activity) {
     CHECK(!ok.host.ownsActivity(&ok.mod));
 }
 
-// ---- Drills: speedflip kickoff setup -------------------------------------------------------------------
+// ---- Drills: speedflip setup per level -------------------------------------------------------------------
 TEST(mechanics_drill_speedflip_countdown) {
+    // Level 1 (a new player): the diagonal flip alone, from a standstill in the own half, ball parked away.
     Rig rig;
     rig.command("drill", {"speedflip"});
     CHECK(rig.mod.drillActive());
@@ -338,29 +344,52 @@ TEST(mechanics_drill_speedflip_countdown) {
     CHECK(a.freezeCar);
     CHECK(a.countdownMessage.has_value());
     if (a.setCar) {
-        CHECK(a.setCar->boost.has_value() && *a.setCar->boost == 33.f);
-        CHECK(length2D(a.setCar->pos) > 2000.f);  // a kickoff spawn
+        CHECK(a.setCar->boost.has_value() && *a.setCar->boost == 100.f);
+        CHECK(a.setCar->pos.y < -3000.f);
     }
-    if (a.setBall) CHECK(length(a.setBall->pos - Vec3{0.f, 0.f, 92.75f}) < 1.f);
+    if (a.setBall) CHECK(length2D(a.setBall->pos) > 4000.f);  // parked out of the way
+    CHECK(rig.mod.drillSetup().stage == 1 && !rig.mod.drillSetup().kickoff);
     int frozen = 0;
     bool go = false;
     for (int i = 0; i < 130 && !go; ++i) {
-        Inputs in;
-        in.boost = true;  // boost held at GO
-        a = rig.tick(in);
+        a = rig.tick(Inputs{});
         frozen += a.freezeCar ? 1 : 0;
         go = a.goMessage;
     }
     CHECK(go);
-    CHECK(frozen >= 110);  // about 1 s frozen
+    CHECK(frozen >= 110);  // about 1 s frozen to read the goal
     CHECK(rig.mod.status().phase == "Essai en cours");
+    CHECK(rig.mod.kickoffLive() == false);  // no kickoff timing at this step
+
+    // Level 5: the real kickoff from a diagonal spawn, ball at the centre.
+    Rig ko;
+    Store st;
+    st.setFloat("mechanics.level.speedflip.level", 0.45f);
+    ko.mod.load(st);
+    ko.command("drill", {"speedflip"});
+    Actions k = ko.tick(Inputs{});
+    CHECK(ko.mod.drillSetup().stage == 2 && ko.mod.drillSetup().kickoff);
+    if (k.setCar) {
+        CHECK(k.setCar->boost.has_value() && *k.setCar->boost == 33.f);
+        CHECK(length2D(k.setCar->pos) > 2000.f);  // a kickoff spawn
+    }
+    if (k.setBall) CHECK(length(k.setBall->pos - Vec3{0.f, 0.f, 92.75f}) < 1.f);
+    go = false;
+    for (int i = 0; i < 130 && !go; ++i) {
+        Inputs in;
+        in.boost = true;  // boost held at GO
+        go = ko.tick(in).goMessage;
+    }
+    CHECK(go);
+    CHECK(ko.mod.kickoffLive());
     // Orange team: the spawn is mirrored.
     Rig orange;
     orange.sim.team = 1;
     orange.last = orange.sim.snap(orange.frame, {});
+    orange.mod.load(st);
     orange.command("drill", {"speedflip"});
     Actions o = orange.tick(Inputs{});
-    CHECK(o.setCar.has_value() && a.setCar.has_value() == false);
+    CHECK(o.setCar.has_value());
     if (o.setCar) CHECK(o.setCar->pos.y > 2000.f);
 }
 
@@ -403,13 +432,15 @@ TEST(mechanics_drill_timeout_restarts) {
     Rig rig;
     rig.command("drill", {"stall"});
     rig.tick(Inputs{});
-    rig.run(3 * 120 + 10, idle());  // nothing attempted: time limit 3 s
+    rig.run(4 * 120 + 10, idle());  // nothing attempted: time limit 4 s at the first level
     CHECK(rig.results.empty());
     CHECK(rig.mod.status().message.find("Temps écoulé") != std::string::npos);
+    // The message names the step that was missing.
+    CHECK(rig.mod.status().message.find("Stick à fond") != std::string::npos);
     const int cars = rig.setCars;
-    rig.run(130, idle());
+    rig.run(200, idle());  // the reading delay of a result (1.5 s), then the next placement
     CHECK(rig.setCars == cars + 1);
-    CHECK_NEAR(rig.mod.level(Focus::Stall), 0.2f, 1e-6f);  // a timeout does not move the staircase
+    CHECK_NEAR(rig.mod.level(Focus::Stall), 0.f, 1e-6f);  // a timeout does not move the staircase
 }
 
 TEST(mechanics_activity_taken_away) {
@@ -611,7 +642,10 @@ TEST(mechanics_drill_fast_aerial_waits_for_touch) {
 }
 
 TEST(mechanics_drill_speedflip_end_to_end) {
-    Rig rig;
+    Rig rig;  // kickoff step of the drill (level 5)
+    Store st;
+    st.setFloat("mechanics.level.speedflip.level", 0.45f);
+    rig.mod.load(st);
     rig.command("drill", {"speedflip"});
     rig.tick(Inputs{});
     for (int i = 0; i < 125; ++i) {
@@ -759,7 +793,7 @@ TEST(mechanics_records_and_save_load) {
     // reset_stats for one family, then everything.
     rig.command("reset_stats", {"wavedash"});
     CHECK(rig.mod.stats().get(Mech::Wavedash).attempts == 0);
-    CHECK_NEAR(rig.mod.level(Focus::Wavedash), 0.2f, 1e-6f);
+    CHECK_NEAR(rig.mod.level(Focus::Wavedash), 0.f, 1e-6f);  // back to the first level
     rig.command("reset_stats");
     CHECK(rig.mod.stats().sessionTotal() == 0);
     Store empty;

@@ -6,13 +6,18 @@
 // Flow: onTick feeds the MovementCoach (detection hub) with each snapshot; every grade passes the family toggles
 // and the map category (both skipped for the family the player focuses on or drills) and the focus filter, then
 // becomes an AttemptResult (Actions::results), updates the stats and the HUD panel. Drills own the world-control
-// activity: placement, frozen countdown, slow motion, auto-reset. On its own normal stop the module routes the speed
+// activity: placement, frozen countdown, slow motion, auto-reset. A drill attempt counts when it meets the pass
+// conditions of its level (Drills.h, the first one missed gives the single tip), the score the level asks for and,
+// at the top levels, the detector's own success; the result moves the family's Staircase (new player: level 1/10).
+// The HUD panel keeps three main lines (result, one tip, the action to do now), the rest is detail. On its own
+// normal stop the module routes the speed
 // restore as the owner, then gives the activity back; when the activity ends any other way (stop button, handover,
 // map unloaded, world control lost) the engine puts the game speed back to 1 itself.
 // Taking the activity for the focus slow motion or for "restore_speed" never stops another module's exercise: the
 // wish waits until that exercise ends (TickContext::otherActivityRunning). Only a drill started by the player does.
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -38,10 +43,14 @@ public:
         bool drillActive = false;
         std::string phase;     // French phase label
         std::string message;   // last drill message
-        std::string goal;
+        std::string goal;      // plain goal of the level ("Étape 1 sur 3 : ...")
         std::string variant;
         float timeLeft = 0.f;
         float level = 0.f;     // 0..1
+        int levelNumber = 1;   // 1..10, as shown to the player
+        std::vector<std::string> steps;   // what to do, in order
+        int currentStep = -1;             // live: index of the next action in `steps` (-1 when no attempt runs)
+        std::vector<std::string> checks;  // pass conditions of the level, with their numbers
         int drillAttempts = 0, drillSuccesses = 0;
         bool worldControl = false;
         float gameSpeed = 1.f; // game speed this module applies (1 when it does not control the world)
@@ -53,6 +62,9 @@ public:
     struct StatRow {
         mech::Focus focus = mech::Focus::None;
         std::string id, title, group, what, key;
+        mech::Tier tier = mech::Tier::Beginner;
+        std::string memo, tech, progression;
+        std::vector<std::string> steps;
         bool enabled = true;   // family toggle
         int attempts = 0, successes = 0;
         int sessionAttempts = 0, sessionSuccesses = 0;
@@ -62,6 +74,9 @@ public:
         std::string topErrorTip;
         std::vector<float> recent;
         float level = 0.f;
+        int levelNumber = 1;   // 1..10
+        // What a drill success needs (with the numbers) at level 1, level 10 and the player's level.
+        std::vector<std::string> checksFirst, checksLast, checksNow;
     };
     struct LastAttempt {
         bool valid = false;
@@ -103,6 +118,7 @@ public:
     const mech::MechStats& stats() const { return stats_; }
     const mech::DetectConfig& detectConfig() const { return coach_.cfg; }
     const mech::DrillSetup& drillSetup() const { return setup_; }
+    bool kickoffLive() const { return coach_.kickoff().live(); }
 
 private:
     enum class Phase : int { Setup, Countdown, Running, Showing };
@@ -117,6 +133,9 @@ private:
         int attempt = 0;          // index (alternates sides / spots)
         int attempts = 0, successes = 0;
         int floorTicks = 0;
+        uint32_t cues = 0;        // mech::Cue bits seen since the start of the attempt (live step)
+        bool timedOut = false;    // the attempt ended at the time limit without a result
+        bool newStage = false;    // this attempt starts a new step of the progression (until its result)
         std::string message;
     };
 
@@ -132,6 +151,11 @@ private:
     void stopWorld(const TickContext& ctx, Actions& out);
     void runWorld(const TickContext& ctx, Actions& out);
     void beginAttempt(const TickContext& ctx, Actions& out);
+    // Live progress of the attempt (which step the player has reached).
+    void trackCues(const Snapshot& s);
+    bool cueSeen(mech::Cue c) const { return (drill_.cues >> static_cast<unsigned>(c)) & 1u; }
+    // Index of the next action of the running attempt in setup_.steps (steps.size() when all are done).
+    int currentStep() const;
     void afterDetection(const TickContext& ctx, Actions& out);
     // Emits what the detectors still hold (kickoff speedflip waiting for the ball, chain in progress) and the
     // drill grade waiting for a touch, before a reset drops them.
@@ -155,7 +179,14 @@ private:
     mech::MovementCoach coach_;
     std::vector<mech::MechGrade> grades_;  // reused every tick
     mech::MechStats stats_;
-    std::array<Staircase, mech::kFocusCount> levels_;
+    // Adaptive level of every family: a new player starts at the lowest level (shown as 1/10).
+    static Staircase freshLevel() { return Staircase(0.75f, 0.03f, 0.f); }
+    static std::array<Staircase, mech::kFocusCount> freshLevels() {
+        std::array<Staircase, mech::kFocusCount> a;
+        a.fill(freshLevel());
+        return a;
+    }
+    std::array<Staircase, mech::kFocusCount> levels_ = freshLevels();
     mech::Focus focus_ = mech::Focus::None;
     Rng rng_{0x6d65636861ULL};
 

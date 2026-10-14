@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/common/Text.h"
 #include "core/modules/ballmech/Primitives.h"
 
 namespace rlt::bm {
@@ -37,6 +38,17 @@ void mirrorForTeam(DrillSetup& d, int team) {
     d.car.rot.yaw = yaw;
 }
 } // namespace
+
+int playerLevel(float level) { return 1 + static_cast<int>(clamp01(level) * 9.f + 0.5f); }
+
+float levelOfPlayer(int n) { return clamp01(static_cast<float>(n - 1) / 9.f); }
+
+int drillMinScore(int successScore, float level) {
+    const int v = successScore - 25 + static_cast<int>(std::lround(45.f * clamp01(level)));
+    return std::max(0, std::min(100, v));
+}
+
+float drillTimeFactor(float level) { return 1.5f - 0.5f * clamp01(level); }
 
 Rot rotDeg(float pitchDeg, float yawDeg, float rollDeg) {
     auto wrap = [](float a) {
@@ -83,7 +95,9 @@ DrillSetup makeDrillSetup(Mech m, float level, int team, const CarState& car, fl
         d.car.vel = carVel - b.up * arena::kJumpImpulse;  // the scripted double jump adds it back
         d.car.boost = 100.f - 60.f * L;
         d.burnFlip = true;
-        d.label = L < 0.35f ? "Obtenir le reset" : (L < 0.7f ? "Reset puis double touche" : "Reset puis tir cadré");
+        const int n = playerLevel(L);
+        d.label = n < kFrConvertLevel ? "Obtenir le reset"
+                                      : (n < kFrTargetLevel ? "Reset puis double touche" : "Reset puis tir cadré");
         break;
     }
     case Mech::Ceiling: {
@@ -118,7 +132,7 @@ DrillSetup makeDrillSetup(Mech m, float level, int team, const CarState& car, fl
         break;
     }
     case Mech::DoubleTap: {
-        if (L < 0.6f) {
+        if (playerLevel(L) < kDtFullLevel) {
             const float x0 = rng.range(-1.f, 1.f) * 1500.f * L;
             const Vec3 start{x0, 2500.f, 300.f};
             const Vec3 target{x0 * 0.5f + rng.range(-200.f, 200.f), arena::kBackWallY - r - 5.f, rng.range(900.f, 1300.f)};
@@ -140,7 +154,7 @@ DrillSetup makeDrillSetup(Mech m, float level, int team, const CarState& car, fl
         break;
     }
     case Mech::AirDribble: {
-        const bool wall = L >= 0.5f && rng.chance(0.5f);
+        const bool wall = playerLevel(L) >= kAdWallLevel && rng.chance(0.5f);
         if (!wall) {
             const Vec3 pos{rng.range(-1.f, 1.f) * 1500.f, rng.range(-2500.f, -1000.f), arena::kCarRestZ};
             groundCar(d, pos, 90.f + rng.range(-1.f, 1.f) * 10.f, 500.f + 300.f * L);
@@ -194,7 +208,7 @@ DrillSetup makeDrillSetup(Mech m, float level, int team, const CarState& car, fl
     }
     case Mech::PowerShot: {
         const float x0 = rng.range(-1.f, 1.f) * 800.f;
-        if (L < 0.5f) {
+        if (playerLevel(L) < kPsSideLevel) {
             d.ball.pos = {x0, 3000.f, r + 2.f};
             d.ball.vel = {rng.range(-100.f, 100.f), -(400.f + 600.f * L), 0.f};
             groundCar(d, {x0 + rng.range(-200.f, 200.f), 200.f, arena::kCarRestZ}, 90.f, 300.f);
@@ -219,6 +233,7 @@ bool gradeMatchesDrill(Mech drill, const MechGrade& g) { return mechInfo(drill).
 
 DrillVerdict judgeDrill(Mech drill, const MechGrade& g, float level, int minScore, float pinchSpeed) {
     const float L = clamp01(level);
+    const int n = playerLevel(L);
     DrillVerdict v;
     const bool scoreOk = g.score * 100.f + 1e-3f >= static_cast<float>(minScore);
     v.success = g.success && scoreOk;
@@ -233,31 +248,37 @@ DrillVerdict judgeDrill(Mech drill, const MechGrade& g, float level, int minScor
     switch (drill) {
     case Mech::FlipReset: {
         const bool obtained = g.variant != "no_reset";
-        if (L < 0.35f) {
+        if (n < kFrConvertLevel) {
             v.success = obtained;
             v.extraErrors.clear();
         } else if (obtained && !g.success) {
             v.extraErrors.push_back("DRILL_NEED_CONVERT");
         }
-        if (L >= 0.7f) need(onTarget, "DRILL_NEED_TARGET");
+        if (n >= kFrTargetLevel) need(onTarget, "DRILL_NEED_TARGET");
         break;
     }
     case Mech::Ceiling:
         need(g.value("ball_speed_after") >= 1200.f + 1000.f * L, "DRILL_NEED_POWER");
-        if (L >= 0.5f) need(onTarget, "DRILL_NEED_TARGET");
+        if (n >= kTargetLevel) need(onTarget, "DRILL_NEED_TARGET");
         break;
     case Mech::Flick:
     case Mech::Musty:
     case Mech::Breezi:
         need(g.value("ball_dv") >= 700.f + 800.f * L, "DRILL_NEED_POWER");
-        if (L >= 0.5f) need(onTarget, "DRILL_NEED_TARGET");
+        if (n >= kTargetLevel) need(onTarget, "DRILL_NEED_TARGET");
         break;
     case Mech::DoubleTap:
+        // First step: touching the rebound counts even when the ball does not go on target.
+        if (n < kDtTargetLevel && g.hasShot && !g.success) {
+            v.success = scoreOk;
+            if (!scoreOk) v.extraErrors.push_back("DRILL_NEED_SCORE");
+        }
         need(g.value("ball_speed_after") >= 800.f + 1000.f * L, "DRILL_NEED_POWER");
         break;
     case Mech::AirDribble:
         need(g.value("duration") >= 0.8f + 2.2f * L, "DRILL_NEED_DURATION");
-        if (L >= 0.6f && g.has("finished_on_target")) need(g.value("finished_on_target") >= 0.5f, "DRILL_NEED_TARGET");
+        if (n >= kAdTargetLevel && g.has("finished_on_target"))
+            need(g.value("finished_on_target") >= 0.5f, "DRILL_NEED_TARGET");
         break;
     case Mech::AirRoll:
         if (g.variant != "air_roll_shot") {
@@ -267,11 +288,11 @@ DrillVerdict judgeDrill(Mech drill, const MechGrade& g, float level, int minScor
         need(g.value("ball_speed_after") >= 1200.f + 1000.f * L, "DRILL_NEED_POWER");
         break;
     case Mech::Aerial:
-        need(g.value("ball_speed_after") >= 1500.f + 1000.f * L, "DRILL_NEED_POWER");
+        need(g.value("ball_speed_after") >= 1200.f + 1300.f * L, "DRILL_NEED_POWER");
         break;
     case Mech::Pinch:
         need(g.value("exit_speed") >= pinchSpeed + 1000.f * L, "DRILL_NEED_POWER");
-        if (L >= 0.5f) need(onTarget, "DRILL_NEED_TARGET");
+        if (n >= kTargetLevel) need(onTarget, "DRILL_NEED_TARGET");
         break;
     case Mech::PowerShot:
         need(g.value("exit_speed") >= 2000.f + 1200.f * L, "DRILL_NEED_POWER");
@@ -279,6 +300,122 @@ DrillVerdict judgeDrill(Mech drill, const MechGrade& g, float level, int minScor
     default: break;
     }
     return v;
+}
+
+std::string drillAction(Mech m, float level, const std::string& flickTarget) {
+    const int n = playerLevel(level);
+    switch (m) {
+    case Mech::FlipReset:
+        if (n < kFrConvertLevel) return "1. Monte vers la balle  2. Pose les 4 roues dessus";
+        if (n < kFrTargetLevel) return "1. Pose les 4 roues sur la balle  2. Flippe dedans";
+        return "1. Reset  2. Nez vers le but  3. Flippe dans la balle";
+    case Mech::Ceiling:
+        return n < kTargetLevel ? "1. Tombe du plafond sans sauter  2. Flippe dans la balle"
+                                : "1. Tombe sans sauter  2. Flippe dans la balle vers le but";
+    case Mech::Flick: {
+        std::string a;
+        if (flickTarget == "front") a = "1. Balle sur le toit  2. Saute  3. Flip avant";
+        else if (flickTarget == "45") a = "1. Saute  2. Tourne un peu  3. Flip en diagonale";
+        else if (flickTarget == "90") a = "1. Saute  2. Quart de tour  3. Flip dans la balle";
+        else if (flickTarget == "backflip") a = "1. Balle sur le toit  2. Saute  3. Flip arrière";
+        else if (flickTarget == "side") a = "1. Balle sur le toit  2. Saute  3. Flip sur le côté";
+        else if (flickTarget == "reverse") a = "1. Saute  2. Retourne la voiture  3. Flip arrière";
+        else a = "1. Balle sur le toit  2. Saute  3. Flippe dans la balle";
+        return n < kTargetLevel ? a : a + ", vers le but";
+    }
+    case Mech::Musty: return "1. Saute  2. Nez vers le bas  3. Flip arrière";
+    case Mech::Breezi: return "1. Saut maintenu  2. Tornade  3. Flip arrière";
+    case Mech::DoubleTap:
+        if (n < kDtTargetLevel) return "1. Suis la balle vers le mur  2. Touche le rebond";
+        if (n < kDtFullLevel) return "1. Suis la balle vers le mur  2. Reprends le rebond vers le but";
+        return "1. Tire haut sur le mur  2. Suis la balle  3. Reprends le rebond";
+    case Mech::AirDribble:
+        return n < kAdTargetLevel ? "1. Monte avec la balle  2. Petites touches en l'air"
+                                  : "1. Monte avec la balle  2. Petites touches  3. Finis vers le but";
+    case Mech::AirRoll: return "1. Air roll pour viser la balle  2. Frappe-la au centre";
+    case Mech::Aerial: return "1. Décolle  2. Vise le centre de la balle  3. Vers le but";
+    case Mech::Pinch:
+        return n < kTargetLevel ? "Frappe la balle quand elle touche le mur"
+                                : "Frappe la balle contre le mur, vers le but";
+    case Mech::PowerShot:
+        return n < kPsSideLevel ? "1. Arrive vite  2. Flippe juste avant la balle"
+                                : "1. Glisse pour te tourner  2. Flippe dans la balle";
+    default: return "";
+    }
+}
+
+std::string drillLevelNote(Mech m, float level) {
+    const int n = playerLevel(level);
+    if (m == Mech::FlipReset && n < kFrConvertLevel) return "poser les 4 roues sur la balle suffit";
+    if (m == Mech::DoubleTap && n < kDtTargetLevel) return "toucher le rebond suffit, même si la balle ne va pas au but";
+    return "";
+}
+
+std::string drillProgression(Mech m) {
+    switch (m) {
+    case Mech::FlipReset:
+        return "Niveaux 1 à 4 : poser les 4 roues sur la balle suffit. Niveaux 5 à 7 : flippe ensuite dans la balle. "
+               "Niveaux 8 à 10 : le tir doit être cadré. La voiture arrive de plus loin et moins bien placée quand le "
+               "niveau monte.";
+    case Mech::Ceiling:
+        return "La frappe doit être plus forte à chaque niveau. À partir du niveau 6, elle doit être cadrée. La balle "
+               "tombe plus loin de toi quand le niveau monte.";
+    case Mech::Flick:
+    case Mech::Musty:
+    case Mech::Breezi:
+        return "Le flick doit être plus fort à chaque niveau. À partir du niveau 6, il doit être cadré. Tu roules plus "
+               "vite quand le niveau monte.";
+    case Mech::DoubleTap:
+        return "Niveaux 1 et 2 : toucher le rebond suffit, même si la balle ne va pas au but. Niveaux 3 à 6 : le rebond "
+               "repris doit être cadré. Jusqu'au niveau 6 l'exercice envoie la balle sur le mur pour toi, ensuite tu "
+               "fais le premier tir.";
+    case Mech::AirDribble:
+        return "Garde la balle en l'air plus longtemps à chaque niveau. À partir du niveau 6, certains essais partent "
+               "du mur. À partir du niveau 7, finis vers le but.";
+    case Mech::AirRoll:
+        return "Le tir doit être plus fort à chaque niveau, et la voiture part plus penchée.";
+    case Mech::Aerial:
+        return "Le tir doit être plus fort à chaque niveau, et la balle arrive plus vite et plus haut.";
+    case Mech::Pinch:
+        return "Le pinch doit être plus rapide à chaque niveau. À partir du niveau 6, il doit être cadré.";
+    case Mech::PowerShot:
+        return "La frappe doit être plus forte à chaque niveau. À partir du niveau 6, la balle arrive de côté.";
+    default: return "";
+    }
+}
+
+std::string drillCriteria(Mech m, float level, int successScore, float pinchSpeed, SpeedUnit unit) {
+    const float L = clamp01(level);
+    const int n = playerLevel(L);
+    const std::string score = "score " + std::to_string(drillMinScore(successScore, L)) + "/100 minimum";
+    auto speed = [unit](float uus) { return formatSpeed(uus, unit, 0); };
+    switch (m) {
+    case Mech::FlipReset:
+        if (n < kFrConvertLevel) return "reset obtenu (4 roues sur la balle), le score ne compte pas";
+        return std::string("reset puis flip dans la balle") + (n >= kFrTargetLevel ? ", tir cadré" : "") + ", " + score;
+    case Mech::Ceiling:
+        return "frappe en flip sans sauter du plafond, balle à " + speed(1200.f + 1000.f * L) + " ou plus" +
+               (n >= kTargetLevel ? ", tir cadré" : "") + ", " + score;
+    case Mech::Flick:
+    case Mech::Musty:
+    case Mech::Breezi:
+        return std::string(mechInfo(m).title) + " qui donne au moins " + speed(700.f + 800.f * L) + " à la balle" +
+               (n >= kTargetLevel ? ", tir cadré" : "") + ", " + score;
+    case Mech::DoubleTap:
+        return std::string(n < kDtTargetLevel ? "rebond touché" : "rebond repris et cadré") + ", balle à " +
+               speed(800.f + 1000.f * L) + " ou plus, " + score;
+    case Mech::AirDribble:
+        return "air dribble d'au moins " + formatNumber(0.8f + 2.2f * L, 1) + " s" +
+               (n >= kAdTargetLevel ? ", fin cadrée" : "") + ", " + score;
+    case Mech::AirRoll:
+        return "tir avec air roll, cadré, balle à " + speed(1200.f + 1000.f * L) + " ou plus, " + score;
+    case Mech::Aerial: return "tir cadré, balle à " + speed(1200.f + 1300.f * L) + " ou plus, " + score;
+    case Mech::Pinch:
+        return "pinch à " + speed(pinchSpeed + 1000.f * L) + " ou plus" + (n >= kTargetLevel ? ", cadré" : "") + ", " +
+               score;
+    case Mech::PowerShot: return "frappe cadrée à " + speed(2000.f + 1200.f * L) + " ou plus, " + score;
+    default: return score;
+    }
 }
 
 } // namespace rlt::bm

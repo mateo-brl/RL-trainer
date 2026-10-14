@@ -1,6 +1,7 @@
 // Drill tests: activity gating (fake host), ready / launch world actions, scripted inputs, resolution by grades,
 // foreign grades, timeouts, landing, lost activity, commands.
 #include "core/common/Controls.h"
+#include "core/modules/ballmech/Mechanics.h"
 #include "tests/TestFramework.h"
 #include "tests/ballmech/Sim.h"
 
@@ -129,7 +130,7 @@ TEST(bm_drill_ready_then_launch) {
     h.mod.draw(v, dc, dl);
     bool drillPanel = false;
     for (const auto& p : dl.panels)
-        if (p.title == "Exercice : Frappe puissante") {
+        if (p.title == "Exercice : Frappe puissante (niveau 1/10)") {
             drillPanel = true;
             CHECK_NEAR(p.pos.y, 0.12f * 1080.f, 0.5f);
         }
@@ -224,7 +225,9 @@ TEST(bm_drill_timeouts) {
     h.command("drill", {"aerial"});
     skipReady(h);
     const float level0 = h.mod.drillLevel("aerial");
-    active(h, static_cast<int>(6.5f * kTickRate));
+    // Level 1 gives more time than the aerial's 6 s: wait for the real time left.
+    CHECK(h.mod.uiState().drill.timeLeft > 6.5f);
+    active(h, static_cast<int>((h.mod.uiState().drill.timeLeft + 0.5f) * kTickRate));
     CHECK_EQ(h.results.size(), 1u);
     if (!h.results.empty()) {
         CHECK(h.results[0].skill == "ball.aerial");
@@ -238,7 +241,7 @@ TEST(bm_drill_timeouts) {
     Harness idle;
     warmUp(idle);
     idle.command("drill", {"aerial"});
-    idle.idle(static_cast<int>(30.f * kTickRate));
+    idle.idle(static_cast<int>(40.f * kTickRate));
     CHECK(idle.results.empty());
     CHECK(!idle.mod.drillActive());
     CHECK(idle.host.owner == nullptr);
@@ -477,4 +480,71 @@ TEST(bm_drill_prompts_use_button_style) {
     for (const auto& t : h.toasts) found = found || t.text.find("le saut (" + ps + ")") != std::string::npos;
     CHECK(found);
     CHECK(h.mod.uiState().keyStyle == KeyStyle::PlayStation);
+}
+
+TEST(bm_drill_beginner_progression) {
+    // New player: level 1, more time than the mechanic's base time.
+    Harness h;
+    warmUp(h);
+    CHECK_NEAR(h.mod.drillLevel("flipreset"), 0.f, 1e-6f);
+    h.command("drill", {"flipreset"});
+    skipReady(h);
+    CHECK(h.mod.uiState().drill.levelNumber == 1);
+    CHECK(h.mod.uiState().drill.timeLeft > bm::mechInfo(bm::Mech::FlipReset).drillTimeout);
+    CHECK(h.mod.uiState().drill.action.find("4 roues") != std::string::npos);
+    bool note = false;  // the start message says what level 1 asks
+    for (const auto& t : h.toasts)
+        note = note || t.text.find("Niveau 1/10 : poser les 4 roues sur la balle suffit") != std::string::npos;
+    CHECK(note);
+    h.idle(8);  // let the scripted double jump finish
+    // Typical first try: the wheels touch the ball, the reset is not used. At level 1 that is the goal.
+    h.run(continueFrom(h, flipResetScenario(FR::Wasted)));
+    h.idle(200);
+    CHECK_EQ(h.results.size(), 1u);
+    if (!h.results.empty()) {
+        CHECK(h.results[0].skill == "ball.flipreset");
+        CHECK(h.results[0].success);
+    }
+    CHECK_EQ(h.mod.uiState().drill.successes, 1);
+    CHECK(h.mod.uiState().drill.lastVerdict.rfind("Réussi", 0) == 0);
+
+    // Level 10: the same attempt fails, the reset has to be used.
+    Harness x;
+    warmUp(x);
+    x.command("level", {"flipreset", "100"});
+    x.command("drill", {"flipreset"});
+    skipReady(x);
+    x.idle(8);
+    x.run(continueFrom(x, flipResetScenario(FR::Wasted)));
+    x.idle(200);
+    CHECK_EQ(x.results.size(), 1u);
+    if (!x.results.empty()) {
+        CHECK(!x.results[0].success);
+        CHECK(hasTip(x.results[0], "bm.drill_need_convert"));
+    }
+    CHECK(x.mod.uiState().drill.lastVerdict.rfind("Raté", 0) == 0);
+    CHECK(!x.mod.uiState().drill.tip.empty());
+
+    // A soft, off-target backflip flick: fine for the flick drill at level 1, too weak at level 10.
+    Harness f;
+    warmUp(f);
+    f.command("level", {"flick", "0"});
+    f.command("drill", {"flick", "any"});
+    skipReady(f);
+    f.run(continueFrom(f, flickScenario(FK::MustyNoseLevel)));
+    f.idle(10);
+    CHECK_EQ(f.results.size(), 1u);
+    if (!f.results.empty()) CHECK(f.results[0].success);
+    Harness g;
+    warmUp(g);
+    g.command("level", {"flick", "100"});
+    g.command("drill", {"flick", "any"});
+    skipReady(g);
+    g.run(continueFrom(g, flickScenario(FK::MustyNoseLevel)));
+    g.idle(10);
+    CHECK_EQ(g.results.size(), 1u);
+    if (!g.results.empty()) {
+        CHECK(!g.results[0].success);
+        CHECK(hasTip(g.results[0], "bm.drill_need_power"));
+    }
 }

@@ -13,7 +13,7 @@ TEST(ballmech_identity) {
     CHECK(!m.drillActive());
     CHECK(m.lastResult() == nullptr);
     CHECK_EQ(m.sessionResets(), 0);
-    CHECK_NEAR(m.drillLevel("flipreset"), 0.15f, 1e-6f);
+    CHECK_NEAR(m.drillLevel("flipreset"), 0.f, 1e-6f);  // a new player starts at level 1 (the easiest)
     CHECK_NEAR(m.drillLevel("inconnu"), 0.f, 1e-6f);
 }
 

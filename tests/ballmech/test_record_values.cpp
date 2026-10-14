@@ -104,7 +104,7 @@ TEST(bm_rec_failed_drills_have_no_record_value) {
     warmUp(timeout);
     timeout.command("drill", {"aerial"});
     skipReady(timeout);
-    active(timeout, static_cast<int>(6.5f * kTickRate));
+    active(timeout, static_cast<int>((timeout.mod.uiState().drill.timeLeft + 0.5f) * kTickRate));
     checkNoRecord(timeout, "timeout");
     if (!timeout.results.empty()) CHECK(hasTip(timeout.results[0], "bm.drill_timeout"));
 

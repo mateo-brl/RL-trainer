@@ -1,5 +1,7 @@
 #include "core/modules/mechanics/Tips.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 
@@ -22,6 +24,16 @@ std::string num0(float v) {
     return buf;
 }
 
+// Stick direction of a flip angle as clock positions: 30 deg -> "11 h ou 1 h", 45 deg -> "10 h 30 ou 1 h 30".
+std::string clockPositions(float angleDeg) {
+    const int minutes = static_cast<int>(std::lround(std::max(0.f, std::min(angleDeg, 90.f)) * 2.f));
+    auto fmt = [](int m) {
+        const int h = ((m / 60) + 11) % 12 + 1, mm = m % 60;
+        return std::to_string(h) + " h" + (mm ? " " + std::to_string(mm) : std::string());
+    };
+    return fmt(12 * 60 - minutes) + " ou " + fmt(12 * 60 + minutes);
+}
+
 int sideOfVariant(const std::string& v) {
     if (v.find("left") != std::string::npos) return -1;
     if (v.find("right") != std::string::npos) return 1;
@@ -36,25 +48,25 @@ struct Plain {
 // Lines that do not depend on the player's bindings.
 const Plain kPlain[] = {
     {"WD_CRASH_LANDING", "Garde les roues vers le sol avant d'appuyer sur saut : tu as atterri sur le toit ou le côté."},
-    {"WD_NOSE_DOWN", "Cabre un peu plus le nez (15 à 25°) avant le dash, ou flippe un poil plus tard : tu bascules vers l'avant."},
+    {"WD_NOSE_DOWN", "Lève un peu plus le nez avant le dash, ou flippe un poil plus tard : tu bascules vers l'avant."},
     {"WD_NOSE_UP", "Flippe un poil plus tôt ou cabre moins : tu atterris le nez en l'air."},
     {"WD_ROLL_TILT", "Remets la voiture à plat avec l'air roll avant le dash : tu atterris penché."},
     {"WD_LOW_GAIN", "Flippe dans le sens de ton déplacement, juste avant le contact : le dash n'a presque rien rapporté."},
     {"WD_LATE_JUMPED", "Appuie un poil plus tôt : tes roues étaient déjà au sol, tu as refait un saut au lieu d'un dash."},
-    {"WALL_HOLD_LONG", "Tape le premier saut au lieu de le garder (moins de 85 ms), sinon tu t'éloignes du mur."},
+    {"WALL_HOLD_LONG", "Tape le premier saut au lieu de le garder, sinon tu t'éloignes du mur."},
     {"CHAIN_GROUND_TIME", "Relance le saut dès que les roues touchent : chaque frame au sol te coûte de la vitesse."},
     {"CHAIN_BROKEN", "Vise la régularité avant la vitesse : un dash raté casse l'élan de la chaîne."},
     {"CHAIN_NOT_SUPERSONIC", "Enchaîne au moins 3 wavedashes propres sans pause pour atteindre le supersonique."},
-    {"SF_NO_CANCEL", "Tire le stick à fond vers l'arrière juste après le flip pour l'annuler et garder le nez droit."},
-    {"SF_LATE_CANCEL", "Annule plus vite : stick tiré en arrière moins de 50 ms après le flip."},
-    {"SF_JUMP_LONG", "Flippe plus vite après le premier saut : un saut court (~90 ms) puis le flip tout de suite."},
+    {"SF_NO_CANCEL", "Annule le flip : tire le stick à fond vers toi juste après le flip."},
+    {"SF_LATE_CANCEL", "Annule plus vite : tire le stick vers toi dès le flip."},
+    {"SF_JUMP_LONG", "Tu flips trop tard : flip juste après le saut."},
     {"SF_HEADING_OFF", "Corrige ton orientation avec l'air roll et le yaw avant de toucher le sol : tu retombes de travers."},
     {"SF_DRIFT", "Braque légèrement à l'opposé avant le saut : ta trajectoire dérive sur le côté."},
     {"KO_STARTED_IN_AIR", "Attends que la voiture soit posée avant de démarrer."},
-    {"KO_FIRST_JUMP_EARLY", "Saute un poil plus tard : vers 0,5 s après le départ, une fois bien lancé."},
-    {"KO_FIRST_JUMP_LATE", "Saute plus tôt : vers 0,5 s après le départ, le flip te lance plus vite vers la balle."},
+    {"KO_FIRST_JUMP_EARLY", "Saute un peu plus tard : laisse d'abord la voiture prendre de la vitesse."},
+    {"KO_FIRST_JUMP_LATE", "Saute plus tôt après le GO : le flip te lancera plus vite vers la balle."},
     {"HF_NO_CANCEL", "Pousse le stick à fond vers l'avant pendant le flip arrière pour l'annuler."},
-    {"HF_EARLY_CANCEL", "Laisse le nez monter jusqu'à la verticale (~0,2 s) avant de pousser le stick."},
+    {"HF_EARLY_CANCEL", "Laisse le nez monter jusqu'à la verticale avant de pousser le stick."},
     {"HF_LATE_CANCEL", "Pousse le stick vers l'avant dès que la voiture est à la verticale."},
     {"HF_WEAK_CANCEL", "Pousse le stick À FOND vers l'avant : une annulation partielle laisse le flip continuer."},
     {"HF_NOT_STRAIGHT", "Tire le stick bien droit vers le bas pour le flip arrière, sans diagonale."},
@@ -64,16 +76,16 @@ const Plain kPlain[] = {
     {"HF_BAD_LANDING", "Finis ta rotation avant de toucher le sol."},
     {"HF_HIGH_JUMP", "Fais le flip arrière juste après le premier saut, sans monter haut."},
     {"FC_NO_CANCEL", "Tire le stick à fond dans le sens opposé au flip juste après l'avoir lancé."},
-    {"FC_LATE", "Annule plus tôt : moins de 50 ms entre le flip et le stick opposé."},
+    {"FC_LATE", "Annule plus tôt : stick opposé dès que le flip part."},
     {"FC_WEAK", "Pousse le stick À FOND à l'opposé : une annulation partielle laisse la voiture tourner."},
     {"FC_BAD_LANDING", "Prépare ta réception après l'annulation : roues vers le sol."},
     {"FA_NO_DOUBLE_JUMP", "Fais le double saut : c'est lui qui donne la vitesse verticale du fast aerial."},
-    {"FA_HOLD_SHORT", "Garde le premier saut appuyé plus longtemps (~0,2 s) pour profiter de toute la poussée."},
-    {"FA_HOLD_LONG", "Relâche le premier saut à 0,2 s : le garder plus longtemps ne sert à rien."},
+    {"FA_HOLD_SHORT", "Garde le premier saut appuyé un peu plus longtemps pour profiter de toute la poussée."},
+    {"FA_HOLD_LONG", "Relâche le premier saut plus tôt : le garder longtemps ne sert à rien."},
     {"FA_NO_TILT", "Tire le stick vers l'arrière pendant le premier saut pour cabrer la voiture."},
     {"DJA_BOOST_LATE", "Commence à booster juste après le double saut."},
     {"ST_PITCH_LEAK", "Garde le stick parfaitement horizontal (ni haut ni bas) au moment du stall."},
-    {"ST_NO_FLIP", "Garde ton flip pour le stall : il doit encore être disponible (moins de 1,25 s après le saut)."},
+    {"ST_NO_FLIP", "Fais le stall peu après le saut : ton flip doit encore être disponible."},
     {"ST_SHORT_HOVER", "Déclenche le stall quand tu commences à redescendre pour flotter plus longtemps."},
     {"AS_UNSTABLE_AXIS", "Garde le yaw et l'air roll constants pendant toute la vrille."},
     {"AS_SLOW_SPIN", "Mets le stick et l'air roll à fond pour tourner plus vite."},
@@ -81,7 +93,7 @@ const Plain kPlain[] = {
     {"RC_MISALIGNED", "Aligne le nez avec ta direction de déplacement avant de toucher le sol."},
     {"RC_SPEED_LOST", "Atterris dans le sens du mouvement (ou fais un wavedash) pour garder ta vitesse."},
     {"RC_SLOW_SETTLE", "Relâche les rotations juste avant d'atterrir pour ne pas rebondir."},
-    {"RC_MISSED_WAVEDASH", "Fais un wavedash à la réception quand tu as encore ton flip : environ 500 uu/s de gagnés."},
+    {"RC_MISSED_WAVEDASH", "Fais un wavedash à la réception quand tu as encore ton flip : tu gagnes beaucoup de vitesse."},
     {"RC_WEAK_WAVEDASH", "Soigne le wavedash de réception : flippe quand les roues arrière touchent, nez un peu cabré."},
     {"PS_SPEED_LOSS", "Raccourcis le powerslide : quelques frames suffisent pour pivoter sans perdre ta vitesse."},
     {"SM_LONG_HOLDS", "Fais des petits taps de boost (feathering) au lieu de le garder appuyé."},
@@ -91,6 +103,11 @@ const Plain kPlain[] = {
     {"RC_CRASHED", "Retourne-toi plus tôt avec l'air roll : tu as fini sur le toit ou sur le côté."},
     {"WCHAIN_SLOW", "Relance le wall dash dès que les roues retouchent le mur, sans pause."},
     {"DRILL_NO_TOUCH", "Va toucher la balle : l'exercice compte le temps jusqu'au contact."},
+    {"DRILL_CHAIN_SHORT", "Enchaîne plus de wavedashes à la suite, sans pause entre deux."},
+    {"DRILL_SLOW_TO_BALL", "Va plus vite à la balle : boost dès le premier saut et double saut tout de suite."},
+    {"AS_SHORT", "Tiens la rotation plus longtemps : garde le stick et l'air roll à fond."},
+    {"SM_NOT_SUPERSONIC", "Reste supersonique : un petit coup de boost dès que tu ralentis."},
+    {"SM_TOO_MUCH_BOOST", "Dépense moins de boost : petits coups seulement, et lâche-le à vitesse max."},
 };
 
 } // namespace
@@ -126,19 +143,15 @@ std::string tipText(std::string_view code, const MechGrade& g, const PlayerProfi
     if (code == "WD_NO_STICK")
         return "Incline le stick au-delà de ta zone morte de flip (" + dz +
                ") en sautant : stick au centre = double saut, pas de dash.";
-    if (code == "WALL_TAP_SLOW") return "Rapproche tes deux appuis sur " + jump + " (moins de 85 ms) pour le wall dash.";
+    if (code == "WALL_TAP_SLOW") return "Rapproche tes deux appuis sur " + jump + " : tape-les très vite pour le wall dash.";
     if (code == "WALL_FELL_OFF")
         return "Flippe en diagonale VERS le mur (stick avant + " + airRollPrompt(profile, 0, style) + " côté mur) pour rester collé.";
     if (code == "CHAIN_NO_POWERSLIDE") return "Garde " + slide + " appuyé pendant toute la chaîne de wavedash.";
     if (code == "CHAIN_BOOST_USED") return "Lâche " + boost + " pendant la chaîne : le but est d'aller supersonique sans boost.";
-    if (code == "SF_ANGLE_STRAIGHT") {
-        const float target = g.metric("targetAngleDeg", 30.f);
-        return "Vise plus en diagonale : environ " + num0(target) + "° du nez (stick vers 11h ou 1h).";
-    }
-    if (code == "SF_ANGLE_WIDE") {
-        const float target = g.metric("targetAngleDeg", 30.f);
-        return "Ramène le stick vers l'avant : ton flip part trop sur le côté (vise ~" + num0(target) + "°).";
-    }
+    if (code == "SF_ANGLE_STRAIGHT")
+        return "Flip plus en diagonale : stick vers " + clockPositions(g.metric("targetAngleDeg", 30.f)) + ", pas tout droit.";
+    if (code == "SF_ANGLE_WIDE")
+        return "Flip moins sur le côté : stick plus vers l'avant, vers " + clockPositions(g.metric("targetAngleDeg", 30.f)) + ".";
     if (code == "SF_BOOST_RELEASED") return "Garde " + boost + " appuyé pendant tout le speedflip.";
     if (code == "SF_THROTTLE_RELEASED") return "Garde " + throttle + " appuyé pendant tout le speedflip.";
     if (code == "SF_BAD_LANDING") return "Finis la vrille avec " + airRollPrompt(profile, side, style) + " pour retomber sur les roues.";
@@ -149,11 +162,10 @@ std::string tipText(std::string_view code, const MechGrade& g, const PlayerProfi
         return "Recentre le stick avant le 2e appui sur " + jump + " : il dépassait ta zone morte de flip (" + dz +
                ") et tu as flippé.";
     if (code == "FA_GAP_SLOW")
-        return "Double saut plus rapide : relâche puis réappuie sur " + jump + " immédiatement (moins de 75 ms).";
+        return "Double saut plus rapide : relâche puis réappuie tout de suite sur " + jump + ".";
     if (code == "FA_BOOST_LATE") return "Appuie sur " + boost + " dès le premier saut, pas après.";
     if (code == "FA_STICK_NEAR_DEADZONE")
-        return "Recentre mieux le stick au 2e saut : il était à " + num2(g.metric("stickAtSecondPress", 0.f)) +
-               " pour une zone morte de flip à " + dz + ".";
+        return "Recentre mieux le stick au 2e appui sur " + jump + " : il était presque assez penché pour flipper.";
     if (code == "ST_YAW_ROLL_MISMATCH") {
         // airroll-left: roll < 0, so the stick goes right.
         const bool rollLeft = g.variant.find("left") != std::string::npos;

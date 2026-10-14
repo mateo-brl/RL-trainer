@@ -58,7 +58,7 @@ void MechanicsModule::describeSettings(SettingsSchema& schema) {
              "Temps pendant lequel le résultat reste affiché. 0 = toujours. En focus ou en exercice, il reste affiché.", 0);
     h.integer("rlt_me_hud_metrics", &MechanicsConfig::hudMetrics, 3, 0, 5, "Mesures affichées",
               "Nombre de mesures « mesuré / idéal » montrées dans le panneau quand le HUD compact est désactivé "
-              "(réglages généraux). Elles restent toujours dans l'onglet.");
+              "(réglages généraux). Elles restent toujours dans la page Mécas mouvement.");
     h.toggle("rlt_me_hud_counters", &MechanicsConfig::hudCounters, false, "Compteurs de session",
              "Ajoute une ligne avec le nombre de mécas réussies pendant la session (HUD compact désactivé).");
 
@@ -990,7 +990,10 @@ void MechanicsModule::load(const Store& store) {
     stats_.load(store);
     for (int i = 0; i < mech::kFocusCount; ++i) {
         Staircase s = freshLevel();
-        s.load(store, std::string("mechanics.level.") + mech::focusInfo(static_cast<Focus>(i)).id);
+        // The previous version saved every level, played or not, at its old start value: only a played level is
+        // kept, so a drill never tried starts at niveau 1.
+        const std::string key = std::string("mechanics.level.") + mech::focusInfo(static_cast<Focus>(i)).id;
+        if (store.getInt(key + ".attempts", 0) > 0) s.load(store, key);
         levels_[static_cast<size_t>(i)] = s;
     }
 }

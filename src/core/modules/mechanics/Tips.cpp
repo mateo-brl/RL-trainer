@@ -59,7 +59,7 @@ const Plain kPlain[] = {
     {"CHAIN_NOT_SUPERSONIC", "Enchaîne au moins 3 wavedashes propres sans pause pour atteindre le supersonique."},
     {"SF_NO_CANCEL", "Annule le flip : tire le stick à fond vers toi juste après le flip."},
     {"SF_LATE_CANCEL", "Annule plus vite : tire le stick vers toi dès le flip."},
-    {"SF_JUMP_LONG", "Tu flips trop tard : flip juste après le saut."},
+    {"SF_JUMP_LONG", "Tu flippes trop tard : flippe juste après le saut."},
     {"SF_HEADING_OFF", "Corrige ton orientation avec l'air roll et le yaw avant de toucher le sol : tu retombes de travers."},
     {"SF_DRIFT", "Braque légèrement à l'opposé avant le saut : ta trajectoire dérive sur le côté."},
     {"KO_STARTED_IN_AIR", "Attends que la voiture soit posée avant de démarrer."},
@@ -149,9 +149,9 @@ std::string tipText(std::string_view code, const MechGrade& g, const PlayerProfi
     if (code == "CHAIN_NO_POWERSLIDE") return "Garde " + slide + " appuyé pendant toute la chaîne de wavedash.";
     if (code == "CHAIN_BOOST_USED") return "Lâche " + boost + " pendant la chaîne : le but est d'aller supersonique sans boost.";
     if (code == "SF_ANGLE_STRAIGHT")
-        return "Flip plus en diagonale : stick vers " + clockPositions(g.metric("targetAngleDeg", 30.f)) + ", pas tout droit.";
+        return "Flippe plus en diagonale : stick vers " + clockPositions(g.metric("targetAngleDeg", 30.f)) + ", pas tout droit.";
     if (code == "SF_ANGLE_WIDE")
-        return "Flip moins sur le côté : stick plus vers l'avant, vers " + clockPositions(g.metric("targetAngleDeg", 30.f)) + ".";
+        return "Flippe moins sur le côté : stick plus vers l'avant, vers " + clockPositions(g.metric("targetAngleDeg", 30.f)) + ".";
     if (code == "SF_BOOST_RELEASED") return "Garde " + boost + " appuyé pendant tout le speedflip.";
     if (code == "SF_THROTTLE_RELEASED") return "Garde " + throttle + " appuyé pendant tout le speedflip.";
     if (code == "SF_BAD_LANDING") return "Finis la vrille avec " + airRollPrompt(profile, side, style) + " pour retomber sur les roues.";

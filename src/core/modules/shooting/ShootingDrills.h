@@ -14,6 +14,10 @@ namespace rlt::shoot {
 enum class TargetSetup : int { Mix = 0, Rolling = 1, Bouncing = 2, Pass = 3, Roof = 4, Count = 5 };
 constexpr int kTargetSetupCount = static_cast<int>(TargetSetup::Count);
 
+// Adaptive level of a player who never did the drill: the easiest one (niveau 1: closest goal, biggest zones,
+// slowest balls, weakest flick accepted).
+constexpr float kShootStartLevel = 0.f;
+
 const char* setupId(TargetSetup s); // "mix", "rolling", "bouncing", "pass", "roof"
 const char* setupLabel(TargetSetup s); // French: "Mélange", "Balle roulante", ...
 bool parseSetup(const std::string& text, int& out);
@@ -39,7 +43,7 @@ Vec3 clampToField(Vec3 p, float margin);
 // Spin of a ball rolling on the floor without slipping (capped at the game's 6 rad/s), for rolling spawns.
 Vec3 rollingSpin(const Vec3& vel, float radius = kBallRadius);
 
-// Ball resting on the roof, car facing the attacked goal at a distance growing with the level.
+// Ball resting on the roof, car facing the attacked goal at a distance growing with the level (2000 .. 4500 uu).
 // `fixedSpeed` < 0: driving speed from the level (400..1100 uu/s) when `moving`.
 Spawn flickSpawn(float level, bool moving, float fixedSpeed, const GoalFrame& goal, const RoofParams& roof, Rng& rng);
 // Net targeting setups (Mix is resolved by the caller).

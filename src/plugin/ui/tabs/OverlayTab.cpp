@@ -1,6 +1,7 @@
-// "Affichage" tab: live values of the overlay (speed differential in its zone colour, session timer, touch zone
-// state), action buttons, every setting grouped like First Touch Trainer, training time statistics and the console
-// commands. Render thread: module state is copied under the engine lock, settings change through cvars only.
+// "Écart de vitesse" page (module "overlay"): live values of the overlay (speed differential in its zone colour,
+// session timer, touch zone state), action buttons, every setting grouped like First Touch Trainer, training time
+// statistics and the console commands. Render thread: module state is copied under the engine lock, settings
+// change through cvars only.
 
 #include <algorithm>
 #include <cstdio>
@@ -161,7 +162,7 @@ void renderActions(const UiContext& ctx) {
     hoverTip("Repart de 0:00 sans changer de map (rlt overlay reset_timer).");
     ImGui::SameLine();
     if (ImGui::Button("Préréglage d'origine")) ctx.post(kModule, "preset_original");
-    hoverTip("Remet tous les réglages de l'onglet aux valeurs de First Touch Trainer (tout désactivé, taille 3, "
+    hoverTip("Remet tous les réglages de cette page aux valeurs de First Touch Trainer (tout désactivé, taille 3, "
              "cercle rouge de 47, couleurs vert / jaune / rouge). Même effet que rlt overlay preset_original.");
 }
 
@@ -180,8 +181,10 @@ void renderStats(const UiContext& ctx, const OverlayStatus& st, const std::vecto
             minutes.push_back(d.seconds / 60.f);
             top = std::max(top, d.seconds / 60.f);
         }
-        const std::string overlay = "Minutes par jour (du " + days.front().date + " au " + days.back().date + ")";
-        ImGui::PlotHistogram("##ov_days", minutes.data(), static_cast<int>(minutes.size()), 0, overlay.c_str(), 0.f,
+        // Title above the chart, not over it: light text on the amber bars is unreadable.
+        const std::string title = "Minutes par jour (du " + days.front().date + " au " + days.back().date + ")";
+        ImGui::TextUnformatted(title.c_str());
+        ImGui::PlotHistogram("##ov_days", minutes.data(), static_cast<int>(minutes.size()), 0, nullptr, 0.f,
                              top * 1.1f, ImVec2(0.f, 70.f));
     } else {
         ImGui::TextDisabled("Rien d'enregistré pour l'instant : le temps compte dès que tu joues hors ligne.");
@@ -246,7 +249,7 @@ void renderOverlayTab(UiContext& ctx) {
     collapsingSection(ctx, cur, OverlayModule::kSectionColors);
     if (!ctx.showAdvanced)
         ImGui::TextDisabled("Réglages experts du cercle (inclinaison, vitesses, lissage) : coche « Afficher les "
-                            "réglages avancés » dans l'onglet Réglages.");
+                            "réglages avancés » dans la page Réglages.");
 
     ImGui::Spacing();
     renderStats(ctx, st, days);

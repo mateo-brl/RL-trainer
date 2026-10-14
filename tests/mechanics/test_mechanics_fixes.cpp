@@ -385,6 +385,7 @@ TEST(mechanics_speedflip_drill_needs_the_ball) {
     Rig rig;  // kickoff step of the drill (level 5)
     Store st;
     st.setFloat("mechanics.level.speedflip.level", 0.45f);
+    st.setInt("mechanics.level.speedflip.attempts", 1);
     rig.mod.load(st);
     rig.command("drill", {"speedflip"});
     rig.tick(Inputs{});

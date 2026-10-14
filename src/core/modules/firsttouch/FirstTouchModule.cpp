@@ -70,7 +70,7 @@ void FirstTouchModule::describeSettings(SettingsSchema& schema) {
     a.choice("rlt_ft_unit", &C::unit, 0, {"Auto (réglage du jeu)", "km/h", "mph", "uu/s"}, "Unité",
              "Unité des vitesses dans le panneau et le chat. Auto suit le réglage métrique du jeu.");
     a.toggle("rlt_ft_send_results", &C::sendResults, true, "Envoyer au coach",
-             "Chaque touche notée alimente l'onglet Progression (historique, points faibles).");
+             "Chaque touche notée alimente la page Progression (historique, points faibles).");
 
     auto h = schema.section(&Settings::firstTouch, "firsttouch", "Affichage");
     h.toggle("rlt_ft_hud", &C::hudEnabled, true, "Panneau des touches",
@@ -81,7 +81,8 @@ void FirstTouchModule::describeSettings(SettingsSchema& schema) {
     h.number("rlt_ft_hud_size", &C::hudSize, 1.f, 0.5f, 2.f, "Taille du panneau", "Multiplie la taille du panneau.", 2);
     h.toggle("rlt_ft_heatmap", &C::showHeatmap, true, "Carte des points de contact",
              "Petit schéma de la balle avec tes 40 derniers points de contact, colorés selon la note. En jeu, "
-             "seulement quand le HUD compact est désactivé. Toujours visible dans l'onglet Carte des contacts.");
+             "seulement quand le HUD compact est désactivé. Toujours visible dans la page Première touche (onglet "
+             "Carte des contacts).");
     h.toggle("rlt_ft_tips", &C::showTips, true, "Conseil après chaque touche", "Affiche le conseil principal de la dernière touche.");
     h.toggle("rlt_ft_trend", &C::showTrend, true, "Tendance de vitesse",
              "Indique si tu arrives en moyenne trop vite ou trop lentement sur la balle.");
@@ -810,7 +811,8 @@ void FirstTouchModule::load(const Store& store) {
     for (int i = 0; i < ft::kDrillKinds; ++i) {
         const std::string key = std::string("firsttouch.drill.") + ft::drillId(static_cast<ft::DrillType>(i));
         auto& s = stairs_[static_cast<size_t>(i)];
-        if (store.has(key + ".level")) s.load(store, key);
+        // Only a played level is kept: the previous version saved untried drills at its old start value.
+        if (store.getInt(key + ".attempts", 0) > 0) s.load(store, key);
         drillBest_[static_cast<size_t>(i)] = clampf(store.getFloat(key + ".best", s.level()), 0.f, 1.f);
     }
 }

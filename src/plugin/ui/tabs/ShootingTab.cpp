@@ -1,5 +1,6 @@
 #include "plugin/ui/Ui.h"
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,25 @@ Color verdictColor(Verdict v) {
     }
 }
 
+// Coloured text that wraps at the window edge (tips, advice).
+void wrappedColored(const Color& c, const std::string& text) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(c.r / 255.f, c.g / 255.f, c.b / 255.f, c.a / 255.f));
+    ImGui::TextWrapped("%s", text.c_str());
+    ImGui::PopStyleColor();
+}
+
+std::string levelText(float level) { return "niveau " + std::to_string(shoot::shootPlayerLevel(level)) + "/10"; }
+
+// One measure of a result: "Puissance : 52 km/h (objectif 47)"; 0/1 flags read "oui" / "non".
+std::string metricText(const Metric& m) {
+    std::string value;
+    if (m.unit.empty() && (m.value == 0.f || m.value == 1.f)) value = m.value > 0.5f ? "oui" : "non";
+    else value = formatNumber(m.value, std::fabs(m.value) < 10.f ? 2 : 0) + (m.unit.empty() ? "" : " " + m.unit);
+    std::string s = m.label + " : " + value;
+    if (m.hasIdeal) s += " (objectif " + formatNumber(m.ideal, std::fabs(m.ideal) < 10.f ? 2 : 0) + ")";
+    return s;
+}
+
 std::string speedText(float uus, const ShootingView& v, int decimals = 1) {
     const SpeedUnit unit = resolveUnit(static_cast<SpeedUnit>(v.cfg.unit), v.profile.metric);
     return formatSpeed(uus, unit, decimals);
@@ -67,7 +87,7 @@ void statusSection(UiContext& ctx, const ShootingView& v) {
             ImGui::Text("Flick demandé : %s",
                         st.requestedFlick >= 0 ? shoot::flickTypeLabel(static_cast<shoot::FlickType>(st.requestedFlick))
                                                : "n'importe lequel");
-            ImGui::Text("Niveau : %s", ui::percent(st.flickLevel).c_str());
+            ImGui::Text("Niveau %d/10", shoot::shootPlayerLevel(st.flickLevel));
         } else if (st.mode == ShootMode::Targets) {
             ImGui::Text("Cible : %s (%s)", shoot::zoneLabel(static_cast<shoot::Zone>(st.currentZone)),
                         shoot::setupLabel(static_cast<shoot::TargetSetup>(st.currentSetup)));
@@ -84,50 +104,75 @@ void statusSection(UiContext& ctx, const ShootingView& v) {
                         "Exercices indisponibles ici : lance le freeplay. L'analyse et l'affichage restent actifs.");
     if (!st.message.empty()) ImGui::TextDisabled("%s", st.message.c_str());
     if (st.hasLastShot) ImGui::Text("Dernier tir : %s", speedText(st.lastShotSpeed, v).c_str());
-    if (st.hasLastResult) {
-        const AttemptResult& r = st.lastResult;
-        ui::textColored(verdictColor(r.verdict),
-                        r.title + " : " + verdictLabel(r.verdict) + " (" + formatNumber(r.score, 0) + "/100)");
-        for (size_t i = 0; i < r.tips.size() && i < 2; ++i) ImGui::BulletText("%s", r.tips[i].text.c_str());
+    if (!st.hasLastResult) return;
+    const AttemptResult& r = st.lastResult;
+    ui::textColored(verdictColor(r.verdict),
+                    r.title + " : " + verdictLabel(r.verdict) + " (" + formatNumber(r.score, 0) + "/100)");
+    // The one thing to work on, in words.
+    if (!r.tips.empty()) wrappedColored(colors::Yellow, "À travailler : " + r.tips.front().text);
+    if (ImGui::CollapsingHeader("Détails techniques##shooting_last")) {
+        ImGui::Indent();
+        for (const auto& m : r.metrics) ImGui::BulletText("%s", metricText(m).c_str());
+        if (r.tips.size() > 1) {
+            ImGui::TextUnformatted("Autres points :");
+            for (size_t i = 1; i < r.tips.size(); ++i) {
+                ImGui::Bullet();
+                ImGui::SameLine();
+                ImGui::TextWrapped("%s", r.tips[i].text.c_str());
+            }
+        }
+        ImGui::Unindent();
     }
 }
 
 void flickSection(UiContext& ctx, const ShootingView& v) {
     ImGui::TextWrapped(
-        "La balle est posée sur ton toit. Saute puis dodge : le plugin reconnaît le flick, mesure sa puissance, "
-        "sa direction par rapport à la cible, la hauteur et ton timing, puis te donne un conseil.");
+        "La balle est posée sur ton toit. Saute puis flip : le plugin reconnaît le flick, le note et te donne un "
+        "conseil. Commence par le flick avant, voiture à l'arrêt.");
     ImGui::Text("Tes boutons : %s, %s", actionPrompt(v.profile, GameAction::Jump, v.style).c_str(),
                 shoot::airRollPrompt(v.profile, v.style).c_str());
     if (ImGui::Button("Flicks libres (tous types)")) ctx.post("shooting", "flick", {"any"});
     ui::helpMarker("Fais le flick que tu veux : il est reconnu et noté. Les records sont gardés par type.");
     ImGui::Spacing();
-    for (int i = 0; i < shoot::kRequestableFlickCount; ++i) {
-        const auto type = static_cast<shoot::FlickType>(i);
-        ImGui::PushID(i);
-        const std::string header = std::string(shoot::flickTypeLabel(type)) + "##flicktype";
-        if (ImGui::TreeNode(header.c_str())) {
-            ImGui::PushTextWrapPos(0.f);
-            ImGui::TextUnformatted(shoot::flickHowTo(type, v.profile, v.style, v.cfg.delayedSec).c_str());
-            ImGui::PopTextWrapPos();
-            const shoot::FlickRecord& rec = v.stats.flickAll[static_cast<size_t>(i)];
-            if (rec.count > 0)
-                ImGui::TextDisabled("Record : %s, %d essais (%d réussis)", speedText(rec.bestPower, v).c_str(),
-                                    rec.count, rec.successes);
-            if (ImGui::Button("Entraîner ce flick")) ctx.post("shooting", "flick", {shoot::flickTypeId(type)});
-            ImGui::TreePop();
+    // Basics first: Débutant, then Intermédiaire, then Avancé (catalogue order inside a tier).
+    for (int tier = 0; tier < 3; ++tier) {
+        for (int i = 0; i < shoot::kRequestableFlickCount; ++i) {
+            const auto type = static_cast<shoot::FlickType>(i);
+            if (static_cast<int>(shoot::flickTier(type)) != tier) continue;
+            ImGui::PushID(i);
+            const std::string header = std::string(shoot::flickTypeLabel(type)) + " (" +
+                                       shoot::tierLabel(shoot::flickTier(type)) + ")##flicktype";
+            if (ImGui::TreeNode(header.c_str())) {
+                ImGui::PushTextWrapPos(0.f);
+                ImGui::TextUnformatted(shoot::flickHowTo(type, v.profile, v.style, v.cfg.delayedSec).c_str());
+                ImGui::PopTextWrapPos();
+                const shoot::FlickRecord& rec = v.stats.flickAll[static_cast<size_t>(i)];
+                if (rec.count > 0)
+                    ImGui::TextDisabled("Record : %s, %d essais (%d réussis)", speedText(rec.bestPower, v).c_str(),
+                                        rec.count, rec.successes);
+                if (ImGui::Button("Entraîner ce flick")) ctx.post("shooting", "flick", {shoot::flickTypeId(type)});
+                if (ImGui::CollapsingHeader("Détails techniques##flick_tech")) {
+                    ImGui::PushTextWrapPos(0.f);
+                    ImGui::TextUnformatted(shoot::flickTechNote(type, v.cfg.delayedSec, v.cfg.mustyPitchDeg,
+                                                                v.cfg.breeziRollDeg)
+                                               .c_str());
+                    ImGui::PopTextWrapPos();
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
         }
-        ImGui::PopID();
     }
     ImGui::TextDisabled("(?) dans un résultat = classification incertaine : proche d'un seuil (voir Avancé) "
-                        "ou dodge non confirmé par le jeu.");
+                        "ou flip non confirmé par le jeu.");
     ui::settingsSection(ctx, "shooting", "Flicks");
 }
 
 void targetsSection(UiContext& ctx, const ShootingView& v) {
     ImGui::TextWrapped(
-        "Des zones sont dessinées dans le but adverse. Tire dans la zone en surbrillance : le point d'impact "
-        "sur la ligne de but est mesuré, un marqueur montre l'impact prévu pendant que la balle vole. "
-        "La taille des zones et la vitesse de la balle s'adaptent à ton niveau.");
+        "Des zones sont dessinées dans le but adverse. Tire dans la zone en couleur. Un marqueur montre où la "
+        "balle va arriver pendant qu'elle vole. Au niveau 1 les zones sont grandes et la balle lente ; elles "
+        "rétrécissent quand tu réussis. Commence par la balle roulante.");
     const char* zoneButtons[] = {"Lucarne gauche",   "Lucarne droite", "Poteau bas gauche",
                                  "Poteau bas droit", "Centre",         "Aléatoire"};
     const char* zoneArgs[] = {"tl", "tr", "bl", "br", "center", "random"};
@@ -198,8 +243,8 @@ void targetsSection(UiContext& ctx, const ShootingView& v) {
     for (int i = 1; i < shoot::kTargetSetupCount; ++i) {
         const float lvl = v.status.setupLevels[static_cast<size_t>(i)];
         const std::string overlay =
-            std::string(shoot::setupLabel(static_cast<shoot::TargetSetup>(i))) + " : " + ui::percent(lvl);
-        ImGui::ProgressBar(lvl, ImVec2(-1.f, 0.f), overlay.c_str());
+            std::string(shoot::setupLabel(static_cast<shoot::TargetSetup>(i))) + " : " + levelText(lvl);
+        ui::progressBar(lvl, overlay);
     }
     ui::settingsSection(ctx, "shooting", "Cibles dans le but");
 }
@@ -298,24 +343,26 @@ void renderShootingTab(UiContext& ctx) {
         return;
     }
     ImGui::TextWrapped(
-        "Flicks avec la balle sur le toit, tirs de précision dans les zones du but et défi de puissance. "
+        "Tirs de précision dans les zones du but, défi de puissance et flicks avec la balle sur le toit. "
         "Chaque essai est noté avec un conseil, tes records sont sauvegardés.");
+    wrappedColored(colors::Green, shoot::shootingAdvice());
     if (!v.cfg.enabled) ui::textColored(colors::Orange, "Module désactivé (voir Exercices, Activer).");
     statusSection(ctx, v);
 
-    if (ImGui::CollapsingHeader("Flicks##shooting", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Indent();
-        flickSection(ctx, v);
-        ImGui::Unindent();
-    }
-    if (ImGui::CollapsingHeader("Cibles dans le but##shooting", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Basics first.
+    if (ImGui::CollapsingHeader("Cibles dans le but (Débutant)##shooting", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
         targetsSection(ctx, v);
         ImGui::Unindent();
     }
-    if (ImGui::CollapsingHeader("Puissance##shooting")) {
+    if (ImGui::CollapsingHeader("Puissance (Débutant)##shooting")) {
         ImGui::Indent();
         powerSection(ctx, v);
+        ImGui::Unindent();
+    }
+    if (ImGui::CollapsingHeader("Flicks (Débutant à Avancé)##shooting", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        flickSection(ctx, v);
         ImGui::Unindent();
     }
     if (ImGui::CollapsingHeader("Records de flicks##shooting")) {

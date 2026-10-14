@@ -38,6 +38,10 @@ enum class KickoffGhostMode : int {
     Adaptive = 6
 };
 constexpr int kKoGhostModeCount = 7;
+// Adaptive ghost: level 0 = Débutant time .. 1 = Élite (kickoffBenchmarkAt). A player who never raced it starts at
+// the beginner time; each win adds 0.04, each loss removes 0.06 (60 % of wins targeted by default).
+constexpr float kKoAdaptiveStart = 0.f;
+constexpr float kKoAdaptiveStep = 0.04f;
 
 const char* kickoffModeName(KickoffMode m);            // "Position choisie", "Aléatoire", "Série des 5", "Faiblesse"
 const char* kickoffGhostModeName(KickoffGhostMode g);  // "Désactivé", "Débutant", ... "Mon record", "Adaptatif"
@@ -151,6 +155,7 @@ private:
     void resetPassive();
 
     // Context.
+    void migrateDefaults(Actions& out);
     void resetTransient();
     void notify(Actions& out, const std::string& text, ToastKind kind);
 
@@ -162,6 +167,9 @@ private:
 
     KickoffConfig cfg_;
     int lastGhostLevelCfg_ = -1;
+    // One-time move of the old defaults (Pro ghost, Pro grading) to Adaptive / Standard, done on the first tick
+    // once config.cfg is loaded. Saved, so it never runs twice.
+    bool defaultsV2_ = false;
     std::optional<KickoffGhostMode> ghostOverride_;
 
     // Drill state.
@@ -211,7 +219,7 @@ private:
 
     // Progress.
     KickoffStats stats_;
-    Staircase staircase_{0.6f, 0.04f, 0.5f};
+    Staircase staircase_{0.6f, kKoAdaptiveStep, kKoAdaptiveStart};
     Rng rng_{0x6b69636b6f6666ULL};
     int sessionAttempts_ = 0;
     int sessionScoreSum_ = 0;

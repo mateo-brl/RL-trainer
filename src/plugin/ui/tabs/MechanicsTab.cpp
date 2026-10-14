@@ -134,7 +134,7 @@ void renderLastAttempt(const MechanicsModule::LastAttempt& last) {
     char overlay[32];
     std::snprintf(overlay, sizeof(overlay), "%.0f / 100", static_cast<double>(r.score));
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, toImVec(mech::verdictColor(r.verdict)));
-    ImGui::ProgressBar(clamp01(r.score / 100.f), ImVec2(-1.f, 0.f), overlay);
+    ui::progressBar(clamp01(r.score / 100.f), overlay);
     ImGui::PopStyleColor();
     // The one thing to work on, in words.
     ImGui::PushStyleColor(ImGuiCol_Text, toImVec(r.tips.empty() ? kGood : kTip));

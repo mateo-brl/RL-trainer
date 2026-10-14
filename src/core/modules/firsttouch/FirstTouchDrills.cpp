@@ -144,7 +144,7 @@ std::vector<std::string> drillSteps(DrillType t) {
                 "Garde la même vitesse qu'elle."};
     case DrillType::Pass:
         return {"Regarde d'où vient la passe et où elle va.", "Tourne pour rouler dans la même direction que la balle.",
-                "Touche-la quand vous allez dans le même sens : de travers, elle part sur le côté.",
+                "Touche-la quand toi et la balle allez dans le même sens : de travers, elle part sur le côté.",
                 "Continue avec elle devant toi."};
     case DrillType::Lob:
         return {"Regarde où la balle va tomber.", "Va à cet endroit et attends-la presque à l'arrêt.",

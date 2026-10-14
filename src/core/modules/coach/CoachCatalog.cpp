@@ -197,7 +197,13 @@ std::string defaultSkillTitle(const std::string& skill) {
 LaunchSpec launchForSkill(const std::string& skill) {
     const std::string fam = skillFamily(skill);
     const std::string last = lastSegment(skill);
-    if (fam == "first_touch") return make("firsttouch", "drill", "mix", "Exercice première touche (mélange)");
+    if (fam == "first_touch") {
+        // One drill per kind of touch, never the Mix (Avancé). Sol, dribble and unknown kinds: the rolling ball.
+        if (last == "bounce") return make("firsttouch", "drill", "lob", "Exercice première touche (rebond)");
+        if (last == "air") return make("firsttouch", "drill", "high", "Exercice première touche (balle haute)");
+        if (last == "wall") return make("firsttouch", "drill", "wall", "Exercice première touche (mur)");
+        return make("firsttouch", "drill", "roll_in", "Exercice première touche (balle qui roule)");
+    }
     if (fam == "kickoff") return make("kickoff", "start", "weakness", "Kickoffs ciblés sur tes points faibles");
     const std::string name = secondSegment(skill);
     if (fam == "mech" && !name.empty()) {
@@ -261,11 +267,11 @@ std::vector<PlanItem> starterPlan() {
     plan.push_back(b);
 
     PlanItem c;
-    c.skill = "mech.speedflip";
-    c.title = "Speedflip";
+    c.skill = "mech.recovery";
+    c.title = "Réception";
     c.family = "mech";
-    c.launch = make("mechanics", "drill", "speedflip", "Exercice Speedflip");
-    c.reason = "La méca qui fait gagner les kickoffs : travaille-la tôt, à petite dose.";
+    c.launch = make("mechanics", "drill", "recovery", "Exercice Réception");
+    c.reason = "Pour bien démarrer : retombe sur tes roues sans perdre ta vitesse.";
     c.starter = true;
     plan.push_back(c);
     return plan;

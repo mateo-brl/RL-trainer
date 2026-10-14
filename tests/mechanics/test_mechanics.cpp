@@ -365,6 +365,7 @@ TEST(mechanics_drill_speedflip_countdown) {
     Rig ko;
     Store st;
     st.setFloat("mechanics.level.speedflip.level", 0.45f);
+    st.setInt("mechanics.level.speedflip.attempts", 1);
     ko.mod.load(st);
     ko.command("drill", {"speedflip"});
     Actions k = ko.tick(Inputs{});
@@ -506,6 +507,7 @@ TEST(mechanics_drill_below_level_explains) {
     Rig rig;
     Store st;
     st.setFloat("mechanics.level.wavedash.level", 1.f);
+    st.setInt("mechanics.level.wavedash.attempts", 1);
     rig.mod.load(st);
     CHECK_NEAR(rig.mod.level(Focus::Wavedash), 1.f, 1e-6f);
     rig.command("drill", {"wavedash"});
@@ -645,6 +647,7 @@ TEST(mechanics_drill_speedflip_end_to_end) {
     Rig rig;  // kickoff step of the drill (level 5)
     Store st;
     st.setFloat("mechanics.level.speedflip.level", 0.45f);
+    st.setInt("mechanics.level.speedflip.attempts", 1);
     rig.mod.load(st);
     rig.command("drill", {"speedflip"});
     rig.tick(Inputs{});
@@ -810,6 +813,7 @@ TEST(mechanics_load_is_robust_to_bad_data) {
     st.setList("mechanics.stats.wavedash.recent", recent);
     st.setList("mechanics.stats.wavedash.errors", {"=3", "me.wd_nose_down=2", "garbage"});
     st.setString("mechanics.level.wavedash.level", "7");
+    st.setInt("mechanics.level.wavedash.attempts", 3);
     MechanicsModule m;
     m.load(st);
     const MechStat& s = m.stats().get(Mech::Wavedash);

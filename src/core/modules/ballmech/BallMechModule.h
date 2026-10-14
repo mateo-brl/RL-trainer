@@ -152,6 +152,7 @@ private:
     KeyStyle keyStyle_ = KeyStyle::Auto;  // player's button style (Settings::profile.buttonStyle)
     std::unique_ptr<Impl> impl_;
     std::array<Staircase, 11> stairs_;   // one adaptive level per mechanic (bm::kMechCount)
+    std::array<bool, 11> levelChosen_{};  // level set with the - / + buttons ("level" command): kept even unplayed
     Drill drill_;
     std::string flickVariant_;
     Rng rng_;

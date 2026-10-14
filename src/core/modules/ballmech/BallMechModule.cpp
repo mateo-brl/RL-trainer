@@ -164,6 +164,8 @@ void BallMechModule::describeSettings(SettingsSchema& schema) {
                  "Position horizontale (fraction de la largeur de l'écran).", 3);
         w.number("rlt_bm_hud_y", &BallMechConfig::hudY, 0.60f, 0.f, 1.f, "Position Y du panneau",
                  "Position verticale (fraction de la hauteur de l'écran).", 3);
+        w.number("rlt_bm_hud_scale", &BallMechConfig::hudScale, 1.f, 0.5f, 2.f, "Taille du panneau",
+                 "Multiplie la taille du panneau et de celui des exercices, en plus de la taille générale du HUD.", 2);
         w.number("rlt_bm_hud_seconds", &BallMechConfig::hudSeconds, 8.f, 0.f, 60.f, "Durée d'affichage (s)",
                  "Temps pendant lequel le dernier résultat reste affiché. 0 = toujours.", 1);
         w.integer("rlt_bm_hud_metrics", &BallMechConfig::hudMetrics, 3, 0, 4, "Mesures affichées",
@@ -773,6 +775,7 @@ void BallMechModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
         // Percent (0-100); a decimal value up to 1 ("0.25") is read as a fraction.
         const bool fraction = cmd.args[1].find('.') != std::string::npos && v <= 1.f;
         stairs_[static_cast<size_t>(m)].setLevel(fraction ? v : v / 100.f);
+        levelChosen_[static_cast<size_t>(m)] = true;
         out.requestSave = true;
     } else if (n == "variant") {
         const std::string v = cmd.args.empty() || cmd.args[0] == "any" || cmd.args[0] == "tous" ? "" : cmd.args[0];
@@ -787,6 +790,7 @@ void BallMechModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
     } else if (n == "reset_stats") {
         impl_->stats.clear();
         for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, kStairStep, kStairStart);
+        levelChosen_.fill(false);
         drill_.attempts = drill_.successes = 0;
         hasLast_ = false;
         lastHasPath_ = false;
@@ -810,7 +814,7 @@ void BallMechModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
     if (mode == GameMode::Replay || mode == GameMode::Menu || mode == GameMode::Online) return;
     const float W = view.screenW > 0.f ? view.screenW : 1920.f;
     const float H = view.screenH > 0.f ? view.screenH : 1080.f;
-    const float scale = ctx.hudScale > 0.f ? ctx.hudScale : 1.f;
+    const float scale = (ctx.hudScale > 0.f ? ctx.hudScale : 1.f) * cfg_.hudScale;
     const float now = ctx.hasSnapshot ? ctx.snap.time : lastTickTime_;
     const SpeedUnit unit = resolveUnit(SpeedUnit::Auto, ctx.profile.metric);
     const Occluder occ{view.ballValid, view.ballVisualPos, view.ballRadius};
@@ -982,8 +986,11 @@ BallMechModule::UiState BallMechModule::uiState() const {
 // ---- Persistence -------------------------------------------------------------------------------------------
 void BallMechModule::save(Store& store) const {
     impl_->stats.save(store);
-    for (int i = 0; i < bm::kMechCount; ++i)
-        stairs_[static_cast<size_t>(i)].save(store, std::string("ballmech.drill.") + bm::mechInfo(i).id);
+    for (int i = 0; i < bm::kMechCount; ++i) {
+        const std::string key = std::string("ballmech.drill.") + bm::mechInfo(i).id;
+        stairs_[static_cast<size_t>(i)].save(store, key);
+        store.setInt(key + ".chosen", levelChosen_[static_cast<size_t>(i)] ? 1 : 0);
+    }
     store.setString("ballmech.flick_variant", flickVariant_);
 }
 
@@ -992,7 +999,10 @@ void BallMechModule::load(const Store& store) {
     for (int i = 0; i < bm::kMechCount; ++i) {
         Staircase& s = stairs_[static_cast<size_t>(i)];
         s = Staircase(cfg_.drillTarget, kStairStep, kStairStart);
-        s.load(store, std::string("ballmech.drill.") + bm::mechInfo(i).id);
+        // Only a played or chosen level is kept: the previous version saved untried drills at its old start value.
+        const std::string key = std::string("ballmech.drill.") + bm::mechInfo(i).id;
+        levelChosen_[static_cast<size_t>(i)] = store.getInt(key + ".chosen", 0) != 0;
+        if (levelChosen_[static_cast<size_t>(i)] || store.getInt(key + ".attempts", 0) > 0) s.load(store, key);
     }
     const std::string v = store.getString("ballmech.flick_variant", "");
     flickVariant_ = flickVariantValid(v) ? v : "";

@@ -49,8 +49,8 @@ void refreshPreview(CodeField& f, const std::string& typed) {
     const bool gates = decoded->type == courses::CourseType::DribbleGates;
     const size_t n = c.rings.size();
     f.previewValid = true;
-    f.preview = std::string("Code valide : ") + CoursesModule::kindTitle(kindOfType(decoded->type)) + ", difficulté " +
-                std::to_string(decoded->difficultyPct) + ", " + std::to_string(n) +
+    f.preview = std::string("Code valide : ") + CoursesModule::kindTitle(kindOfType(decoded->type)) + ", niveau " +
+                std::to_string(CoursesModule::levelNumber(decoded->difficultyPct)) + "/10, " + std::to_string(n) +
                 (gates ? (n > 1 ? " portes" : " porte") : (n > 1 ? " anneaux" : " anneau"));
 }
 
@@ -105,12 +105,23 @@ void quickSetting(const UiContext& ctx, const Settings& current, const char* cva
     if (const SettingDef* def = ctx.engine.schema().find(cvar)) ui::settingWidget(ctx, *def, current);
 }
 
-void exerciseButton(const UiContext& ctx, const TabData& d, CoursesKind k, const char* command) {
+// Difficulty tag colours (light enough to read on the dark menu).
+Color tierColor(CoursesKind k) {
+    switch (CoursesModule::kindTier(k)) {
+    case 0: return Color(90, 230, 120, 255);
+    case 1: return Color(255, 200, 80, 255);
+    default: return Color(255, 110, 90, 255);
+    }
+}
+
+void exerciseButton(const UiContext& ctx, const TabData& d, CoursesKind k) {
     ImGui::PushID(static_cast<int>(k));
+    const char* command = CoursesModule::kindIsRings(k) ? "rings" : "control";
     if (ImGui::Button(CoursesModule::kindTitle(k), ImVec2(190.f, 0.f))) ctx.post("courses", command, {CoursesModule::kindKey(k)});
     ImGui::SameLine();
-    ImGui::TextDisabled("niv. %d", d.difficulty[static_cast<int>(k)]);
+    ui::textColored(tierColor(k), CoursesModule::kindTierLabel(k));
     ImGui::SameLine();
+    ImGui::TextDisabled("niveau %d/10", CoursesModule::levelNumber(d.difficulty[static_cast<int>(k)]));
     ImGui::TextWrapped("%s", CoursesModule::kindHelp(k));
     ImGui::PopID();
 }
@@ -134,17 +145,17 @@ void renderCoursesTab(UiContext& ctx) {
                                 d.game.category == MapCategory::AirDribble;
     if (workshopCourse)
         ui::textColored(colors::Cyan, "Map workshop de parcours détectée : le module Parcours reste en pause ici, profite "
-                                      "de la map ! Ses stats sont dans l'onglet Maps.");
+                                      "de la map ! Ses stats sont dans la page Maps.");
     else if (!d.worldControl)
         ui::textColored(colors::Orange, "Exercices indisponibles ici : lance le freeplay pour jouer les parcours.");
-    if (!d.cfg.enabled) ui::textColored(colors::Orange, "Module désactivé : active-le dans les réglages en bas de l'onglet.");
+    if (!d.cfg.enabled) ui::textColored(colors::Orange, "Module désactivé : active-le dans les réglages en bas de la page.");
 
     // ---- Live status --------------------------------------------------------------------------------------------
     ui::separatorText("En cours");
     const CoursesStatus& s = d.status;
     if (s.active) {
         ImGui::Text("%s : %s", s.title.c_str(), phaseColorLabel(s));
-        ImGui::Text("Difficulté %d%s", s.difficulty, s.fromCode ? " (fixée par le code)" : "");
+        ImGui::Text("Niveau %d/10%s", CoursesModule::levelNumber(s.difficulty), s.fromCode ? " (fixé par le code)" : "");
         if (!s.code.empty()) {
             ImGui::Text("Code : %s", s.code.c_str());
             ImGui::SameLine();
@@ -153,7 +164,7 @@ void renderCoursesTab(UiContext& ctx) {
         if (s.total > 0) {
             ImGui::Text("%s %d/%d   Temps %s   Ratés %d", s.kind == CoursesKind::Slalom ? "Porte" : "Anneau",
                         std::min(s.next + 1, s.total), s.total, formatTime(s.time).c_str(), s.misses);
-            ImGui::ProgressBar(static_cast<float>(s.next) / static_cast<float>(s.total), ImVec2(-1.f, 0.f));
+            ui::progressBar(static_cast<float>(s.next) / static_cast<float>(s.total), "");
             if (s.hasPb) ImGui::Text("Record : %s", formatTime(s.pbTime).c_str());
             else ImGui::TextDisabled("Pas encore de record sur ce parcours.");
             if (s.parTime > 0.f) {
@@ -184,25 +195,20 @@ void renderCoursesTab(UiContext& ctx) {
         ui::textColored(d.last.success ? colors::Green : colors::Red, d.last.title + " : " + d.last.headline);
         ImGui::Text("Score %d - %s", static_cast<int>(d.last.score + 0.5f), d.last.verdict.c_str());
         if (d.last.segments.size() >= 2) {
+            // Title above the chart, not over it: light text on the amber bars is unreadable.
+            ImGui::TextUnformatted(d.last.kind == CoursesKind::Slalom ? "Temps par porte (s)" : "Temps par anneau (s)");
             ImGui::PlotHistogram("##segments", d.last.segments.data(), static_cast<int>(d.last.segments.size()), 0,
-                                 d.last.kind == CoursesKind::Slalom ? "Temps par porte (s)" : "Temps par anneau (s)", 0.f,
-                                 FLT_MAX, ImVec2(-1.f, 70.f));
+                                 nullptr, 0.f, FLT_MAX, ImVec2(-1.f, 70.f));
             ImGui::TextDisabled("Les barres hautes montrent où tu perds du temps.");
         }
     }
 
-    // ---- Exercises ----------------------------------------------------------------------------------------------
-    ui::separatorText("Anneaux");
-    exerciseButton(ctx, d, CoursesKind::RingsAir, "rings");
-    exerciseButton(ctx, d, CoursesKind::RingsGround, "rings");
-    exerciseButton(ctx, d, CoursesKind::RingsAirDribble, "rings");
+    // ---- Exercises (easiest first) ------------------------------------------------------------------------------
+    ui::separatorText("Exercices");
+    ui::textColored(tierColor(CoursesKind::RingsGround), "Débutant : commence par les anneaux au sol, puis le dribble.");
+    for (CoursesKind k : CoursesModule::kindsByTier()) exerciseButton(ctx, d, k);
     ImGui::TextDisabled("Astuce : coupe la caméra balle%s pour les anneaux en voiture.",
                         d.ballCamKey.empty() ? "" : (" (" + d.ballCamKey + ")").c_str());
-
-    ui::separatorText("Contrôle de balle");
-    exerciseButton(ctx, d, CoursesKind::Dribble, "control");
-    exerciseButton(ctx, d, CoursesKind::Slalom, "control");
-    exerciseButton(ctx, d, CoursesKind::Catch, "control");
     if (d.dribbleBest > 0.f) ImGui::Text("Record de dribble : %s s", formatNumber(d.dribbleBest, 1).c_str());
     if (d.catchBest > 0.f) {
         if (d.dribbleBest > 0.f) ImGui::SameLine();
@@ -235,7 +241,7 @@ void renderCoursesTab(UiContext& ctx) {
         for (const auto& l : d.levels) {
             ImGui::Text("%s", l.title.c_str());
             ImGui::NextColumn();
-            ImGui::ProgressBar(static_cast<float>(l.level) / 100.f, ImVec2(-1.f, 0.f), std::to_string(l.level).c_str());
+            ui::progressBar(static_cast<float>(l.levelNumber) / 10.f, std::to_string(l.levelNumber) + "/10");
             ImGui::NextColumn();
             ImGui::Text("%d", l.attempts);
             ImGui::NextColumn();
@@ -281,7 +287,7 @@ void renderCoursesTab(UiContext& ctx) {
         ImGui::TextDisabled("Termine un parcours pour enregistrer ton premier record.");
     } else {
         ImGui::Columns(6, "##courses_pbs", true);
-        const char* heads[6] = {"Code", "Type", "Niv.", "Record", "Essais", ""};
+        const char* heads[6] = {"Code", "Type", "Niveau", "Record", "Essais", ""};
         for (const char* h : heads) {
             ImGui::Text("%s", h);
             ImGui::NextColumn();
@@ -294,7 +300,7 @@ void renderCoursesTab(UiContext& ctx) {
             ImGui::NextColumn();
             ImGui::Text("%s", pb.typeLabel.c_str());
             ImGui::NextColumn();
-            ImGui::Text("%d", pb.difficulty);
+            ImGui::Text("%d/10", CoursesModule::levelNumber(pb.difficulty));
             ImGui::NextColumn();
             if (pb.time > 0.f) ImGui::Text("%s", formatTime(pb.time).c_str());
             else ImGui::TextDisabled("-");

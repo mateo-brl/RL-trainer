@@ -16,20 +16,22 @@ struct KindInfo {
     const char* title;
     const char* skill;
     const char* help;
+    int tier;  // 0 Débutant, 1 Intermédiaire, 2 Avancé
 };
 
 constexpr KindInfo kKinds[kCoursesKindCount] = {
     {"air", "Anneaux aériens", "course.rings.air",
-     "Vole à travers des anneaux générés : contrôle aérien, trajectoires propres et gestion du boost."},
+     "Vole à travers des anneaux générés : contrôle aérien, trajectoires propres et gestion du boost.", 2},
     {"ground", "Anneaux sol & murs", "course.rings.ground",
-     "Des arches au sol et sur les murs : vitesse, trajectoires et transitions sol-mur."},
+     "Des arches au sol et sur les murs : vitesse, trajectoires et transitions sol-mur.", 0},
     {"airdribble", "Air dribble", "course.rings.airdribble",
-     "Fais passer la BALLE dans les anneaux en air dribble. Elle ne doit jamais toucher le sol."},
+     "Fais passer la BALLE dans les anneaux en air dribble. Elle ne doit jamais toucher le sol.", 2},
     {"dribble", "Dribble sur le toit", "course.control.dribble",
-     "Garde la balle sur le toit le plus longtemps possible en roulant."},
-    {"slalom", "Slalom", "course.control.slalom", "Passe chaque porte avec la balle sur le toit, sans la faire tomber."},
+     "Garde la balle sur le toit le plus longtemps possible en roulant.", 0},
+    {"slalom", "Slalom", "course.control.slalom", "Passe chaque porte avec la balle sur le toit, sans la faire tomber.",
+     1},
     {"catch", "Rattrapage", "course.control.catch",
-     "La balle tombe du ciel ou sort d'un mur : amortis-la et garde-la sur le toit."},
+     "La balle tombe du ciel ou sort d'un mur : amortis-la et garde-la sur le toit.", 1},
 };
 
 const KindInfo& info(CoursesKind k) { return kKinds[std::clamp(static_cast<int>(k), 0, kCoursesKindCount - 1)]; }
@@ -83,6 +85,24 @@ const char* CoursesModule::kindTitle(CoursesKind k) { return info(k).title; }
 const char* CoursesModule::kindKey(CoursesKind k) { return info(k).key; }
 const char* CoursesModule::kindSkill(CoursesKind k) { return info(k).skill; }
 const char* CoursesModule::kindHelp(CoursesKind k) { return info(k).help; }
+int CoursesModule::kindTier(CoursesKind k) { return info(k).tier; }
+const char* CoursesModule::kindTierLabel(CoursesKind k) {
+    switch (info(k).tier) {
+    case 0: return "Débutant";
+    case 1: return "Intermédiaire";
+    default: return "Avancé";
+    }
+}
+std::vector<CoursesKind> CoursesModule::kindsByTier() {
+    std::vector<CoursesKind> out;
+    for (int t = 0; t < 3; ++t)
+        for (int i = 0; i < kCoursesKindCount; ++i)
+            if (info(static_cast<CoursesKind>(i)).tier == t) out.push_back(static_cast<CoursesKind>(i));
+    return out;
+}
+int CoursesModule::levelNumber(int difficultyPct) {
+    return 1 + static_cast<int>(std::lround(std::clamp(difficultyPct, 0, 100) * 9 / 100.0));
+}
 bool CoursesModule::kindUsesCourse(CoursesKind k) {
     return k == CoursesKind::RingsAir || k == CoursesKind::RingsGround || k == CoursesKind::RingsAirDribble ||
            k == CoursesKind::Slalom;
@@ -93,7 +113,7 @@ bool CoursesModule::kindIsRings(CoursesKind k) {
 
 // ---- Construction / settings -------------------------------------------------------------------------------
 CoursesModule::CoursesModule() : rng_(0xC0C0A5E5ULL, 0x2545F4914F6CDD1DULL) {
-    for (auto& s : stairs_) s = Staircase(0.75f, 0.04f, 0.25f);
+    for (auto& s : stairs_) s = Staircase(0.75f, 0.04f, 0.f);  // a new player starts at niveau 1
 }
 
 void CoursesModule::describeSettings(SettingsSchema& schema) {
@@ -181,6 +201,8 @@ void CoursesModule::describeSettings(SettingsSchema& schema) {
              "Position horizontale du panneau (fraction de l'écran).", 3);
     a.number("rlt_co_hud_y", &CoursesConfig::hudY, 0.12f, 0.f, 1.f, "Panneau : position Y",
              "Position verticale du panneau (fraction de l'écran).", 3);
+    a.number("rlt_co_hud_scale", &CoursesConfig::hudScale, 1.f, 0.5f, 2.f, "Panneau : taille",
+             "Multiplie la taille du panneau, en plus de la taille générale du HUD.", 2);
 }
 
 void CoursesModule::onSettingsChanged(const Settings& settings) { cfg_ = settings.courses; }
@@ -272,13 +294,13 @@ bool CoursesModule::refuseIdleShortcut(const TickContext& ctx, Actions& out) {
     // "restart" / "next" while idle are shortcuts (key binds, a stale tab button): they never stop another
     // module's drill. Choosing an exercise ("rings", "control", "play") still takes over on purpose.
     if (!ctx.otherActivityRunning) return false;
-    say(out, "Un autre exercice est en cours : choisis un parcours dans l'onglet Parcours pour le remplacer.");
+    say(out, "Un autre exercice est en cours : choisis un parcours dans la page Parcours pour le remplacer.");
     return true;
 }
 
 bool CoursesModule::acquireActivity(CoursesKind kind, const TickContext& ctx, Actions& out) {
     if (!cfg_.enabled) {
-        say(out, "Le module Parcours est désactivé (onglet Parcours).");
+        say(out, "Le module Parcours est désactivé (page Parcours).");
         return false;
     }
     if (workshopCourseMap(ctx.game.category)) {
@@ -324,13 +346,14 @@ void CoursesModule::startExercise(CoursesKind kind, const std::string& codeText,
             return;
         }
         if (PbEntry* pb = findPb(code_)) pb->lastUse = ++useSeq_;
-        say(out, std::string(kindTitle(kind)) + " - difficulté " + std::to_string(difficulty_) + " - code " + code_);
+        say(out, std::string(kindTitle(kind)) + " - niveau " + std::to_string(levelNumber(difficulty_)) + "/10 - code " +
+                     code_);
     } else {
         fromCode_ = false;
         difficulty_ = difficultyFor(kind);
         seed_ = newSeed(ctx);
         prepareControl(ctx);
-        say(out, std::string(kindTitle(kind)) + " - difficulté " + std::to_string(difficulty_));
+        say(out, std::string(kindTitle(kind)) + " - niveau " + std::to_string(levelNumber(difficulty_)) + "/10");
     }
     restartAttempt();
 }
@@ -352,7 +375,7 @@ void CoursesModule::replayLast(const TickContext& ctx, Actions& out) {
         say(out, std::string(kindTitle(kind)) + " - même parcours - code " + code_);
     } else {
         prepareControl(ctx);  // same seed and difficulty: the catch replays the same ball
-        say(out, std::string(kindTitle(kind)) + " - difficulté " + std::to_string(difficulty_));
+        say(out, std::string(kindTitle(kind)) + " - niveau " + std::to_string(levelNumber(difficulty_)) + "/10");
     }
     restartAttempt();
 }
@@ -397,7 +420,7 @@ void CoursesModule::nextAttempt(const TickContext& ctx, Actions& out) {
     if (kindUsesCourse(kind_)) {
         bool ok = false;
         for (int i = 0; i < 4 && !ok; ++i) ok = buildCourse(kind_, newSeed(ctx), difficultyFor(kind_), false);
-        if (ok) say(out, "Nouveau parcours (difficulté " + std::to_string(difficulty_) + ") : " + code_);
+        if (ok) say(out, "Nouveau parcours (niveau " + std::to_string(levelNumber(difficulty_)) + "/10) : " + code_);
     } else {
         fromCode_ = false;
         difficulty_ = difficultyFor(kind_);
@@ -413,6 +436,7 @@ void CoursesModule::resetTransient() {
     phaseTicks_ = 0;
     lastFrame_ = -1;
     resultHint_.clear();
+    resultMedal_.clear();
 }
 
 void CoursesModule::stopExercise(bool release) {
@@ -518,7 +542,7 @@ void CoursesModule::onCommand(const Command& cmd, const TickContext& ctx, Action
         startExercise(CoursesKind::RingsAir, arg(0), ctx, out);
     } else if (name == "code") {
         if (code_.empty()) say(out, "Aucun parcours joué pour l'instant.");
-        else say(out, "Code du parcours : " + code_ + " (bouton Copier dans l'onglet Parcours).");
+        else say(out, "Code du parcours : " + code_ + " (bouton Copier dans la page Parcours).");
     } else if (name == "restart") {
         if (phase_ == CoursesPhase::Idle) {
             if (refuseIdleShortcut(ctx, out)) return;
@@ -655,6 +679,7 @@ std::vector<CoursesLevelView> CoursesModule::levels() const {
         v.kind = k;
         v.title = kindTitle(k);
         v.level = std::clamp(static_cast<int>(std::lround(st.level() * 100.f)), 0, 100);
+        v.levelNumber = levelNumber(v.level);
         v.attempts = attempts_[static_cast<size_t>(i)];
         v.successes = successes_[static_cast<size_t>(i)];
         v.recentRate = st.recentRate();
@@ -772,7 +797,8 @@ void CoursesModule::load(const Store& store) {
     trimPbs();
     for (int i = 0; i < kCoursesKindCount; ++i) {
         const std::string key = std::string("courses.stair.") + kindKey(static_cast<CoursesKind>(i));
-        stairs_[static_cast<size_t>(i)].load(store, key);
+        // Only a played level is kept: the previous version saved untried exercises at its old start value.
+        if (store.getInt(key + ".attempts", 0) > 0) stairs_[static_cast<size_t>(i)].load(store, key);
         attempts_[static_cast<size_t>(i)] = static_cast<int>(std::clamp<long long>(
             store.getInt(std::string("courses.stats.") + kindKey(static_cast<CoursesKind>(i)) + ".attempts", 0), 0, 100000000));
         successes_[static_cast<size_t>(i)] = static_cast<int>(std::clamp<long long>(

@@ -97,6 +97,7 @@ public:
 
 private:
     // Drill flow
+    void resetStaircases(); // every adaptive level back to niveau 1
     bool startDrill(ShootMode m, const TickContext& ctx, Actions& out);
     void stopDrill(bool release);
     void tickDrill(const TickContext& ctx, Actions& out, bool teleported);

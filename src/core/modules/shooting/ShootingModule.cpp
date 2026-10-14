@@ -16,6 +16,8 @@ using namespace shoot;
 namespace {
 
 constexpr float kTeleportDist = 400.f; // uu in one tick (car max 19 uu/tick, ball max 50 uu/tick)
+constexpr Color kDetailColor{205.f, 205.f, 205.f, 255.f}; // secondary HUD lines
+constexpr Color kTipColor{255.f, 220.f, 120.f, 255.f};
 constexpr float kFixedFlickLevel = 0.3f; // flick level when the adaptive difficulty is off
 const char* const kToastTitle = "Tirs & flicks";
 
@@ -92,7 +94,15 @@ const char* shootPhaseLabel(ShootPhase p) {
 }
 
 // ---- Construction / settings ------------------------------------------------------------------------------
-ShootingModule::ShootingModule() { flick_.setThresholds(thresholds_); }
+ShootingModule::ShootingModule() {
+    flick_.setThresholds(thresholds_);
+    resetStaircases();
+}
+
+void ShootingModule::resetStaircases() {
+    flickStair_ = Staircase(0.75f, 0.03f, kShootStartLevel);
+    for (auto& st : targetStairs_) st = Staircase(0.75f, 0.03f, kShootStartLevel);
+}
 
 void ShootingModule::describeSettings(SettingsSchema& schema) {
     auto g = schema.section(&Settings::shooting, "shooting", "Exercices");
@@ -190,7 +200,7 @@ void ShootingModule::describeSettings(SettingsSchema& schema) {
     a.number("rlt_sh_breezi_roll", &ShootingConfig::breeziRollDeg, 230.f, 90.f, 720.f, "Seuil breezi (rotation, °)",
              "Rotation en roulis cumulée avant le backflip pour compter un breezi. À calibrer.", 0);
     a.number("rlt_sh_delayed_sec", &ShootingConfig::delayedSec, 0.6f, 0.3f, 1.2f, "Seuil flick retardé (s)",
-             "Délai minimum entre le saut et le dodge pour compter un flick retardé.", 2);
+             "Délai minimum entre le saut et le flip pour compter un flick retardé.", 2);
     a.number("rlt_sh_roof_reach", &ShootingConfig::roofReach, 260.f, 150.f, 400.f, "Portée balle / voiture (uu)",
              "Distance maximale entre la balle et la voiture pour considérer que la balle est encore sur la voiture.",
              0);
@@ -276,8 +286,7 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
             stats_.resetSession();
         } else {
             stats_.resetAll();
-            flickStair_ = Staircase();
-            for (auto& st : targetStairs_) st = Staircase();
+            resetStaircases();
         }
         out.requestSave = true;
         out.toasts.push_back(ToastMessage{
@@ -917,10 +926,14 @@ void ShootingModule::save(Store& store) const {
 
 void ShootingModule::load(const Store& store) {
     stats_.load(store);
-    flickStair_.load(store, "shooting.stair.flick");
+    // Levels are saved even for drills never played: only a played level is kept, a new player starts at niveau 1.
+    auto loadStair = [&store](Staircase& st, const std::string& key) {
+        if (store.getInt(key + ".attempts", 0) > 0) st.load(store, key);
+    };
+    loadStair(flickStair_, "shooting.stair.flick");
     for (int i = 1; i < kTargetSetupCount; ++i)
-        targetStairs_[static_cast<size_t>(i)].load(store, std::string("shooting.stair.") +
-                                                              setupId(static_cast<TargetSetup>(i)));
+        loadStair(targetStairs_[static_cast<size_t>(i)],
+                  std::string("shooting.stair.") + setupId(static_cast<TargetSetup>(i)));
 }
 
 // ---- Drawing ----------------------------------------------------------------------------------------------
@@ -983,28 +996,56 @@ void ShootingModule::drawRoofGuide(const ViewContext& view, const DrawContext& c
     out.circle3D(centre, b.up, 22.f, c, 2.f, 14, occ);
 }
 
+// Compact HUD: at most 3 main lines (what happens now or the result, the one tip, how to do it or what comes next);
+// targets, records, statistics, the predicted impact and the level are `detail` lines.
 DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext& ctx) const {
     const SpeedUnit unit = resolveUnit(static_cast<SpeedUnit>(cfg_.unit), ctx.profile.metric);
+    const KeyStyle style = keyStyleFromIndex(ctx.settings.profile.buttonStyle);
+    const int64_t frame = ctx.hasSnapshot ? ctx.snap.frame : prev_.frame;
     DrawPanel p;
     p.pos = {cfg_.hudX * view.screenW, cfg_.hudY * view.screenH};
     p.scale = std::max(0.3f, ctx.hudScale * cfg_.hudScale);
     p.minWidth = 230.f * p.scale;
+    const bool adaptive = mode_ == ShootMode::Flick || mode_ == ShootMode::Targets;
+    const float level = mode_ == ShootMode::Flick ? flickLevel() : targetLevel(setup_);
     p.title = "Tirs & flicks";
     if (mode_ != ShootMode::None) p.title += std::string(" : ") + shootModeLabel(mode_);
+    if (adaptive) p.title += ", niveau " + std::to_string(shootPlayerLevel(level)) + "/10";
     auto line = [&p](const std::string& text, Color c = colors::White, float bar = -1.f, Color barColor = colors::Green,
-                     float scale = 1.f) {
+                     float scale = 1.f, bool detail = false) {
         PanelLine l;
         l.text = text;
         l.color = c;
         l.bar = bar;
         l.barColor = barColor;
         l.scale = scale;
+        l.detail = detail;
         p.lines.push_back(std::move(l));
     };
+    auto detail = [&line](const std::string& text, Color c = kDetailColor, float bar = -1.f,
+                          Color barColor = colors::Green) { line(text, c, bar, barColor, 0.9f, true); };
+
+    const std::string tip = hasLastResult_ && !lastResult_.tips.empty() ? lastResult_.tips.front().text : "";
+    // After a miss its tip stays as a reminder until the next result.
+    const bool reminder = !tip.empty() && !lastResult_.success;
+    const std::string goalSpeed = formatSpeed(cfg_.powerGoalKph / kUusToKph, unit, 0);
+    // How to do the attempt, in words (flick with the player's buttons, zone to aim at, speed to reach).
+    std::string how;
+    if (mode_ == ShootMode::Flick)
+        how = requested_ >= 0 ? flickCue(static_cast<FlickType>(requested_), ctx.profile, style, cfg_.delayedSec)
+                              : "N'importe quel flick vers le but";
+    else if (mode_ == ShootMode::Targets)
+        how = "Vise " + zoneWithArticle(zone_);
+    else if (mode_ == ShootMode::Power)
+        how = "Objectif : " + goalSpeed;
 
     switch (phase_) {
     case ShootPhase::Setup:
-    case ShootPhase::Countdown: line(message_.empty() ? "Prépare-toi..." : message_, colors::Yellow); break;
+    case ShootPhase::Countdown:
+        line(message_.empty() ? "Prépare-toi..." : message_, colors::Yellow);
+        if (reminder) line(tip, kTipColor);
+        if (!how.empty()) line(how, colors::Cyan);
+        break;
     case ShootPhase::Live:
         if (mode_ == ShootMode::Flick)
             line(requested_ >= 0
@@ -1014,87 +1055,99 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
             line("À toi : vise " + zoneWithArticle(zone_) + " !");
         else
             line("À toi : frappe le plus fort possible !");
+        if (reminder) line(tip, kTipColor);
+        if (mode_ != ShootMode::Targets) line(how, colors::Cyan);
         break;
     case ShootPhase::Result:
-        if (hasLastResult_)
-            line(lastResult_.title + " : " + verdictLabel(lastResult_.verdict) + " (" +
-                     formatNumber(lastResult_.score, 0) + "/100)",
-                 verdictColor(lastResult_.verdict));
+        if (hasLastResult_) {
+            std::string head = lastResult_.title + " : ";
+            if (mode_ == ShootMode::Power) head += formatSpeed(lastShotSpeed_, unit, 0) + ", ";
+            head += std::string(verdictLabel(lastResult_.verdict)) + " (" + formatNumber(lastResult_.score, 0) + "/100)";
+            line(head, verdictColor(lastResult_.verdict));
+            if (!tip.empty()) line(tip, kTipColor);
+        }
+        if (cfg_.autoRepeat) {
+            const float left = cfg_.resultHold - elapsed(frame);
+            line("Essai suivant dans " + std::to_string(static_cast<int>(std::ceil(std::max(0.f, left) - 1e-3f))) +
+                 " s");
+        }
         break;
     default:
-        if (!message_.empty()) line(message_, colors::Grey);
+        // Outside drills (panel "always"): the last shot and where it is going.
+        if (!message_.empty()) line(message_);
+        if (hasLastShot_) line("Dernier tir : " + formatSpeed(lastShotSpeed_, unit, 1));
         break;
     }
 
+    // Detail lines (full HUD only).
     switch (mode_) {
     case ShootMode::Flick: {
-        line(requested_ >= 0 ? std::string("Demandé : ") + flickTypeLabel(static_cast<FlickType>(requested_))
-                             : "Flick libre (tous types)");
-        if (requested_ >= 0 && phase_ != ShootPhase::Result)
-            line(flickCue(static_cast<FlickType>(requested_), ctx.profile,
-                          keyStyleFromIndex(ctx.settings.profile.buttonStyle), cfg_.delayedSec),
-                 colors::Cyan, -1.f, colors::Green, 0.9f);
-        line(std::string("Cible : ") + (flickZoneActive_ ? zoneLabel(flickZone_) : "but entier"), cfg_.targetColor);
+        detail(requested_ >= 0 ? std::string("Demandé : ") + flickTypeLabel(static_cast<FlickType>(requested_))
+                               : "Flick libre (tous types)");
+        detail(std::string("Cible : ") + (flickZoneActive_ ? zoneLabel(flickZone_) : "but entier"), cfg_.targetColor);
         if (phase_ == ShootPhase::Live && flick_.phase() == FlickPhase::Carry) {
-            const float settled = flick_.settledTime(ctx.snap.frame);
-            line("Balle sur le toit : " + formatNumber(settled, 2) + " s",
-                 settled >= 0.3f ? colors::Green : colors::Yellow);
+            const float settled = flick_.settledTime(frame);
+            detail("Balle sur le toit : " + formatNumber(settled, 2) + " s",
+                   settled >= 0.3f ? colors::Green : colors::Yellow);
         }
-        if (!lastFlick_.empty()) line("Dernier flick : " + lastFlick_);
+        if (!lastFlick_.empty()) detail("Dernier flick : " + lastFlick_);
         if (requested_ >= 0) {
             const float best = stats_.flickAll[static_cast<size_t>(requested_)].bestPower;
             if (best > 0.f)
-                line(std::string("Record ") + flickTypeLabel(static_cast<FlickType>(requested_)) + " : " +
-                     formatSpeed(best, unit, 1));
+                detail(std::string("Record ") + flickTypeLabel(static_cast<FlickType>(requested_)) + " : " +
+                       formatSpeed(best, unit, 1));
         } else {
             float best = 0.f;
             for (const auto& r : stats_.flickAll) best = std::max(best, r.bestPower);
-            if (best > 0.f) line("Record tous flicks : " + formatSpeed(best, unit, 1));
+            if (best > 0.f) detail("Record tous flicks : " + formatSpeed(best, unit, 1));
         }
         break;
     }
     case ShootMode::Targets: {
-        line(std::string("Cible : ") + zoneLabel(zone_) + " (" + setupLabel(setup_) + ")", cfg_.targetColor);
+        detail(std::string("Cible : ") + zoneLabel(zone_) + " (" + setupLabel(setup_) + ")", cfg_.targetColor);
         const ZoneStats& z = stats_.zoneSession[static_cast<size_t>(zone_)];
         if (z.attempts > 0)
-            line(capitalized(zoneLabel(zone_)) + " : " + std::to_string(z.hits) + "/" + std::to_string(z.attempts) +
-                 " (" + formatPercent(z.hitRate()) + ")");
-        line("Série : " + std::to_string(stats_.streak) + " (record " + std::to_string(stats_.bestStreakAll) + ")");
+            detail(capitalized(zoneLabel(zone_)) + " : " + std::to_string(z.hits) + "/" + std::to_string(z.attempts) +
+                   " (" + formatPercent(z.hitRate()) + ")");
+        detail("Série : " + std::to_string(stats_.streak) + " (record " + std::to_string(stats_.bestStreakAll) + ")");
         break;
     }
     case ShootMode::Power:
-        line("Objectif : " + formatSpeed(cfg_.powerGoalKph / kUusToKph, unit, 0));
+        if (phase_ == ShootPhase::Result) detail("Objectif : " + goalSpeed);
         if (stats_.powerAll.best > 0.f)
-            line("Record : " + formatSpeed(stats_.powerAll.best, unit, 1) + " (session " +
-                 formatSpeed(stats_.powerSession.best, unit, 1) + ")");
+            detail("Record : " + formatSpeed(stats_.powerAll.best, unit, 1) + " (session " +
+                   formatSpeed(stats_.powerSession.best, unit, 1) + ")");
         break;
     default:
-        if (stats_.powerAll.best > 0.f) line("Record de puissance : " + formatSpeed(stats_.powerAll.best, unit, 1));
+        if (stats_.powerAll.best > 0.f) detail("Record de puissance : " + formatSpeed(stats_.powerAll.best, unit, 1));
         break;
     }
 
-    // Early feedback while the ball travels: where it is predicted to cross the goal line.
+    // Early feedback while the ball travels: where it is predicted to cross the goal line (also drawn in 3D). Main
+    // line outside drills, where it is the whole analysis.
     if (shot_.hasPrediction() && (phase_ == ShootPhase::Live || mode_ == ShootMode::None)) {
         const Vec2 pp = shot_.predicted();
+        const bool main = mode_ == ShootMode::None;
+        auto predicted = [&](const std::string& text, Color c) {
+            if (main) line(text, c);
+            else detail(text, c);
+        };
         if (mode_ == ShootMode::Targets && zoneRect(zone_, attemptLevel_).contains(pp))
-            line("Impact prévu : dans la cible", colors::Green);
+            predicted("Impact prévu : dans la cible", colors::Green);
         else if (shoot::onGoal(pp))
-            line(mode_ == ShootMode::Targets ? "Impact prévu : cadré, hors cible" : "Impact prévu : cadré",
-                 colors::Yellow);
+            predicted(mode_ == ShootMode::Targets ? "Impact prévu : cadré, hors cible" : "Impact prévu : cadré",
+                      colors::Yellow);
         else
-            line("Impact prévu : hors cadre", colors::Red);
+            predicted("Impact prévu : hors cadre", colors::Red);
     }
-    if (hasLastShot_) line("Dernier tir : " + formatSpeed(lastShotSpeed_, unit, 1));
+    if (hasLastShot_ && mode_ != ShootMode::None && mode_ != ShootMode::Power)
+        detail("Dernier tir : " + formatSpeed(lastShotSpeed_, unit, 1));
     if (hasLastResult_ && mode_ != ShootMode::Power && mode_ != ShootMode::None) {
         const float acc = metricValue(lastResult_, "accuracy", -1.f);
-        if (acc >= 0.f) line("Précision : " + formatNumber(acc, 0) + " %");
+        if (acc >= 0.f) detail("Précision : " + formatNumber(acc, 0) + " %");
     }
-    if (phase_ == ShootPhase::Result && hasLastResult_ && !lastResult_.tips.empty())
-        line(lastResult_.tips.front().text, colors::Yellow, -1.f, colors::Green, 0.9f);
-    if (mode_ == ShootMode::Flick || mode_ == ShootMode::Targets) {
-        const float level = mode_ == ShootMode::Flick ? flickLevel() : targetLevel(setup_);
-        line("Niveau : " + formatPercent(level), colors::Grey, level, colors::Cyan, 0.85f);
-    }
+    if (adaptive)
+        detail("Niveau " + std::to_string(shootPlayerLevel(level)) + "/10", kDetailColor, level, colors::Cyan);
     return p;
 }
 

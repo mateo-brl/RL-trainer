@@ -304,6 +304,50 @@ TEST(pr_panel_shows_the_numbers) {
     CHECK_NEAR(d.panels[0].pos.y, 0.62f * 1080.f, 1e-3f);
 }
 
+// Compact HUD: at most three lines, the ball speed and "ball on the floor" are details, no empty panel.
+TEST(pr_panel_compact_keeps_three_lines) {
+    auto drawCompact = [](Harness& h) {
+        DrawContext dc{h.settings, h.game, h.profile, h.snap, h.hasSnapshot, false, 1.f, true};
+        DrawList d;
+        h.mod.draw(h.view(), dc, d);
+        return d;
+    };
+    auto shown = [](const DrawPanel& p) {
+        size_t n = 0;
+        for (const auto& l : p.lines) n += l.detail ? 0u : 1u;
+        return n;
+    };
+    // Ball resting on the floor and no car (no interception): only a detail line, so no panel at all in the
+    // compact HUD.
+    Harness still;
+    still.set("rlt_pr_only_airborne", "0");
+    still.set("rlt_pr_panel", "1");
+    still.snap.car.valid = false;
+    still.setBall({0.f, 0.f, kR});
+    still.tick();
+    CHECK(anyText(still.draw(), "Balle au sol"));
+    CHECK(drawCompact(still).panels.empty());
+    CHECK(!drawCompact(still).lines3D.empty());  // the path itself stays
+    // Ball rolling into a goal: the goal line stays, the ball speed is a detail.
+    for (int side = -1; side <= 1; side += 2) {
+        Harness h;
+        h.set("rlt_pr_panel", "1");
+        h.setBall({0.f, side * 4000.f, kR}, {0.f, side * 2000.f, 0.f});
+        h.tick();
+        const DrawList d = drawCompact(h);
+        CHECK_EQ(d.panels.size(), 1u);
+        if (d.panels.empty()) continue;
+        const DrawPanel& p = d.panels[0];
+        CHECK(shown(p) >= 1u && shown(p) <= 3u);
+        bool goal = false;
+        for (const auto& l : p.lines) {
+            if (l.text.find(side > 0 ? "But pour toi" : "Contre ton camp") == 0) goal = !l.detail;
+            if (l.text.find("Arrive a") == 0 || l.text.find("Balle au sol") == 0) CHECK(l.detail);
+        }
+        CHECK(goal);
+    }
+}
+
 // ---- Goals ---------------------------------------------------------------------------------------------
 TEST(pr_goal_colour_depends_on_the_team) {
     for (int team = 0; team <= 1; ++team) {

@@ -124,9 +124,11 @@ DrillSetup makeDrill(Focus f, float level, int attempt, int team, Rng& rng) {
             d.checks.push_back({"kickoffFirstJumpTicks", L(25.f, 50.f), L(110.f, 80.f), "KO_FIRST_JUMP_EARLY",
                                 "KO_FIRST_JUMP_LATE", true});
         }
-        const float angleTol = L(28.f, 8.f);  // degrees around the target angle (30 by default)
         d.checks.push_back({"jumpToDodgeTicks", -1e9f, L(36.f, 14.f), "", "SF_JUMP_LONG"});
-        d.checks.push_back({"angleErrorDeg", -angleTol, angleTol, "SF_ANGLE_STRAIGHT", "SF_ANGLE_WIDE"});
+        // Degrees around the target angle (30 by default). The straight side stays a little tighter: at level 1
+        // the flip must still be at least 5 degrees off the nose (the detector's own diagonal threshold), so a
+        // plain front flip is never praised as a diagonal one.
+        d.checks.push_back({"angleErrorDeg", -L(25.f, 8.f), L(28.f, 8.f), "SF_ANGLE_STRAIGHT", "SF_ANGLE_WIDE"});
         d.checks.push_back({"cancelTicks", 0.f, L(20.f, 6.f), "SF_NO_CANCEL", "SF_LATE_CANCEL"});
         d.checks.push_back({nullptr, -1e9f, 1e9f, "SF_BAD_LANDING"});
         if (d.stage >= 2) {

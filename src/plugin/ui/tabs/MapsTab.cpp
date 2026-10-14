@@ -256,7 +256,7 @@ void currentMapSection(UiContext& ctx, const MapsLiveStatus& st, const MapsConfi
         ImGui::EndCombo();
     }
     tooltip(
-        "Change la catégorie si la détection se trompe : les autres onglets s'adaptent (cercle de contact, conseils).");
+        "Change la catégorie si la détection se trompe : les autres modules s'adaptent (cercle de contact, conseils).");
     if (!st.author.empty()) ImGui::Text("Auteur : %s", st.author.c_str());
     if (!st.trains.empty()) ImGui::TextWrapped("%s", st.trains.c_str());
     ImGui::TextDisabled("Fichier : %s | Id : %s", st.mapName.c_str(),
@@ -284,7 +284,7 @@ void currentMapSection(UiContext& ctx, const MapsLiveStatus& st, const MapsConfi
         if (st.finalLevel > 0) {
             const float frac = std::clamp(static_cast<float>(st.level) / static_cast<float>(st.finalLevel), 0.f, 1.f);
             const std::string overlay = "Niveau " + std::to_string(st.level) + " / " + std::to_string(st.finalLevel);
-            ImGui::ProgressBar(frac, ImVec2(260.f, 0.f), overlay.c_str());
+            ui::progressBar(frac, overlay, 260.f);
         } else {
             ImGui::Text("Niveau %d", st.level);
         }
@@ -397,9 +397,13 @@ void librarySection(UiContext& ctx, MapsService* svc, const std::vector<MapStats
     ImGui::Checkbox("Favoris seulement##maps_favonly", &ui.favoritesOnly);
     auto filterButton = [&](const char* label, int value) {
         const bool selected = ui.categoryFilter == value;
-        if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.26f, 0.59f, 0.98f, 0.8f));
+        // Selected filter: same look as the selected page of the sidebar (dark amber, amber text).
+        if (selected) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ui::accentSelectedBg());
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::accentColor());
+        }
         if (ImGui::SmallButton(label)) ui.categoryFilter = value;
-        if (selected) ImGui::PopStyleColor();
+        if (selected) ImGui::PopStyleColor(2);
     };
     filterButton("Toutes##maps_f", -1);
     for (int i = 1; i < kMapCategoryCount; ++i) {
@@ -569,7 +573,7 @@ void helpSection(UiContext& ctx, MapsService* svc) {
     ImGui::BulletText("%s", "RL Trainer ne fait que lire la map : il ne déplace jamais la balle ni la voiture ici.");
 
     ui::separatorText("Commandes console (F6)");
-    ImGui::BulletText("%s", "rlt maps load <id> : lance une map déjà vue dans cet onglet");
+    ImGui::BulletText("%s", "rlt maps load <id> : lance une map déjà vue dans l'onglet « Mes maps »");
     ImGui::BulletText("%s", "rlt maps reload | menu | freeplay : recharge la map, menu principal, freeplay");
     ImGui::BulletText("%s", "rlt maps fav <id> | unfav <id> : favoris");
     ImGui::BulletText("%s", "rlt maps restart : relance le chrono");

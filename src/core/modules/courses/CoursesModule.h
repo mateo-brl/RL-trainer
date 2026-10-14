@@ -65,6 +65,7 @@ struct CoursesLevelView {
     CoursesKind kind = CoursesKind::RingsAir;
     std::string title;
     int level = 0;              // staircase level 0..100
+    int levelNumber = 1;        // shown to the player: niveau 1..10
     int attempts = 0, successes = 0;
     float recentRate = 0.f;
 };
@@ -122,6 +123,11 @@ public:
     static const char* kindKey(CoursesKind k);    // command / persistence key: "air", "ground", ...
     static const char* kindSkill(CoursesKind k);  // AttemptResult skill: "course.rings.air", ...
     static const char* kindHelp(CoursesKind k);   // one French sentence for the tab
+    static int kindTier(CoursesKind k);           // 0 Débutant, 1 Intermédiaire, 2 Avancé
+    static const char* kindTierLabel(CoursesKind k);  // "Débutant", "Intermédiaire", "Avancé"
+    static std::vector<CoursesKind> kindsByTier();    // easiest first (Débutant, then Intermédiaire, then Avancé)
+    // Difficulty 0..100 as the player reads it: niveau 1..10.
+    static int levelNumber(int difficultyPct);
     static bool kindUsesCourse(CoursesKind k);
     static bool kindIsRings(CoursesKind k);
     static constexpr int kMaxPbs = 20;
@@ -261,7 +267,8 @@ private:
     int flashTicks_ = 0;
     std::string flashText_;
     Color flashColor_ = colors::White;
-    std::string resultHint_;
+    std::string resultHint_;   // main tip of the last attempt
+    std::string resultMedal_;  // "médaille d'or" and the like, empty without a medal (finished rings and slalom)
 
     // Results and progress
     CoursesLastAttempt last_;

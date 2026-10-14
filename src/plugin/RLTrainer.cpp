@@ -1,5 +1,8 @@
 #include "plugin/RLTrainer.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cfloat>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -21,6 +24,20 @@ using namespace rlt;
 
 namespace {
 constexpr float kPeriod = 0.25f;  // seconds between periodic updates (game thread timer)
+constexpr const char* kMenuCommand = "rlt_menu";
+
+// Trims the key typed in the menu; "f3" becomes "F3" and "q" becomes "Q" (BakkesMod key names start with a
+// capital). Longer names (NumPadOne, LeftShift) are kept as typed.
+std::string normalizeKeyName(std::string key) {
+    const auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+    key.erase(key.begin(), std::find_if(key.begin(), key.end(), notSpace));
+    key.erase(std::find_if(key.rbegin(), key.rend(), notSpace).base(), key.end());
+    const bool functionKey = key.size() >= 2 && key.size() <= 3 && (key[0] == 'f' || key[0] == 'F') &&
+                             std::all_of(key.begin() + 1, key.end(), [](unsigned char c) { return std::isdigit(c); });
+    if (functionKey || key.size() == 1)
+        for (auto& c : key) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return key;
+}
 
 // OnHitBall params (x64): ABall_TA* Ball @0x00; FVector HitLocation @0x08; FVector HitNormal @0x14.
 struct OnHitBallParams {
@@ -57,6 +74,10 @@ void RLTrainer::onLoad() {
     ui_->alive = alive_;
     ui_->applyActions = [alive = alive_, this](Actions& a) {
         if (*alive) guarded(cvarManager, "applyActions", [&] { run(a); });
+    };
+    ui_->menuKeyStatus = [this]() {
+        std::lock_guard<std::mutex> guard(menuKeyMutex_);
+        return menuKeyStatus_;
     };
 
     registerCvars();
@@ -114,6 +135,7 @@ void RLTrainer::registerCvars() {
         const std::string name = d.cvar;
         cv.addOnValueChanged([alive = alive_, this, name](std::string, CVarWrapper c) {
             if (*alive && engine_) guarded(cvarManager, "cvar", [&] { engine_->applySetting(name, c.getStringValue()); });
+            if (name == "rlt_menu_key") menuKeyDirty_ = true;  // the bind changes on the next periodic tick
         });
         engine_->applySetting(name, cv.getStringValue());
     }
@@ -295,6 +317,12 @@ void RLTrainer::schedulePeriodic() {
 }
 
 void RLTrainer::periodic() {
+    // BakkesMod binds only (no game object): safe in the main menu. The first bind waits a few seconds after load:
+    // at game start BakkesMod runs binds.cfg after loading the plugins, and binding earlier could find a key free
+    // before its saved bind is back, then writeconfig would save binds.cfg without the player's binds.
+    if (menuKeyWait_ > 0.f) menuKeyWait_ -= kPeriod;
+    else if (menuKeyDirty_.exchange(false)) applyMenuKey();
+
     refreshContext();
 
     Actions actions;
@@ -328,6 +356,49 @@ void RLTrainer::periodic() {
         saveTimer_ = 0.f;
         saveProgress();
     }
+}
+
+// Binds rlt_menu_key to rlt_menu when the key is free in BakkesMod, never over an existing bind. When the key
+// changes, the old key loses its bind only if it still runs rlt_menu (the player may have rebound it since).
+void RLTrainer::applyMenuKey() {
+    std::string key;
+    {
+        auto lk = engine_->lock();
+        key = normalizeKeyName(engine_->settings().general.menuKey);
+    }
+    bool bindsChanged = false;
+    if (!menuKeyBound_.empty() && menuKeyBound_ != key) {
+        bindsChanged = profile_->unbindIfMatches(menuKeyBound_, kMenuCommand);
+        menuKeyBound_.clear();
+    }
+
+    MenuKeyStatus status;
+    status.checked = true;
+    status.key = key;
+    if (key.empty()) {
+        status.text = "Aucune touche (champ vide).";
+    } else {
+        const std::string current = profile_->currentBind(key);
+        if (current.empty()) {
+            status.bound = profile_->bindIfFree(key, kMenuCommand);
+            bindsChanged = bindsChanged || status.bound;
+        } else {
+            status.bound = current == kMenuCommand;  // bound by a previous session
+        }
+        if (status.bound) {
+            menuKeyBound_ = key;
+            status.text = key + " ouvre le menu.";
+        } else if (!current.empty()) {
+            status.text = key + " est déjà utilisée par « " + current + " » : choisis une autre touche.";
+        } else {
+            status.text = "Impossible d'assigner " + key + " : choisis une autre touche.";
+        }
+    }
+    // Same as the hotkeys of Ma config: writeconfig also saves binds.cfg, so the bind survives a restart.
+    if (bindsChanged) cvarManager->executeCommand("writeconfig", false);
+
+    std::lock_guard<std::mutex> guard(menuKeyMutex_);
+    menuKeyStatus_ = std::move(status);
 }
 
 void RLTrainer::refreshContext() {
@@ -431,13 +502,16 @@ std::string RLTrainer::GetPluginName() { return "RL Trainer"; }
 void RLTrainer::SetImGuiContext(uintptr_t ctx) { ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(ctx)); }
 
 void RLTrainer::Render() {
-    ImGui::SetNextWindowSize(ImVec2(720, 560), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(GetMenuTitle().c_str(), &windowOpen_, ImGuiWindowFlags_None)) {
-        ImGui::End();
-        return;
-    }
-    if (ui_) renderUi(*ui_);
+    ImGui::SetNextWindowSize(ImVec2(900, 620), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(700, 480), ImVec2(FLT_MAX, FLT_MAX));
+    // Begin reads the window background, title bar and rounding (8 px): the theme is pushed before it and popped
+    // after End (ImGui checks the style stacks at End). renderUi pushes it again inside, which is harmless.
+    // "###" gives the window a new ImGui id, so the bigger default size replaces the one saved by older versions.
+    ui::pushTheme();
+    const std::string title = GetMenuTitle() + "###rltrainer_menu";
+    if (ImGui::Begin(title.c_str(), &windowOpen_, ImGuiWindowFlags_None) && ui_) renderUi(*ui_);
     ImGui::End();
+    ui::popTheme();
     if (!windowOpen_) {
         gameWrapper->Execute([alive = alive_, this](GameWrapper*) {
             if (*alive) cvarManager->executeCommand("togglemenu " + GetMenuName());
@@ -447,7 +521,8 @@ void RLTrainer::Render() {
 
 std::string RLTrainer::GetMenuName() { return "rltrainer"; }
 std::string RLTrainer::GetMenuTitle() { return "RL Trainer"; }
-bool RLTrainer::ShouldBlockInput() { return ImGui::GetIO().WantCaptureMouse || ImGui::GetIO().WantCaptureKeyboard; }
+// While the window is open the game gets no input (no driving or camera moves while clicking in the menu).
+bool RLTrainer::ShouldBlockInput() { return windowOpen_; }
 bool RLTrainer::IsActiveOverlay() { return true; }
 void RLTrainer::OnOpen() { windowOpen_ = true; }
 void RLTrainer::OnClose() { windowOpen_ = false; }

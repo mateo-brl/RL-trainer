@@ -110,7 +110,7 @@ std::string percentText(float ratio) { return ui::percent(ratio); }
 void subScoreBar(const char* label, float value01) {
     char overlay[64];
     std::snprintf(overlay, sizeof(overlay), "%s %d %%", label, static_cast<int>(std::lround(value01 * 100.f)));
-    ImGui::ProgressBar(value01, ImVec2(ImGui::GetFontSize() * 11.f, 0.f), overlay);
+    ui::progressBar(value01, overlay, ImGui::GetFontSize() * 7.f);  // three on one line, each value beside its bar
 }
 
 // ---- Last touch -------------------------------------------------------------------------------------------
@@ -410,7 +410,7 @@ void renderDrills(const UiContext& ctx, const FtUiData& d) {
             const auto& lv = d.levels[static_cast<size_t>(i)];
             char overlay[48];
             std::snprintf(overlay, sizeof(overlay), "Niveau %d/10", ft::playerLevel(lv.level));
-            ImGui::ProgressBar(lv.level, ImVec2(ImGui::GetFontSize() * 12.f, 0.f), overlay);
+            ui::progressBar(lv.level, overlay, ImGui::GetFontSize() * 12.f);
             ImGui::SameLine();
             ImGui::TextDisabled("meilleur niveau %d, %d essais, %d/%d cette session", ft::playerLevel(lv.best), lv.attempts,
                                 lv.sessionSuccesses, lv.sessionReps);

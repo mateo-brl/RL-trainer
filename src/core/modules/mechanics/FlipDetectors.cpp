@@ -60,8 +60,9 @@ bool SpeedFlipDetector::onDodge(const DodgeRecord& r, const Ctx& c, const Kickof
     const bool expect = c.cfg.expect(Focus::SpeedFlip);
     const float a = std::fabs(r.angleDeg);
     const bool diag = r.kind == DodgeKind::DiagForward || (r.kind == DodgeKind::Forward && a >= 5.f);
-    // In speedflip practice a late flip (up to 0.5 s after the jump) is still graded, so that it gets its tip.
-    const bool lowJump = r.ticksSinceFirstJump >= 0 && r.ticksSinceFirstJump <= (expect ? 60 : 30);
+    // In speedflip practice every flip is graded (the flip stays available about 1.25 s after the jump), so that a
+    // late one gets its tip instead of a silent time-out.
+    const bool lowJump = r.ticksSinceFirstJump >= 0 && r.ticksSinceFirstJump <= (expect ? 150 : 30);
     const bool cancelled = r.cancelTicks >= 0 && r.cancelTicks <= 20;
     const bool boosting = r.inputAtDodge.boost;
     if (!(diag || (expect && r.kind == DodgeKind::Forward))) return false;

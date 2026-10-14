@@ -13,8 +13,18 @@
 
 namespace rlt::shoot {
 
-// Ball speed after a flick needed for a success at a level (uu/s): 1300 (47 km/h) .. 2400 (86 km/h).
+// Ball speed after a flick needed for a success at a level (uu/s): 1000 (36 km/h, a slow flick from a stopped car)
+// .. 2400 (86 km/h).
 float flickMinPower(float level);
+
+// The player sees the adaptive level (0..1) as "niveau 1" to "niveau 10".
+int shootPlayerLevel(float level);
+
+// Difficulty tag shown in the tab (basics first).
+enum class ShootTier : int { Beginner = 0, Intermediate = 1, Advanced = 2 };
+ShootTier flickTier(FlickType t);
+const char* tierLabel(ShootTier t);  // "Débutant", "Intermédiaire", "Avancé"
+const char* shootingAdvice();         // one line telling a beginner where to start
 
 struct FlickGradeParams {
     int requested = -1; // requested FlickType index, -1 = any
@@ -62,6 +72,8 @@ std::string frenchDecimal(float value);
 std::string flickCue(FlickType t, const PlayerProfile& profile, KeyStyle style, float delayedSec);
 // French how-to of a flick type with the player's own buttons, for prompts and the UI.
 std::string flickHowTo(FlickType t, const PlayerProfile& profile, KeyStyle style, float delayedSec);
+// The measured thresholds behind a flick type (timing band, rotation, power by level): the tab's technical details.
+std::string flickTechNote(FlickType t, float delayedSec, float mustyPitchDeg, float breeziRollDeg);
 // "Air roll (LB)" with the best air roll binding available (directional when that is what the player uses).
 std::string airRollPrompt(const PlayerProfile& profile, KeyStyle style);
 

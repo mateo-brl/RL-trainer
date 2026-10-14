@@ -96,7 +96,7 @@ void drawLastResult(const BallMechModule::UiState& st, SpeedUnit unit) {
     char overlay[32];
     std::snprintf(overlay, sizeof(overlay), "%d / 100", static_cast<int>(r.score + 0.5f));
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec4(vc));
-    ImGui::ProgressBar(std::max(0.f, std::min(1.f, r.score / 100.f)), ImVec2(-1.f, 0.f), overlay);
+    ui::progressBar(std::max(0.f, std::min(1.f, r.score / 100.f)), overlay);
     ImGui::PopStyleColor();
     if (!r.tips.empty()) {
         ui::textColored({255, 220, 120, 255}, "Conseil :");

@@ -54,6 +54,7 @@ Script speedflipAttempt(float angleDeg, int jumpToFlip, int cancelAfter) {
 void startDrill(Rig& rig, const std::string& id, float level) {
     Store st;
     st.setFloat("mechanics.level." + id + ".level", level);
+    st.setInt("mechanics.level." + id + ".attempts", 1);  // a played level
     rig.mod.load(st);
     rig.command("drill", {id});
     rig.tick(Inputs{});
@@ -123,9 +124,21 @@ TEST(mechanics_new_player_starts_at_level_one) {
     // A saved level is kept.
     Store st;
     st.setFloat("mechanics.level.halfflip.level", 0.6f);
+    st.setInt("mechanics.level.halfflip.attempts", 1);
     m.load(st);
     CHECK_NEAR(m.level(Focus::HalfFlip), 0.6f, 1e-6f);
     CHECK_NEAR(m.level(Focus::SpeedFlip), 0.f, 1e-6f);
+}
+
+TEST(mechanics_unplayed_old_save_starts_at_niveau_1) {
+    // The previous version saved every drill at its old start level (0.2) even when never played.
+    Store st;
+    st.setFloat("mechanics.level.wavedash.level", 0.2f);
+    st.setInt("mechanics.level.wavedash.attempts", 0);
+    MechanicsModule m;
+    m.load(st);
+    CHECK_NEAR(m.level(Focus::Wavedash), 0.f, 1e-6f);
+    CHECK(displayLevel(m.level(Focus::Wavedash)) == 1);
 }
 
 TEST(mechanics_speedflip_level_one_passes_a_beginner_attempt) {
@@ -186,6 +199,21 @@ TEST(mechanics_speedflip_top_level_stays_demanding) {
     beginner.add("boostRatio", 0.6f);
     beginner.add("kickoffFirstJumpTicks", 62.f);
     CHECK(judgeDrill(makeDrill(Focus::SpeedFlip, 0.f, 0, 0, rng), beginner).pass);
+    // Level 1 still wants a diagonal flip: 2 degrees off the nose is a straight front flip, 5 degrees is enough.
+    MechGrade straight = beginner;
+    straight.metrics.clear();
+    straight.add("jumpToDodgeTicks", 18.f);
+    straight.add("angleErrorDeg", 2.f - 30.f);
+    straight.add("cancelTicks", 15.f);
+    const DrillJudgement front = judgeDrill(makeDrill(Focus::SpeedFlip, 0.f, 0, 0, rng), straight);
+    CHECK(!front.pass);
+    CHECK(front.code && std::string(front.code) == "SF_ANGLE_STRAIGHT");
+    MechGrade diagonal = straight;
+    diagonal.metrics.clear();
+    diagonal.add("jumpToDodgeTicks", 18.f);
+    diagonal.add("angleErrorDeg", 5.f - 30.f);
+    diagonal.add("cancelTicks", 15.f);
+    CHECK(judgeDrill(makeDrill(Focus::SpeedFlip, 0.f, 0, 0, rng), diagonal).pass);
     const DrillJudgement top = judgeDrill(makeDrill(Focus::SpeedFlip, 1.f, 0, 0, rng), beginner);
     CHECK(!top.pass);
     CHECK(top.code && std::string(top.code) == "SF_JUMP_LONG");  // the first thing of the move that goes wrong
@@ -217,7 +245,7 @@ TEST(mechanics_speedflip_late_flip_gets_one_tip) {
     if (!r) return;
     CHECK(!r->success);
     CHECK(!r->tips.empty() && r->tips.front().code == "me.sf_jump_long");
-    if (!r->tips.empty()) CHECK(r->tips.front().text == "Tu flips trop tard : flip juste après le saut.");
+    if (!r->tips.empty()) CHECK(r->tips.front().text == "Tu flippes trop tard : flippe juste après le saut.");
     CHECK(rig.mod.lastAttempt().headline == r->tips.front().text);
     // The measures stay available as detail lines (detailed HUD).
     const DrawList full = drawHud(rig, false);
@@ -225,6 +253,22 @@ TEST(mechanics_speedflip_late_flip_gets_one_tip) {
     if (!full.panels.empty())
         for (const auto& l : full.panels[0].lines) measure = measure || (l.detail && technical(l.text));
     CHECK(measure);
+}
+
+TEST(mechanics_speedflip_very_late_flip_still_gets_the_tip) {
+    // A hesitant flip 70 ticks (0.6 s) after the jump: one graded result with the "too late" tip, not a time-out.
+    Rig rig;
+    startDrill(rig, "speedflip", 0.f);
+    auto script = speedflipAttempt(30.f, 70, 4);
+    for (int i = 0; i < 5 * 120 && rig.results.empty(); ++i) rig.tick(script(i, rig.sim));
+    int graded = 0;
+    for (const auto& res : rig.results) graded += res.skill == "mech.speedflip" ? 1 : 0;
+    CHECK_EQ(graded, 1);
+    const AttemptResult* r = rig.result("mech.speedflip");
+    CHECK_MSG(r != nullptr, describe(rig));
+    if (!r) return;
+    CHECK(!r->success);
+    CHECK(!r->tips.empty() && r->tips.front().code == "me.sf_jump_long");
 }
 
 TEST(mechanics_drill_live_step_and_timeout_hint) {
@@ -302,6 +346,7 @@ TEST(mechanics_compact_hud_for_every_drill) {
             Rig rig;
             Store st;
             st.setFloat(std::string("mechanics.level.") + id + ".level", level);
+            st.setInt(std::string("mechanics.level.") + id + ".attempts", 1);
             rig.mod.load(st);
             rig.command("drill", {id});
             rig.tick(Inputs{});

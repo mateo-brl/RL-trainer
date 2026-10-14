@@ -616,6 +616,7 @@ TEST(ft_load_tolerates_garbage) {
     st.setList("firsttouch.scores", {"abc", "150", "42"});
     st.setList("firsttouch.heat", {"1;2;3;4;5", "bad", "0.5;0;-0.5;80;9", "0.1;0.2"});
     st.setString("firsttouch.drill.roll_in.level", "7");
+    st.setInt("firsttouch.drill.roll_in.attempts", 3);
     FirstTouchModule m;
     m.load(st);
     CHECK(m.totalStats().graded == 0);

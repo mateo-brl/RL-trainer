@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 #include "core/common/Controls.h"
 #include "core/common/Text.h"
@@ -14,6 +15,8 @@ constexpr float kMinRunSeconds = 1.f;    // shorter runs are noise (car nudged a
 constexpr size_t kMaxPaths = 500;
 constexpr size_t kMaxPathText = 512;
 constexpr float kLastRunShown = 12.f;    // s: "last run" line stays on the HUD this long
+constexpr size_t kHudMainLines = 3;      // lines of the compact HUD panel (title not counted)
+constexpr int kHudDetail = 100;          // rank of the lines that are always details
 
 const char* kSectionTiming = "Chrono et splits";
 const char* kSectionHud = "Affichage en jeu";
@@ -753,7 +756,7 @@ void MapsModule::onCommand(const Command& cmd, const TickContext& ctx, Actions& 
         }
         if (path.empty() || path.find('"') != std::string::npos) {
             toast(out, "Map introuvable",
-                  "Ouvre l'onglet Maps (F2) pour scanner tes maps, puis relance la commande.", ToastKind::Warning);
+                  "Ouvre la page Maps du menu RL Trainer pour scanner tes maps, puis relance la commande.", ToastKind::Warning);
             return;
         }
         out.consoleCommands.push_back("load_workshop \"" + path + "\"");
@@ -894,29 +897,35 @@ DrawPanel MapsModule::buildHud(const ViewContext& view, const DrawContext& ctx, 
     p.scale = cfg_.hudScale * ctx.hudScale;
     p.minWidth = 210.f * p.scale;
     p.title = txt(resolvedTitle());
-    auto line = [&](const std::string& s, Color c, float bar = -1.f, float scale = 1.f) {
+    // Each line has a rank (0 = most important). The compact HUD keeps the kHudMainLines best ranked ones;
+    // kHudDetail lines (map timer, deaths, profile) only show with the full HUD.
+    std::vector<int> ranks;
+    auto line = [&](const std::string& s, Color c, int rank, float bar = -1.f, float scale = 1.f) {
         PanelLine l;
         l.text = txt(s);
         l.color = c;
         l.bar = bar;
         l.scale = scale;
+        l.detail = rank >= kHudDetail;
         p.lines.push_back(std::move(l));
+        ranks.push_back(rank);
     };
 
     // Timer / state
-    if (run_.running()) {
-        line("Chrono " + formatTime(run_.elapsed(now), false), white, -1.f, 1.15f);
+    const bool running = run_.running();
+    if (running) {
+        line("Chrono " + formatTime(run_.elapsed(now), false), white, 0, -1.f, 1.15f);
     } else if (run_.phase() == RunPhase::Armed) {
-        line("Prêt : le chrono part quand tu bouges", grey);
+        line("Prêt : le chrono part quand tu bouges", white, 0);
     } else if (run_.hasProfile() && run_.profile().hasKismetStart()) {
-        line("En attente du départ de la map", grey);
+        line("En attente du départ de la map", white, 0);
     } else if (run_.ownStartActive()) {
         line(actionPrompt(ctx.profile, GameAction::ResetShot, keyStyleFromIndex(ctx.settings.profile.buttonStyle)) +
                  " pour relancer un run",
-             grey);
+             white, 2);
     }
 
-    // Level k/N
+    // Level k/N: progress of the run (after the split and the last run).
     if (run_.hasLevel()) {
         const int fin = resolvedFinalLevel();
         const bool rings = run_.hasProfile() && !run_.profile().counterInt.empty();
@@ -926,30 +935,30 @@ DrawPanel MapsModule::buildHud(const ViewContext& view, const DrawContext& ctx, 
             s += "/" + std::to_string(fin);
             bar = clamp01(static_cast<float>(run_.level()) / static_cast<float>(fin));
         }
-        line(s, white, bar);
+        line(s, white, running ? 2 : 4, bar);
     }
 
     // Split delta vs personal best
-    if (cfg_.hudSplits && run_.running()) {
+    if (cfg_.hudSplits && running) {
         const auto& sp = run_.splits();
         const bool fresh = !sp.empty() && run_.lastSplitAt() >= 0.f && now - run_.lastSplitAt() <= cfg_.splitHold;
         float live = 0.f;
         if (fresh && sp.back().hasDelta) {
             line("Split " + std::to_string(sp.back().index) + " : " + formatDeltaSeconds(sp.back().delta),
-                 sp.back().delta <= 0.f ? cfg_.aheadColor : cfg_.behindColor);
+                 sp.back().delta <= 0.f ? cfg_.aheadColor : cfg_.behindColor, 1);
         } else if (run_.liveDelta(now, live)) {
-            line("Retard : " + formatDeltaSeconds(live), cfg_.behindColor);
+            line("Retard : " + formatDeltaSeconds(live), cfg_.behindColor, 1);
         } else if (fresh) {
-            line("Split " + std::to_string(sp.back().index) + " : " + formatTime(sp.back().time, false), white);
+            line("Split " + std::to_string(sp.back().index) + " : " + formatTime(sp.back().time, false), white, 1);
         }
     }
 
     // Last run (shortly after it ended)
     const RunSummary& last = run_.last();
-    if (!run_.running() && last.valid && last.time >= kMinRunSeconds && now - last.endedAt <= kLastRunShown &&
+    if (!running && last.valid && last.time >= kMinRunSeconds && now - last.endedAt <= kLastRunShown &&
         now >= last.endedAt) {
         if (last.finished && last.endedByReset) {
-            line("Run fini sur reset : " + formatTime(last.time, false), grey);
+            line("Run fini sur reset : " + formatTime(last.time, false), white, 1);
         } else if (last.finished) {
             std::string s = "Dernier run : " + formatTime(last.time, false);
             Color c = white;
@@ -960,27 +969,34 @@ DrawPanel MapsModule::buildHud(const ViewContext& view, const DrawContext& ctx, 
                 s += " (" + formatDeltaSeconds(lastPbDelta_) + ")";
                 c = lastPbDelta_ <= 0.f ? cfg_.aheadColor : cfg_.behindColor;
             }
-            line(s, c);
+            line(s, c, 1);
         } else {
-            line("Run arrêté à " + formatTime(last.time, false), grey);
+            line("Run arrêté à " + formatTime(last.time, false), white, 1);
         }
     }
 
-    // Personal best
+    // Personal best: the target of the run.
     const MapStats* st = book_.find(key_);
-    if (st && st->hasBest) line("Record : " + formatTime(st->best, false), Color{255, 215, 90, 255});
-    else line("Record : aucun pour l'instant", grey);
+    if (st && st->hasBest) line("Record : " + formatTime(st->best, false), Color{255, 215, 90, 255}, 3);
+    else line("Record : aucun pour l'instant", grey, kHudDetail);
 
-    if (run_.hasMapTimer() && !run_.mapTimer().empty()) line("Chrono de la map : " + run_.mapTimer(), grey);
-    if (run_.running() && run_.hasDeaths()) line("Morts : " + std::to_string(run_.deathsInRun()), grey);
+    if (run_.hasMapTimer() && !run_.mapTimer().empty()) line("Chrono de la map : " + run_.mapTimer(), grey, kHudDetail);
+    if (running && run_.hasDeaths()) line("Morts : " + std::to_string(run_.deathsInRun()), grey, kHudDetail);
 
     if (cfg_.hudProfile) {
         std::string s;
         if (run_.hasProfile()) s = "Profil : " + run_.profile().label;
         else if (cfg_.fallbackTiming) s = "Chrono auto (map sans profil)";
         else s = "Chrono désactivé pour cette map";
-        line(s, grey, -1.f, 0.8f);
+        line(s, grey, kHudDetail, -1.f, 0.8f);
     }
+
+    // Compact HUD: the lowest ranked lines beyond the budget become details (display order unchanged).
+    std::vector<size_t> shown;
+    for (size_t i = 0; i < p.lines.size(); ++i)
+        if (!p.lines[i].detail) shown.push_back(i);
+    std::stable_sort(shown.begin(), shown.end(), [&](size_t a, size_t b) { return ranks[a] < ranks[b]; });
+    for (size_t k = kHudMainLines; k < shown.size(); ++k) p.lines[shown[k]].detail = true;
     return p;
 }
 
@@ -988,7 +1004,11 @@ void MapsModule::draw(const ViewContext& view, const DrawContext& ctx, DrawList&
     if (!cfg_.enabled || !cfg_.hudEnabled || !custom_ || !ctx.game.isCustomMap) return;
     if (ctx.game.mode == GameMode::Replay || ctx.game.mode == GameMode::Online) return;
     const float now = ctx.hasSnapshot ? ctx.snap.time : now_;
-    out.panel(buildHud(view, ctx, now));
+    DrawPanel p = buildHud(view, ctx, now);
+    // Map without timing: only details left in the compact HUD, no box with just the map name.
+    if (ctx.compactHud && std::none_of(p.lines.begin(), p.lines.end(), [](const PanelLine& l) { return !l.detail; }))
+        return;
+    out.panel(std::move(p));
 }
 
 // ---- Persistence ---------------------------------------------------------------------------------------

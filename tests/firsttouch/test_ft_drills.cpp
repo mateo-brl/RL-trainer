@@ -299,7 +299,7 @@ TEST(ft_drill_places_ball_after_grant_timeout_lowers_level_then_next_rep) {
     CHECK(st.reps == 1 && st.successes == 0);
     const auto lv = h.mod.drillLevel(DrillType::RollIn);
     CHECK_NEAR(lv.level, 0.5f - 0.04f * 0.75f / 0.25f, 1e-4f);
-    CHECK(lv.attempts == 1);
+    CHECK(lv.attempts == 2);  // the returning player had played once (setDrillLevel)
     CHECK(lv.sessionReps == 1);
 
     // After the pause the next ball comes automatically.

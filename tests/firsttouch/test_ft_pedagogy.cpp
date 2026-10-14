@@ -68,6 +68,19 @@ TEST(ft_player_levels_go_from_1_to_10) {
     for (int i = 0; i < kDrillKinds; ++i) CHECK_NEAR(m.drillLevel(static_cast<DrillType>(i)).level, kDrillStartLevel, 1e-6f);
 }
 
+TEST(ft_unplayed_old_save_starts_at_niveau_1) {
+    // The previous version saved every drill at its old start level (0.2) even when never played.
+    Store st;
+    st.setFloat("firsttouch.drill.roll_in.level", 0.2f);
+    st.setInt("firsttouch.drill.roll_in.attempts", 0);
+    st.setFloat("firsttouch.drill.lob.level", 0.5f);
+    st.setInt("firsttouch.drill.lob.attempts", 4);
+    FirstTouchModule m;
+    m.load(st);
+    CHECK(playerLevel(m.drillLevel(DrillType::RollIn).level) == 1);
+    CHECK_NEAR(m.drillLevel(DrillType::Lob).level, 0.5f, 1e-6f);  // a played level is kept
+}
+
 TEST(ft_drill_criteria_are_wide_at_niveau_1_and_demanding_at_niveau_10) {
     const DrillCriteria low = drillCriteria(0.f, 60.f, 0.6f, 6.f);
     CHECK(low.firstStep);

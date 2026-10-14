@@ -14,11 +14,21 @@
 #include "core/engine/Engine.h"
 #include "plugin/Sdk.h"
 
+struct ImVec4;
+
 namespace rlt {
 
 class ProfileService;
 class MapsService;
 class UpdateService;
+
+// Menu key (rlt_menu_key) as the glue applied it on the game thread.
+struct MenuKeyStatus {
+    bool checked = false;  // false until the glue applied the setting once
+    bool bound = false;    // `key` runs rlt_menu
+    std::string key;       // key as applied ("" = none)
+    std::string text;      // status sentence shown in the HUD page
+};
 
 struct UiContext {
     Engine& engine;
@@ -33,6 +43,8 @@ struct UiContext {
     // does for hooks: world actions, chat, toasts, console commands, settings resets.
     std::function<void(Actions&)> applyActions;
     std::shared_ptr<bool> alive;  // false once the plugin unloads: pending runOnGame calls are dropped
+    // Current menu key status (thread-safe copy provided by the glue). Unset: no status to show.
+    std::function<MenuKeyStatus()> menuKeyStatus;
 
     // Sets a cvar from the UI (string form, as in the schema). Marks the config for saving.
     void setCvar(const std::string& name, const std::string& value) const;
@@ -55,22 +67,40 @@ void settingsSection(const UiContext& ctx, const std::string& module, const std:
 void moduleSettings(const UiContext& ctx, const std::string& module);
 // Resets every setting of a module (or one section when `section` is not empty) to its default.
 void resetToDefaults(const UiContext& ctx, const std::string& module, const std::string& section = "");
+// Resets the listed cvars to their schema default (names missing from the schema are skipped).
+void resetCvars(const UiContext& ctx, const std::vector<std::string>& cvars);
 
 void helpMarker(const char* text);           // "(?)" with tooltip
 void textColored(const Color& c, const std::string& text);
 void separatorText(const std::string& text); // bold-ish section title with a separator
 std::string percent(float ratio01);
+// Progress bar with its value written to the right of the bar, never over the fill (light text on the amber
+// fill is unreadable). width > 0: bar width in pixels; width <= 0: the rest of the line minus -width.
+void progressBar(float fraction01, const std::string& value, float width = 0.f);
+
+// Menu theme: dark neutral surfaces, rounded corners, one amber accent. Pushed around RL Trainer's own drawing
+// only and popped right after, so BakkesMod's windows keep their look. Calls must be paired; pushing twice
+// (window, then renderUi inside it) is fine.
+void pushTheme();
+void popTheme();
+ImVec4 accentColor();      // amber #FFC740, same as the HUD panel titles
+ImVec4 accentSelectedBg(); // background of a selected item (sidebar, filter buttons)
+// Opens a page of the menu on the next frame (UiTab id, e.g. "hud").
+void goToPage(const char* id);
 
 } // namespace ui
 
-// Tab registry: each feature implements one render function (src/plugin/ui/tabs/*.cpp).
+// Page registry: each feature implements one render function (src/plugin/ui/tabs/*.cpp). The menu lists the
+// pages in a left sidebar, under the header `group` ("" = no header).
 struct UiTab {
     const char* id;
     const char* title;
     void (*render)(UiContext&);
+    const char* group = "";
 };
 
 void renderHomeTab(UiContext& ctx);
+void renderHudTab(UiContext& ctx);
 void renderOverlayTab(UiContext& ctx);
 void renderFirstTouchTab(UiContext& ctx);
 void renderPredictionTab(UiContext& ctx);
@@ -86,7 +116,7 @@ void renderGeneralTab(UiContext& ctx);
 
 const std::vector<UiTab>& uiTabs();
 
-// Whole UI (tab bar). Used by the F2 settings page and by the standalone window.
+// Whole UI (sidebar and page). Used by the F2 settings page and by the standalone window.
 void renderUi(UiContext& ctx);
 
 } // namespace rlt

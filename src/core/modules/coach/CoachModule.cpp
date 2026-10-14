@@ -26,6 +26,21 @@ Color verdictColor(Verdict v) {
     }
 }
 
+// Units a player reads without a manual. A record in ms, uu/s or degrees stays in the full card only.
+bool plainUnit(const std::string& unit) { return unit.empty() || unit == "s" || unit == "%" || unit == "km/h"; }
+
+// "Erreur fréquente : <tip>" in at most 2 lines: wider lines for a long tip rather than a third line.
+std::vector<std::string> compactTip(const std::string& tip) {
+    const std::string text = "Erreur fréquente : " + coach::lowerFirst(tip);
+    std::vector<std::string> lines;
+    for (size_t width = 44; width <= 200; width += 8) {
+        lines = coach::wrapText(text, width);
+        if (lines.size() <= 2) break;
+    }
+    if (lines.size() > 2) lines.resize(2);
+    return lines;
+}
+
 // Index of the most important tip (highest weight, first on ties), -1 when none has text.
 int topTipIndex(const std::vector<Tip>& tips) {
     int best = -1;
@@ -249,7 +264,7 @@ void CoachModule::onResult(const AttemptResult& raw, const TickContext& ctx, Act
     rule.window = kFadingWindow;
     rule.every = cfg_.fadingEvery;
     const bool show = coach::shouldShowCard(rule, prevCount, prevRate, r.success, rec.newRecord, t.hiddenSuccesses());
-    if (cfg_.cardEnabled && show) buildCard(r, t, rec, now, goalLine);
+    if (cfg_.cardEnabled && show) buildCard(r, t, rec, now, goalLine, completedNow);
     else card_ = FeedbackCard{};  // never leave the card of an older attempt on screen
 
     refreshDerived();
@@ -321,9 +336,12 @@ void CoachModule::onCommand(const Command& cmd, const TickContext& ctx, Actions&
         card_.verdict = Verdict::Good;
         card_.score = 82.f;
         card_.success = true;
-        card_.metricLines = {"Temps au ballon : 2.05 s (idéal 1.95 s)", "Angle du flip : 38° (idéal 30°)"};
+        card_.metricLines = {"Temps au ballon : 2.05 s (idéal 1.95 s)"};
         card_.tip = "Annule le flip un peu plus tôt pour garder ta vitesse.";
         card_.tipLines = coach::wrapText(card_.tip, 44);
+        card_.tipRecurring = true;
+        card_.recurringNote = "Erreur fréquente : 3 des 5 derniers essais";
+        card_.compactTipLines = compactTip(card_.tip);
         card_.goalLine = "Objectif 7/10 : 10 speedflips réussis";
     } else {
         say(out,
@@ -362,6 +380,23 @@ void CoachModule::draw(const ViewContext& view, const DrawContext& ctx, DrawList
     p.background = Color(0, 0, 0, 160.f * alpha);
     p.scale = scale;
     p.minWidth = 230.f * scale;
+
+    if (ctx.compactHud) {
+        // The module panel already shows the verdict, the score and the tip: the compact card only adds a new
+        // record or a goal reached, else the mistake that keeps coming back. Nothing else to say: no card.
+        auto add = [&](const std::string& text, const Color& c) {
+            PanelLine l;
+            l.text = text;
+            l.color = fadeColor(c);
+            p.lines.push_back(std::move(l));
+        };
+        if (card_.newRecord && !card_.compactRecordLine.empty()) add(card_.compactRecordLine, kGold);
+        if (card_.goalReached && !card_.goalLine.empty()) add(card_.goalLine, kGoalColor);
+        if (p.lines.empty() && card_.tipRecurring)
+            for (const auto& w : card_.compactTipLines) add(w, colors::Orange);
+        if (!p.lines.empty()) out.panel(std::move(p));
+        return;
+    }
 
     const Color vc = verdictColor(card_.verdict);
     PanelLine verdict;
@@ -412,7 +447,7 @@ void CoachModule::draw(const ViewContext& view, const DrawContext& ctx, DrawList
 }
 
 void CoachModule::buildCard(const AttemptResult& r, const SkillTracker& t, const SkillTracker::RecordUpdate& rec,
-                            float now, const std::string& goalLine) {
+                            float now, const std::string& goalLine, bool goalReached) {
     card_ = FeedbackCard{};
     card_.active = true;
     card_.startTime = now;
@@ -443,6 +478,7 @@ void CoachModule::buildCard(const AttemptResult& r, const SkillTracker& t, const
             if (seen >= 3) {
                 card_.tipRecurring = true;
                 card_.recurringNote = "Erreur fréquente : " + std::to_string(seen) + " des 5 derniers essais";
+                card_.compactTipLines = compactTip(card_.tip);
             }
         }
     }
@@ -451,8 +487,10 @@ void CoachModule::buildCard(const AttemptResult& r, const SkillTracker& t, const
         std::string value, before;
         t.formatRecordPair(rec.value, rec.previous, value, before);
         card_.recordLine = "Nouveau record ! " + value + " (avant " + before + ")";
+        card_.compactRecordLine = plainUnit(t.recordUnit()) ? card_.recordLine : std::string("Nouveau record !");
     }
     card_.goalLine = goalLine;
+    card_.goalReached = goalReached && !goalLine.empty();
 }
 
 // ---- Sessions, goals, plan -----------------------------------------------------------------------------

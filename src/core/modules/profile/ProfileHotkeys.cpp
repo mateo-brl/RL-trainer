@@ -32,7 +32,7 @@ const std::vector<HotkeyCommand>& allHotkeyCommands() {
     static const std::vector<HotkeyCommand> all = {
         {"menu", "rlt_menu", "Ouvrir RL Trainer"},
         {"stop", "rlt engine stop", "Arrêter l'exercice"},
-        {"firsttouch", "rlt firsttouch drill mix", "Premières touches (mix)"},
+        {"firsttouch", "rlt firsttouch drill roll_in", "Premières touches (balle qui roule)"},
         {"kickoff", "rlt kickoff start random", "Kickoff aléatoire"},
     };
     return all;

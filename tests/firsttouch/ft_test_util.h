@@ -293,6 +293,7 @@ inline bool noEmDash(const std::string& s) { return s.find("\xE2\x80\x94") == st
 inline void setDrillLevel(FirstTouchModule& m, ft::DrillType t, float level) {
     Store st;
     st.setFloat(std::string("firsttouch.drill.") + ft::drillId(t) + ".level", level);
+    st.setInt(std::string("firsttouch.drill.") + ft::drillId(t) + ".attempts", 1);  // a played level
     m.load(st);
 }
 

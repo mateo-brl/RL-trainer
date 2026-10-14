@@ -463,7 +463,7 @@ void renderCommands(UiContext& ctx) {
     wrapped("Ces commandes marchent aussi dans la console BakkesMod (F6) :");
     ImGui::BulletText("rlt profile resume : résumé de ta config et de ses principaux conseils");
     ImGui::BulletText("rlt profile hotkeys : liste des raccourcis proposés dans le chat");
-    ImGui::BulletText("rlt profile refresh : demande une relecture de ta config (faite dès que cet onglet est ouvert)");
+    ImGui::BulletText("rlt profile refresh : demande une relecture de ta config (faite dès que cette page est ouverte)");
     ImGui::BulletText("rlt profile forget : vide la liste des raccourcis à annuler");
     ImGui::BulletText("rlt profile resettoast : réaffiche la notification \"Config détectée\"");
     ImGui::BulletText("rlt_menu : ouvre ou ferme la fenêtre RL Trainer");

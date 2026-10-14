@@ -27,7 +27,9 @@ struct KickoffConfig {
     float ballHeight = 93.15f;       // z of the ball at rest at the centre spot
 
     // ---- Ghost opponent
-    int ghostLevel = 3;  // KickoffGhostMode: 0 off, 1 beginner, 2 standard, 3 pro, 4 elite, 5 personal best, 6 adaptive
+    // KickoffGhostMode: 0 off, 1 beginner, 2 standard, 3 pro, 4 elite, 5 personal best, 6 adaptive. Adaptive by
+    // default: it starts at the beginner time and speeds up with the wins.
+    int ghostLevel = 6;
     bool ghostHitsBall = true;  // when the ghost wins or ties, push the ball like its hit would
     float ghostImpulseScale = 1.f;
     float duelWindow = 0.10f;  // s: beyond this arrival gap the first car wins outright
@@ -36,7 +38,7 @@ struct KickoffConfig {
     Color ghostColor{120, 200, 255, 230};
 
     // ---- Grading and feedback
-    int gradeTarget = 2;          // KickoffLevel the time/speed scores are measured against (Pro)
+    int gradeTarget = 1;          // KickoffLevel the time/speed scores are measured against (Standard: flips)
     bool chatFeedback = true;     // one chat line per drill attempt (time, score, main tip)
     bool recordToasts = true;     // notification for a new personal best / end of a series
     bool passiveAnalysis = true;  // grade kickoffs outside the drill (freeplay reset, offline matches)
@@ -45,6 +47,7 @@ struct KickoffConfig {
     bool hudEnabled = true;
     float hudX = 0.01f;
     float hudY = 0.12f;
+    float hudScale = 1.f;  // panel size, multiplies the general HUD size
     bool bigCountdown = true;
     float countdownY = 0.30f;
     bool showPath = true;

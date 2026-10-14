@@ -25,7 +25,7 @@ struct ProfileConfig {
     // Automatic hotkeys proposed for plugin commands (applied only after a click in the tab).
     bool hotkeyMenu = true;          // "rlt_menu"
     bool hotkeyStop = true;          // "rlt engine stop"
-    bool hotkeyFirstTouch = false;   // "rlt firsttouch drill mix"
+    bool hotkeyFirstTouch = false;   // "rlt firsttouch drill roll_in"
     bool hotkeyKickoff = false;      // "rlt kickoff start random"
     bool hotkeyGamepad = false;      // also consider free gamepad buttons (advanced)
 

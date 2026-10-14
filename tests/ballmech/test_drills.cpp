@@ -482,6 +482,22 @@ TEST(bm_drill_prompts_use_button_style) {
     CHECK(h.mod.uiState().keyStyle == KeyStyle::PlayStation);
 }
 
+TEST(bm_unplayed_old_save_starts_at_niveau_1) {
+    // The previous version saved every drill at its old start level (0.15) even when never played.
+    Store st;
+    st.setFloat("ballmech.drill.flick.level", 0.15f);
+    st.setInt("ballmech.drill.flick.attempts", 0);
+    st.setFloat("ballmech.drill.pinch.level", 0.5f);
+    st.setInt("ballmech.drill.pinch.attempts", 0);
+    st.setInt("ballmech.drill.pinch.chosen", 1);  // set with the - / + buttons: kept
+    BallMechModule m;
+    m.load(st);
+    CHECK_NEAR(m.drillLevel("flick"), 0.f, 1e-6f);
+    for (const auto& v : m.uiState().mechs)
+        if (v.id == "flick") CHECK(v.levelNumber == 1);
+    CHECK_NEAR(m.drillLevel("pinch"), 0.5f, 1e-6f);
+}
+
 TEST(bm_drill_beginner_progression) {
     // New player: level 1, more time than the mechanic's base time.
     Harness h;

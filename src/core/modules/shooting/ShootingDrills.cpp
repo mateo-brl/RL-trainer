@@ -96,7 +96,7 @@ Spawn facing(const Vec3& carPos, const Vec3& dir, const GoalFrame& goal) {
 
 Spawn flickSpawn(float level, bool moving, float fixedSpeed, const GoalFrame& goal, const RoofParams& roof, Rng& rng) {
     const float d = clamp01(level);
-    const float dist = lerpf(2500.f, 4500.f, d);
+    const float dist = lerpf(2000.f, 4500.f, d);
     const float xr = lerpf(200.f, 1400.f, d);
     Vec3 carPos{rng.range(-xr, xr), goal.sign * (kGoalLineY - dist), kCarRestZ};
     carPos = clampToField(carPos, 300.f);

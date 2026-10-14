@@ -1329,7 +1329,7 @@ void BallMechModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
             d.lines.push_back(act);
             // First attempt: wait for the throttle, then "Départ dans 3" (the later holds are short: the bar only).
             // A start where the throttle spoils everything (ball balanced on a stopped car, car on the ceiling) says
-            // to let go of it during the countdown.
+            // to let go of it during the countdown, and on every hold GO waits for that (line shown then too).
             const bool releaseWait = impl_->ready.waitingRelease(now);  // "Lâche l'accélérateur pour partir"
             if (drill_.phase == DrillPhase::Ready && (impl_->ready.waiting() || impl_->readyNative || releaseWait)) {
                 std::string line = impl_->ready.hudLine(now);

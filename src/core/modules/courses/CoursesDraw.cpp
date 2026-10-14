@@ -15,6 +15,7 @@ namespace rlt {
 namespace {
 
 constexpr Color kGrey{190, 190, 190, 255};
+constexpr Color kAccent{255, 199, 64, 255};  // menu accent: the action to do now
 constexpr Color kMissed{255, 70, 70, 120};
 
 // Compact HUD: at most this many lines per panel (the title does not count).
@@ -38,7 +39,8 @@ void keepMainLines(DrawPanel& p, const std::vector<int>& ranks) {
 void CoursesModule::draw(const ViewContext& view, const DrawContext& ctx, DrawList& out) {
     if (phase_ == CoursesPhase::Idle || !cfg_.enabled) return;
     if (view.valid) {
-        if (kindUsesCourse(kind_) && !course_.rings.empty()) drawCourse(view, ctx, out);
+        const bool rings = full_ ? kind_ != CoursesKind::Dribble && kind_ != CoursesKind::Catch : kindUsesCourse(kind_);
+        if (rings && !course_.rings.empty()) drawCourse(view, ctx, out);
         if (kind_ == CoursesKind::Catch && cfg_.catchMarker && phase_ != CoursesPhase::Result) drawCatchMarker(view, out);
     }
     if (cfg_.hud) drawHud(view, ctx, out);
@@ -114,6 +116,21 @@ void CoursesModule::drawCourse(const ViewContext& view, const DrawContext& ctx, 
         if (r.flags & courses::kFlagFinal) out.text3D(label, "ARRIVÉE", cfg_.nextColor, 1.2f, {0.f, -22.f});
         if ((r.flags & courses::kFlagBoostRefill) && cfg_.boostRefills && !cfg_.unlimitedBoost && kindIsRings(kind_))
             out.text3D(c - Vec3{0.f, 0.f, top + 40.f}, "BOOST", colors::Orange, 1.1f);
+        // Arch on a side wall: a "MUR" tag and, for the next one, a dashed line on the floor showing where to turn up
+        // the wall (arrive in biais, about 35 degrees off the wall), then up the wall to the arch.
+        if (r.surface == courses::Surface::WallPosX || r.surface == courses::Surface::WallNegX) {
+            const float side = r.surface == courses::Surface::WallPosX ? 1.f : -1.f;
+            out.text3D(label, "MUR", isNext ? cfg_.nextColor : col, 1.1f, {0.f, 22.f});
+            if (isNext && cfg_.guideLine) {
+                const Vec3 n = courses::toF(r.normal);
+                const float dirY = n.y >= 0.f ? 1.f : -1.f;
+                const float climb = std::max(0.f, c.z - 100.f);
+                const Vec3 base{side * 4060.f, c.y - dirY * climb * 0.7f, 20.f};
+                const Vec3 start = base - Vec3{side * 0.82f, dirY * 0.57f, 0.f} * 900.f;
+                courses::appendDashedLine(start, base, 10, cfg_.guideColor, 2.f, out);
+                courses::appendDashedLine(base, Vec3{side * 4086.f, c.y, c.z}, 8, cfg_.guideColor, 2.f, out);
+            }
+        }
     }
 
     // Guide line from the car (or the ball) to the next ring.
@@ -132,8 +149,13 @@ void CoursesModule::drawCatchMarker(const ViewContext& view, DrawList& out) cons
     Vec3 land;
     bool have = false;
     if (phase_ == CoursesPhase::Setup || phase_ == CoursesPhase::Countdown) {
-        land = catchPlan_.landing;
-        have = true;
+        if (full_) {
+            float t = 0.f;
+            have = courses::predictDownCrossing(fullBallPos_, fullBallVel_, courses::kCatchRoofZ, 5.f, land, t);
+        } else {
+            land = catchPlan_.landing;
+            have = true;
+        }
     } else if (phase_ == CoursesPhase::Running && view.ballValid && !ballOnRoofNow_ && view.ballVisualPos.z > 200.f) {
         float t = 0.f;
         have = courses::predictDownCrossing(view.ballVisualPos, view.ballVel, 148.f, 4.f, land, t);
@@ -151,7 +173,7 @@ void CoursesModule::drawHud(const ViewContext& view, const DrawContext& ctx, Dra
     p.anchorX = Align::Left;
     p.scale = scale;
     p.minWidth = 260.f * scale;
-    p.title = std::string(kindTitle(kind_)) + (fromCode_ ? " - code, niveau " : " - niveau ") +
+    p.title = std::string(full_ ? kindFullTitle(kind_) : kindTitle(kind_)) + (fromCode_ ? " - code, niveau " : " - niveau ") +
               std::to_string(levelNumber(difficulty_)) + "/10";
     const SpeedUnit unit = resolveUnit(SpeedUnit::Auto, ctx.profile.metric);
     const KeyStyle style = keyStyleFromIndex(ctx.settings.profile.buttonStyle);
@@ -179,16 +201,39 @@ void CoursesModule::drawHud(const ViewContext& view, const DrawContext& ctx, Dra
     switch (phase_) {
     case CoursesPhase::Setup:
     case CoursesPhase::Countdown: {
-        const int remaining = std::max(0, countdownTotal_ - phaseTicks_);
-        line("Départ dans " + std::to_string((remaining + 119) / 120), 0, colors::White, -1.f, colors::Green, 1.3f);
+        // Get-ready phase: "Appuie sur accélérer quand tu es prêt", then "Départ dans 3" (then "Lâche l'accélérateur
+        // pour partir" when the ball is balanced on a stopped car and the throttle is still held).
+        std::string ready = ready_.hudLine(ctx.snap.time);
+        const bool waiting = ready_.waiting() || ready_.waitingRelease(ctx.snap.time) || (ready.empty() && firstAttempt_);
+        if (ready.empty())
+            ready = firstAttempt_ ? "Appuie sur accélérer quand tu es prêt"
+                                  : "Départ dans " + std::to_string(std::max(1, static_cast<int>(std::ceil(cfg_.countdown))));
+        line(ready, 0, waiting ? kAccent : colors::White, -1.f, colors::Green, waiting ? 1.15f : 1.3f);
+        if (full_) {
+            // The full sequence: its first step, then the others as details.
+            if (!steps_.empty()) {
+                line(steps_.number(0) + steps_.steps()[0].label, 1, kAccent);
+                for (int i = 1; i < steps_.size(); ++i)
+                    line(steps_.number(i) + steps_.steps()[static_cast<size_t>(i)].label, kDetail, kGrey, -1.f, colors::Green, 0.85f);
+            }
+            break;
+        }
         switch (kind_) {
         case CoursesKind::RingsAirDribble: line("Fais passer la balle dans les " + std::to_string(n) + " anneaux", 1); break;
         case CoursesKind::Slalom: line("Passe les " + std::to_string(n) + " portes, balle sur le toit", 1); break;
         case CoursesKind::Dribble:
-            line("Tiens " + formatNumber(dribbleTarget_, 0) + " s, moyenne min " + formatSpeed(dribbleMinSpeed_, unit, 0), 1);
+            if (dribbleMinSpeed_ > 0.f)
+                line("Tiens " + formatNumber(dribbleTarget_, 0) + " s, moyenne min " + formatSpeed(dribbleMinSpeed_, unit, 0), 1);
+            else line("Garde la balle sur le toit " + formatNumber(dribbleTarget_, 0) + " s, même à l'arrêt", 1);
+            line("Accélère tout doucement", 2, colors::Yellow);
             break;
         case CoursesKind::Catch:
             line("Rattrape la balle et garde-la " + formatNumber(cfg_.catchHold, 1) + " s sur le toit", 1);
+            line("Va dans le cercle et arrête-toi dessous", 2, colors::Yellow);
+            break;
+        case CoursesKind::RingsAir:
+            line("Passe les " + std::to_string(n) + " anneaux dans l'ordre", 1);
+            line("Saute et lève le nez, puis boost vers le centre", 2, colors::Yellow);
             break;
         default: line("Passe les " + std::to_string(n) + " anneaux dans l'ordre", 1); break;
         }
@@ -200,7 +245,16 @@ void CoursesModule::drawHud(const ViewContext& view, const DrawContext& ctx, Dra
         break;
     }
     case CoursesPhase::Running: {
-        if (course) {
+        if (full_) {
+            std::vector<PanelLine> steps;
+            drawFullHud(view, ctx, steps);
+            int mainRank = 0;
+            for (auto& l : steps) {
+                const int rank = l.detail ? kDetail : ++mainRank;
+                line(std::move(l.text), rank, l.color, l.bar, l.barColor, l.scale);
+            }
+            line("Temps " + formatNumber(runTime_, 1) + " s", kDetail, kGrey, -1.f, colors::Green, 0.85f);
+        } else if (course) {
             const float t = runTime_ + static_cast<float>(run_.penaltyTime());
             std::string tl = "Temps " + formatTime(t);
             if (run_.penaltyTime() > 0.0) tl += " (dont " + formatNumber(static_cast<float>(run_.penaltyTime()), 1) + " s de pénalité)";
@@ -217,6 +271,20 @@ void CoursesModule::drawHud(const ViewContext& view, const DrawContext& ctx, Dra
                      colors::Orange);
             }
             if (kind_ == CoursesKind::Slalom && !ballOnRoofNow_) line("Balle hors du toit !", 3, colors::Orange);
+            else if (kind_ == CoursesKind::Slalom) line("Décale-toi tôt vers la porte", 5, colors::Yellow);
+            // Plain-language hint of the moment (one at a time).
+            const int next = run_.nextRing();
+            if (kind_ == CoursesKind::RingsGround && next < n) {
+                const courses::Surface surf = course_.rings[static_cast<size_t>(next)].surface;
+                if (surf == courses::Surface::WallPosX || surf == courses::Surface::WallNegX)
+                    line("Mur : arrive en biais", 2, colors::Yellow);
+            }
+            if (kind_ == CoursesKind::RingsAir && ctx.hasSnapshot && ctx.snap.car.valid && ctx.snap.car.onGround && next == 0)
+                line("Saute et lève le nez", 2, colors::Yellow);
+            if (kind_ == CoursesKind::RingsAirDribble && ctx.hasSnapshot && ctx.snap.ball.valid) {
+                if (courses::ballOnRoof(ctx.snap.ball, ctx.snap.car)) line("Saute pour soulever la balle", 2, colors::Yellow);
+                else line("Petits coups de boost sous la balle", 5, colors::Yellow);
+            }
             if (run_.misses() > 0) line("Ratés : " + std::to_string(run_.misses()), kDetail, colors::Red);
             const float left = timeLimit() - runTime_;
             if (left < 10.f) line("Temps restant " + formatNumber(std::max(0.f, left), 1) + " s", 4, colors::Orange);
@@ -225,17 +293,53 @@ void CoursesModule::drawHud(const ViewContext& view, const DrawContext& ctx, Dra
             line("Tenue " + formatNumber(held, 1) + " / " + formatNumber(dribbleTarget_, 0) + " s", 0, colors::White,
                  dribbleTarget_ > 0.f ? clamp01(held / dribbleTarget_) : 0.f, targetReached_ ? colors::Green : colors::Cyan, 1.2f);
             if (dribbleBest_ > 0.f) line("Record " + formatNumber(dribbleBest_, 1) + " s", 4, colors::Cyan);
-            if (ballOnRoofNow_) line("Balle sur le toit", kDetail, colors::Green);
-            else line("Balle hors du toit !", 3, colors::Orange);
+            if (ballOnRoofNow_) {
+                // Front / back gauge of the ball on the roof: green within 25 uu of the centre.
+                const float off = ctx.hasSnapshot ? pickup::roofOffsetX(ctx.snap) : 0.f;
+                const float bar = clamp01(0.5f + off / 120.f);
+                if (std::fabs(off) <= 25.f) line("Balle au centre du toit", 1, colors::Green, bar, colors::Green);
+                else if (off < 0.f) line("Balle en arrière : relâche", 1, colors::Orange, bar, colors::Orange);
+                else line("Balle en avant : accélère un peu", 1, colors::Orange, bar, colors::Orange);
+            } else {
+                line("Balle hors du toit !", 1, colors::Orange);
+            }
+            // Turn hint when the straight room left is short.
+            if (ctx.hasSnapshot && ctx.snap.car.valid) {
+                const CarState& c = ctx.snap.car;
+                Vec3 dir{c.vel.x, c.vel.y, 0.f};
+                if (length(dir) < 150.f) dir = Vec3{c.basis.fwd.x, c.basis.fwd.y, 0.f};
+                dir = normalize(dir, Vec3{0.f, 1.f, 0.f});
+                float room = 1e9f;
+                if (std::fabs(dir.x) > 1e-3f) room = std::min(room, ((dir.x > 0.f ? 3900.f : -3900.f) - c.pos.x) / dir.x);
+                if (std::fabs(dir.y) > 1e-3f) room = std::min(room, ((dir.y > 0.f ? 4900.f : -4900.f) - c.pos.y) / dir.y);
+                if (room < 1500.f && speed(c) > 200.f) line("Tourne doucement : le mur arrive", 2, colors::Yellow);
+            }
             const float avg = speedSamples_ > 0 ? static_cast<float>(speedSum_ / speedSamples_) : 0.f;
-            line("Vitesse moy. " + formatSpeed(avg, unit, 0) + " (min " + formatSpeed(dribbleMinSpeed_, unit, 0) + ")", 1,
-                 avg >= dribbleMinSpeed_ ? colors::Green : colors::Orange);
+            if (dribbleMinSpeed_ > 0.f)
+                line("Vitesse moy. " + formatSpeed(avg, unit, 0) + " (min " + formatSpeed(dribbleMinSpeed_, unit, 0) + ")", 3,
+                     avg >= dribbleMinSpeed_ ? colors::Green : colors::Orange);
         } else {
             const float limit = std::max(0.1f, catchPlan_.timeLimit);
             line("Temps " + formatNumber(runTime_, 1) + " / " + formatNumber(limit, 1) + " s", 0, colors::White,
                  clamp01(1.f - runTime_ / limit), runTime_ < limit ? colors::Cyan : colors::Red, 1.2f);
             line("Sur le toit " + formatNumber(catchOnRoof_, 1) + " / " + formatNumber(cfg_.catchHold, 1) + " s", 1,
                  colors::White, cfg_.catchHold > 0.f ? clamp01(catchOnRoof_ / cfg_.catchHold) : 0.f, colors::Green);
+            // What to do now, in plain words.
+            std::string hint;
+            if (catchOnRoof_ > 0.f) hint = "Garde-la";
+            else if (catchHopFwd_) hint = "Suis la balle vers l'avant";
+            else if (haveFirstTouch_) hint = "Suis les rebonds";
+            else if (ctx.hasSnapshot && ctx.snap.ball.valid && ctx.snap.car.valid) {
+                Vec3 land;
+                float tl = 0.f;
+                const bool pred = courses::predictDownCrossing(ctx.snap.ball.pos, ctx.snap.ball.vel, courses::kCatchRoofZ, 5.f, land, tl);
+                const Vec3 cc = hitboxCenter(ctx.snap.car);
+                const bool under = pred && std::hypot(land.x - cc.x, land.y - cc.y) < 100.f;
+                if (!under) hint = "Va dans le cercle";
+                else if (speed(ctx.snap.car) > 200.f) hint = "Arrête-toi dessous";
+                else hint = "Ne saute pas";
+            }
+            if (!hint.empty()) line(hint, 2, colors::Yellow);
             line("Touches : " + std::to_string(touches_), kDetail, kGrey);
         }
         break;

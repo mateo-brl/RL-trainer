@@ -14,25 +14,32 @@ namespace {
 struct KindInfo {
     const char* key;
     const char* title;
+    const char* fullTitle;
     const char* skill;
     const char* help;
     int tier;  // 0 Débutant, 1 Intermédiaire, 2 Avancé
 };
 
 constexpr KindInfo kKinds[kCoursesKindCount] = {
-    {"air", "Anneaux aériens", "course.rings.air",
-     "Vole à travers des anneaux générés : contrôle aérien, trajectoires propres et gestion du boost.", 2},
-    {"ground", "Anneaux sol & murs", "course.rings.ground",
-     "Des arches au sol et sur les murs : vitesse, trajectoires et transitions sol-mur.", 0},
-    {"airdribble", "Air dribble", "course.rings.airdribble",
-     "Fais passer la BALLE dans les anneaux en air dribble. Elle ne doit jamais toucher le sol.", 2},
-    {"dribble", "Dribble sur le toit", "course.control.dribble",
-     "Garde la balle sur le toit le plus longtemps possible en roulant.", 0},
-    {"slalom", "Slalom", "course.control.slalom", "Passe chaque porte avec la balle sur le toit, sans la faire tomber.",
-     1},
-    {"catch", "Rattrapage", "course.control.catch",
-     "La balle tombe du ciel ou sort d'un mur : amortis-la et garde-la sur le toit.", 1},
+    {"air", "Anneaux aériens", "Parcours complet : décollage", "course.rings.air",
+     "Traverse des anneaux en volant. Niveaux 1 à 3 : l'initiation, de grands anneaux tout bas.", 2},
+    {"ground", "Anneaux sol & murs", "Parcours complet : monter au mur", "course.rings.ground",
+     "Passe sous des arches en roulant : au sol jusqu'au niveau 3, puis aussi sur les murs.", 0},
+    {"airdribble", "Air dribble", "Parcours complet : du sol à l'air dribble", "course.rings.airdribble",
+     "Fais passer la balle dans des anneaux en la poussant en l'air. Elle ne doit jamais toucher le sol.", 2},
+    {"dribble", "Dribble sur le toit", "Parcours complet : ramasser puis dribbler", "course.control.dribble",
+     "Garde la balle posée sur ton toit en roulant, de plus en plus longtemps et vite.", 1},
+    {"slalom", "Slalom", "Parcours complet : ramasser puis slalomer", "course.control.slalom",
+     "Balle sur le toit, passe chaque porte : une à gauche, une à droite, sans la faire tomber.", 1},
+    {"catch", "Rattrapage", "Parcours complet : rattrape une chandelle", "course.control.catch",
+     "La balle tombe du ciel ou sort d'un mur : récupère-la sur ton toit et garde-la.", 1},
 };
+
+// Order of the tab inside each difficulty tag: the beginner path (ground arches, then the dribble, the catch and the
+// slalom; the air rings before the air dribble).
+constexpr CoursesKind kPathOrder[kCoursesKindCount] = {CoursesKind::RingsGround, CoursesKind::Dribble,
+                                                       CoursesKind::Catch,       CoursesKind::Slalom,
+                                                       CoursesKind::RingsAir,    CoursesKind::RingsAirDribble};
 
 const KindInfo& info(CoursesKind k) { return kKinds[std::clamp(static_cast<int>(k), 0, kCoursesKindCount - 1)]; }
 
@@ -61,6 +68,10 @@ std::string lower(std::string s) {
 }
 
 bool parseKind(const std::string& raw, CoursesKind& out) {
+    return CoursesModule::parseKindName(raw, out);
+}
+
+bool parseKindImpl(const std::string& raw, CoursesKind& out) {
     const std::string s = lower(raw);
     if (s == "air" || s == "aerial" || s == "aerien" || s == "aeriens" || s == "a") out = CoursesKind::RingsAir;
     else if (s == "ground" || s == "sol" || s == "murs" || s == "wall" || s == "walls" || s == "g") out = CoursesKind::RingsGround;
@@ -81,7 +92,9 @@ void say(Actions& out, const std::string& text) { out.chat.push_back(ChatMessage
 } // namespace
 
 // ---- Static metadata ---------------------------------------------------------------------------------------
+bool CoursesModule::parseKindName(const std::string& raw, CoursesKind& out) { return parseKindImpl(raw, out); }
 const char* CoursesModule::kindTitle(CoursesKind k) { return info(k).title; }
+const char* CoursesModule::kindFullTitle(CoursesKind k) { return info(k).fullTitle; }
 const char* CoursesModule::kindKey(CoursesKind k) { return info(k).key; }
 const char* CoursesModule::kindSkill(CoursesKind k) { return info(k).skill; }
 const char* CoursesModule::kindHelp(CoursesKind k) { return info(k).help; }
@@ -96,8 +109,8 @@ const char* CoursesModule::kindTierLabel(CoursesKind k) {
 std::vector<CoursesKind> CoursesModule::kindsByTier() {
     std::vector<CoursesKind> out;
     for (int t = 0; t < 3; ++t)
-        for (int i = 0; i < kCoursesKindCount; ++i)
-            if (info(static_cast<CoursesKind>(i)).tier == t) out.push_back(static_cast<CoursesKind>(i));
+        for (CoursesKind k : kPathOrder)
+            if (info(k).tier == t) out.push_back(k);
     return out;
 }
 int CoursesModule::levelNumber(int difficultyPct) {
@@ -110,10 +123,31 @@ bool CoursesModule::kindUsesCourse(CoursesKind k) {
 bool CoursesModule::kindIsRings(CoursesKind k) {
     return k == CoursesKind::RingsAir || k == CoursesKind::RingsGround || k == CoursesKind::RingsAirDribble;
 }
+bool CoursesModule::kindUsesPickup(CoursesKind k) {
+    return k == CoursesKind::RingsAirDribble || k == CoursesKind::Dribble || k == CoursesKind::Slalom;
+}
+
+CoursesModule::DribbleParams CoursesModule::dribbleParams(int difficultyPct, float roofTolerance) {
+    DribbleParams p;
+    if (levelNumber(difficultyPct) <= 1) {
+        // Niveau 1: hold 5 s, even standing still, and the ball may leave the roof 0.5 s.
+        p.target = 5.f;
+        p.minSpeed = 0.f;
+        p.tolerance = std::max(roofTolerance, 0.5f);
+        return p;
+    }
+    // From niveau 2: 8 s at 250 uu/s on average, up to 40 s at 1000 uu/s.
+    const float d = clamp01(static_cast<float>(difficultyPct - 6) / 94.f);
+    p.target = lerpf(8.f, 40.f, d);
+    p.minSpeed = lerpf(250.f, 1000.f, d);
+    p.tolerance = roofTolerance;
+    return p;
+}
 
 // ---- Construction / settings -------------------------------------------------------------------------------
 CoursesModule::CoursesModule() : rng_(0xC0C0A5E5ULL, 0x2545F4914F6CDD1DULL) {
     for (auto& s : stairs_) s = Staircase(0.75f, 0.04f, 0.f);  // a new player starts at niveau 1
+    for (auto& s : fullStairs_) s = Staircase(0.75f, 0.04f, 0.f);
 }
 
 void CoursesModule::describeSettings(SettingsSchema& schema) {
@@ -130,7 +164,8 @@ void CoursesModule::describeSettings(SettingsSchema& schema) {
               "0 = selon la difficulté. Sinon nombre d'anneaux (ou de portes) des nouveaux parcours. Le code du "
               "parcours le retient.");
     g.number("rlt_co_countdown", &CoursesConfig::countdown, 2.f, 0.f, 5.f, "Compte à rebours (s)",
-             "Temps pendant lequel la voiture est bloquée avant le départ.", 1);
+             "Temps pendant lequel la voiture est bloquée avant le départ des essais suivants. Le premier essai attend "
+             "que tu appuies sur accélérer, puis compte 3 s.", 1);
     g.choice("rlt_co_chain", &CoursesConfig::chainMode, 0,
              {"Intelligent", "Toujours le même parcours", "Nouveau parcours après une réussite", "S'arrêter à la fin"},
              "Après un essai",
@@ -151,7 +186,9 @@ void CoursesModule::describeSettings(SettingsSchema& schema) {
     r.toggle("rlt_co_boost_refills", &CoursesConfig::boostRefills, true, "Anneaux de recharge",
              "Certains anneaux (marqués BOOST) remettent ton boost à 100. Utile quand le boost est limité.");
     r.choice("rlt_co_ad_start", &CoursesConfig::airDribbleStart, 0, {"Balle sur le toit", "Balle lancée devant"},
-             "Départ air dribble", "Position de la balle au départ des parcours d'air dribble.");
+             "Départ air dribble",
+             "Position de la balle au départ des nouveaux parcours d'air dribble (balle sur le toit : voiture à l'arrêt). "
+             "Le code du parcours garde ce départ.");
     r.toggle("rlt_co_park_ball", &CoursesConfig::parkBall, true, "Ranger la balle",
              "Pendant les anneaux en voiture, la balle est rangée en hauteur dans un coin. Coupe la caméra balle.");
 
@@ -229,12 +266,32 @@ int CoursesModule::difficultyFor(CoursesKind k) const {
     }
 }
 
+int CoursesModule::fullDifficultyFor(CoursesKind k) const {
+    switch (cfg_.difficultyMode) {
+    case 1: return 15;
+    case 2: return 40;
+    case 3: return 65;
+    case 4: return 90;
+    case 5: return std::clamp(cfg_.manualDifficulty, 0, 100);
+    default: {
+        const float lvl = fullStairs_[static_cast<size_t>(k)].level();
+        return std::clamp(static_cast<int>(std::lround(lvl * 100.f)), 0, 100);
+    }
+    }
+}
+
 float CoursesModule::timeLimit() const {
     switch (kind_) {
     case CoursesKind::Dribble: return 600.f;
-    case CoursesKind::Catch: return catchPlan_.timeLimit + cfg_.catchHold + 0.5f;
+    // The plan's limit already counts the fall, the hops, the hold and a margin.
+    case CoursesKind::Catch: return catchPlan_.timeLimit;
     default: return static_cast<float>(course_.parTime) * cfg_.timeoutFactor + 10.f;
     }
+}
+
+void CoursesModule::recordAttemptCounters(bool success) {
+    ++attempts_[static_cast<size_t>(kind_)];
+    if (success) ++successes_[static_cast<size_t>(kind_)];
 }
 
 void CoursesModule::flash(const std::string& text, Color c, float seconds) {
@@ -254,14 +311,24 @@ uint64_t CoursesModule::newSeed(const TickContext& ctx) {
     return s;
 }
 
-bool CoursesModule::buildCourse(CoursesKind kind, uint64_t seed, int pct, bool fromCode) {
-    courses::Course c = courses::generateCourse(seed, typeForKind(kind), pct);
+uint64_t CoursesModule::newSeedFor(CoursesKind kind, const TickContext& ctx) {
+    uint64_t s = newSeed(ctx);
+    // Air dribble: the start (ball on the roof or popped ahead) travels in the seed, so the code gives the same start.
+    if (kind == CoursesKind::RingsAirDribble) {
+        if (cfg_.airDribbleStart == 1) s |= courses::kSeedPoppedStart;
+        else s &= ~courses::kSeedPoppedStart;
+    }
+    return s;
+}
+
+bool CoursesModule::buildCourse(CoursesKind kind, uint64_t seed, int pct, bool fromCode, uint32_t version) {
+    courses::Course c = courses::generateCourse(seed, typeForKind(kind), pct, nullptr, version);
     if (c.rings.empty()) return false;
     course_ = std::move(c);
     seed_ = seed;
     difficulty_ = course_.difficultyPct;
     fromCode_ = fromCode;
-    code_ = courses::encodeCourseCode(seed, course_.type, difficulty_);
+    code_ = courses::encodeCourseCode(seed, course_.type, difficulty_, course_.version);
     // Ball parking spot (car-only courses): the top corner farthest from every ring and from the start.
     const Vec3 corners[4] = {{3300.f, 4400.f, 1940.f}, {-3300.f, 4400.f, 1940.f}, {3300.f, -4400.f, 1940.f},
                              {-3300.f, -4400.f, 1940.f}};
@@ -280,12 +347,14 @@ bool CoursesModule::buildCourse(CoursesKind kind, uint64_t seed, int pct, bool f
 void CoursesModule::prepareControl(const TickContext& ctx) {
     const float d = static_cast<float>(difficulty_) / 100.f;
     if (kind_ == CoursesKind::Dribble) {
-        dribbleTarget_ = lerpf(8.f, 40.f, d);
-        dribbleMinSpeed_ = lerpf(250.f, 1000.f, d);
+        const DribbleParams dp = dribbleParams(difficulty_, cfg_.roofTolerance);
+        dribbleTarget_ = dp.target;
+        dribbleMinSpeed_ = dp.minSpeed;
+        dribbleTolerance_ = dp.tolerance;
         const float lane = static_cast<float>(rng_.rangeInt(-1500, 1500));
         dribbleCarPos_ = {lane, -3600.f, 17.f};
     } else if (kind_ == CoursesKind::Catch) {
-        catchPlan_ = courses::planCatch(seed_, static_cast<double>(d), cfg_.catchType);
+        catchPlan_ = courses::planCatch(seed_, static_cast<double>(d), cfg_.catchType, cfg_.catchHold);
     }
     (void)ctx;
 }
@@ -333,12 +402,30 @@ void CoursesModule::startExercise(CoursesKind kind, const std::string& codeText,
     if (!acquireActivity(kind, ctx, out)) return;
     resetTransient();
     kind_ = kind;
+    firstAttempt_ = true;  // the player chose this exercise: wait for the throttle before the countdown
+    // "Parcours complet": the steps before the skill (never from a code, which gives a plain course).
+    full_ = !decoded && fullMode_[static_cast<size_t>(kind)];
+    if (full_) {
+        fromCode_ = false;
+        difficulty_ = fullDifficultyFor(kind);
+        seed_ = newSeedFor(kind, ctx);
+        prepareFull(ctx);
+        if (kind == CoursesKind::Slalom && course_.rings.empty()) {
+            say(out, "Impossible de générer ce parcours. Réessaie.");
+            stopExercise(true);
+            return;
+        }
+        say(out, std::string(kindFullTitle(kind)) + " (" + kindTitle(kind) + ") - niveau " +
+                     std::to_string(levelNumber(difficulty_)) + "/10");
+        restartAttempt();
+        return;
+    }
     if (kindUsesCourse(kind)) {
         bool ok = false;
         if (decoded) {
-            ok = buildCourse(kind, decoded->seed, decoded->difficultyPct, true);
+            ok = buildCourse(kind, decoded->seed, decoded->difficultyPct, true, decoded->version);
         } else {
-            for (int i = 0; i < 4 && !ok; ++i) ok = buildCourse(kind, newSeed(ctx), difficultyFor(kind), false);
+            for (int i = 0; i < 4 && !ok; ++i) ok = buildCourse(kind, newSeedFor(kind, ctx), difficultyFor(kind), false);
         }
         if (!ok) {
             say(out, "Impossible de générer ce parcours. Essaie un autre code.");
@@ -360,6 +447,16 @@ void CoursesModule::startExercise(CoursesKind kind, const std::string& codeText,
 
 void CoursesModule::replayLast(const TickContext& ctx, Actions& out) {
     const CoursesKind kind = kind_;
+    if (full_) {
+        // Same full sequence: same start, same level.
+        if (!acquireActivity(kind, ctx, out)) return;
+        resetTransient();
+        firstAttempt_ = true;
+        prepareFull(ctx);
+        say(out, std::string(kindFullTitle(kind)) + " - niveau " + std::to_string(levelNumber(difficulty_)) + "/10");
+        restartAttempt();
+        return;
+    }
     const bool haveCourse = kindUsesCourse(kind) && !course_.rings.empty() && !code_.empty();
     if (kindUsesCourse(kind) && !haveCourse) {
         // Nothing built yet (fresh start, or only the last code restored from the save): play that code.
@@ -368,6 +465,7 @@ void CoursesModule::replayLast(const TickContext& ctx, Actions& out) {
     }
     if (!acquireActivity(kind, ctx, out)) return;
     resetTransient();
+    firstAttempt_ = true;
     // Same course or drill, same origin: a generated course stays generated (the staircase keeps adapting and the
     // smart chain still moves on after a success), a course played from a code stays fixed.
     if (haveCourse) {
@@ -388,7 +486,11 @@ void CoursesModule::restartAttempt() {
     // The slalom always needs a clean pass between the posts: the straight lane line grazes every gate of the
     // easy courses (the weave there is small), so counting grazes would let a straight drive finish.
     const bool grazeCounts = cfg_.grazeCounts && kind_ != CoursesKind::Slalom;
-    run_.reset(kindUsesCourse(kind_) ? &course_ : nullptr, missPolicy(), grazeCounts, cfg_.missPenalty);
+    const bool useCourse = !course_.rings.empty() && (full_ ? kind_ != CoursesKind::Dribble && kind_ != CoursesKind::Catch
+                                                            : kindUsesCourse(kind_));
+    // A full sequence always uses the strict policy on its single ring (or slalom gates): a miss is a failed step.
+    run_.reset(useCourse ? &course_ : nullptr, full_ ? courses::MissPolicy::Strict : missPolicy(), grazeCounts,
+               cfg_.missPenalty);
     havePrev_ = false;
     prevT_ = 0.0;
     runTime_ = 0.f;
@@ -401,7 +503,10 @@ void CoursesModule::restartAttempt() {
     teleports_ = 0;
     hasDelta_ = false;
     lastDelta_ = 0.f;
-    keeper_.reset(cfg_.roofTolerance);
+    keeper_.reset(kind_ == CoursesKind::Dribble ? dribbleTolerance_ : cfg_.roofTolerance);
+    ready_.stop();
+    catchGap_ = 0.f;
+    catchHopFwd_ = false;
     targetReached_ = false;
     wasOnRoof_ = false;
     departRelVel_ = {};
@@ -414,12 +519,19 @@ void CoursesModule::restartAttempt() {
     firstTouchOffset_ = 0.f;
     ballOnRoofNow_ = false;
     flashTicks_ = 0;
+    if (full_) buildFullSteps();
+    else steps_.clear();
 }
 
 void CoursesModule::nextAttempt(const TickContext& ctx, Actions& out) {
-    if (kindUsesCourse(kind_)) {
+    if (full_) {
+        fromCode_ = false;
+        difficulty_ = fullDifficultyFor(kind_);
+        seed_ = newSeedFor(kind_, ctx);
+        prepareFull(ctx);
+    } else if (kindUsesCourse(kind_)) {
         bool ok = false;
-        for (int i = 0; i < 4 && !ok; ++i) ok = buildCourse(kind_, newSeed(ctx), difficultyFor(kind_), false);
+        for (int i = 0; i < 4 && !ok; ++i) ok = buildCourse(kind_, newSeedFor(kind_, ctx), difficultyFor(kind_), false);
         if (ok) say(out, "Nouveau parcours (niveau " + std::to_string(levelNumber(difficulty_)) + "/10) : " + code_);
     } else {
         fromCode_ = false;
@@ -465,6 +577,9 @@ void CoursesModule::onTouch(const TouchEvent& touch, const TickContext& ctx, Act
         firstTouchJump_ = std::max(0.f, car.vel.z);
         const Vec3 local = car.basis.toLocal(touch.pre.ball.pos - hitboxCenter(car));
         firstTouchOffset_ = std::sqrt(local.x * local.x + local.y * local.y);
+        // Pickup: the ball met low on the nose (centre under 40 % of a ball radius above the roof) and slowly.
+        const float roofTop = car.hitboxExtent.z * 0.5f;
+        lowTouch_ = local.z < roofTop + 0.4f * touch.pre.ball.radius && length(rel) < 400.f;
     }
 }
 
@@ -493,7 +608,10 @@ void CoursesModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, Act
         break;
     case GameEventKind::Goal:
         if (phase_ == CoursesPhase::Running && kind_ != CoursesKind::RingsAir && kind_ != CoursesKind::RingsGround) {
-            if (kind_ == CoursesKind::Dribble) endDribble(ctx, out);
+            if (full_) {
+                steps_.fail(ctx.snap.time, "courses.ball_goal", "Garde la balle avec toi : elle est entrée dans un but.");
+                endFull(ctx, out, false);
+            } else if (kind_ == CoursesKind::Dribble) endDribble(ctx, out);
             else if (kind_ == CoursesKind::Catch) endCatch(ctx, out, false, "la balle est entrée dans un but");
             else failRun(ctx, out, "la balle est entrée dans un but", "courses.ball_goal",
                          gateCourse() ? "Garde la balle dans le parcours : vise le centre des portes."
@@ -562,6 +680,39 @@ void CoursesModule::onCommand(const Command& cmd, const TickContext& ctx, Action
             stopExercise(true);
             say(out, "Exercice arrêté.");
         }
+    } else if (name == "mode") {
+        // mode <exercise> <normal|parcours>: how the exercise starts (plain drill or "parcours complet").
+        CoursesKind k = kind_;
+        if (!parseKind(arg(0), k)) {
+            say(out, "Utilise : mode <air|ground|airdribble|dribble|slalom|catch> <normal|parcours>.");
+            return;
+        }
+        const std::string m = lower(arg(1));
+        const bool full = m == "parcours" || m == "full" || m == "complet" || m == "1";
+        if (!full && !(m == "normal" || m == "court" || m == "0")) {
+            say(out, "Utilise : mode <exercice> <normal|parcours>.");
+            return;
+        }
+        fullMode_[static_cast<size_t>(k)] = full;
+        out.requestSave = true;
+        say(out, std::string(kindTitle(k)) + (full ? " : " + std::string(kindFullTitle(k)) : std::string(" : départ normal")) + ".");
+    } else if (name == "reset_level" || name == "niveau1") {
+        // "Revenir au niveau 1": the exercise (normal and full sequence) starts again from niveau 1.
+        if (lower(arg(0)) == "pickup" || lower(arg(0)) == "ramassage") {
+            pickup_.reset(0.f);
+            out.requestSave = true;
+            say(out, "Ramassage : retour au niveau 1.");
+            return;
+        }
+        CoursesKind k = kind_;
+        if (!parseKind(arg(0), k)) {
+            say(out, "Utilise : reset_level <air|ground|airdribble|dribble|slalom|catch|pickup>.");
+            return;
+        }
+        stairs_[static_cast<size_t>(k)].setLevel(0.f);
+        fullStairs_[static_cast<size_t>(k)].setLevel(0.f);
+        out.requestSave = true;
+        say(out, std::string(kindTitle(k)) + " : retour au niveau 1.");
     } else if (name == "clearpb") {
         const std::string target = arg(0).empty() ? code_ : courses::normalizeCourseCode(arg(0));
         const auto before = pbs_.size();
@@ -572,7 +723,7 @@ void CoursesModule::onCommand(const Command& cmd, const TickContext& ctx, Action
         }
     } else {
         say(out, "Commandes : rings <air|ground|airdribble> [code], control <dribble|slalom|catch>, play <code>, "
-                 "restart, next, stop, code.");
+                 "restart, next, stop, code, mode <exercice> <normal|parcours>, reset_level <exercice>.");
     }
 }
 
@@ -620,17 +771,21 @@ CoursesStatus CoursesModule::status() const {
     s.active = phase_ != CoursesPhase::Idle;
     s.kind = kind_;
     s.phase = phase_;
-    s.title = kindTitle(kind_);
+    s.full = full_;
+    s.title = full_ ? kindFullTitle(kind_) : kindTitle(kind_);
+    if (full_ && phase_ == CoursesPhase::Running) s.stepLine = steps_.currentLine();
     switch (phase_) {
     case CoursesPhase::Setup:
-    case CoursesPhase::Countdown: s.phaseLabel = "Compte à rebours"; break;
+    case CoursesPhase::Countdown:
+        s.phaseLabel = ready_.waiting() ? "Prêt ? Appuie sur accélérer" : "Compte à rebours";
+        break;
     case CoursesPhase::Running: s.phaseLabel = "En cours"; break;
     case CoursesPhase::Result: s.phaseLabel = "Résultat"; break;
     default: s.phaseLabel = "Aucun exercice"; break;
     }
     s.difficulty = difficulty_;
     s.fromCode = fromCode_;
-    if (kindUsesCourse(kind_)) {
+    if (kindUsesCourse(kind_) && !(full_ && kind_ != CoursesKind::Slalom)) {
         s.code = code_;
         s.next = run_.nextRing();
         s.total = static_cast<int>(course_.rings.size());
@@ -683,6 +838,9 @@ std::vector<CoursesLevelView> CoursesModule::levels() const {
         v.attempts = attempts_[static_cast<size_t>(i)];
         v.successes = successes_[static_cast<size_t>(i)];
         v.recentRate = st.recentRate();
+        v.fullMode = fullMode_[static_cast<size_t>(i)];
+        v.fullLevel = std::clamp(static_cast<int>(std::lround(fullStairs_[static_cast<size_t>(i)].level() * 100.f)), 0, 100);
+        v.fullLevelNumber = levelNumber(v.fullLevel);
         out.push_back(std::move(v));
     }
     return out;
@@ -758,7 +916,10 @@ void CoursesModule::save(Store& store) const {
                      attempts_[static_cast<size_t>(i)]);
         store.setInt(std::string("courses.stats.") + kindKey(static_cast<CoursesKind>(i)) + ".successes",
                      successes_[static_cast<size_t>(i)]);
+        fullStairs_[static_cast<size_t>(i)].save(store, std::string("courses.stair_full.") + kindKey(static_cast<CoursesKind>(i)));
+        store.setInt(std::string("courses.full.") + kindKey(static_cast<CoursesKind>(i)), fullMode_[static_cast<size_t>(i)] ? 1 : 0);
     }
+    pickup_.save(store, "courses.pickup");
     store.setFloat("courses.dribble.best", dribbleBest_);
     store.setFloat("courses.catch.best", catchBest_);
     if (!code_.empty()) store.setString("courses.last_code", code_);
@@ -803,7 +964,11 @@ void CoursesModule::load(const Store& store) {
             store.getInt(std::string("courses.stats.") + kindKey(static_cast<CoursesKind>(i)) + ".attempts", 0), 0, 100000000));
         successes_[static_cast<size_t>(i)] = static_cast<int>(std::clamp<long long>(
             store.getInt(std::string("courses.stats.") + kindKey(static_cast<CoursesKind>(i)) + ".successes", 0), 0, 100000000));
+        const std::string fullKey = std::string("courses.stair_full.") + kindKey(static_cast<CoursesKind>(i));
+        if (store.getInt(fullKey + ".attempts", 0) > 0) fullStairs_[static_cast<size_t>(i)].load(store, fullKey);
+        fullMode_[static_cast<size_t>(i)] = store.getInt(std::string("courses.full.") + kindKey(static_cast<CoursesKind>(i)), 0) != 0;
     }
+    if (store.getInt("courses.pickup.attempts", 0) > 0) pickup_.load(store, "courses.pickup");
     dribbleBest_ = std::clamp(store.getFloat("courses.dribble.best", 0.f), 0.f, 36000.f);
     catchBest_ = std::clamp(store.getFloat("courses.catch.best", 0.f), 0.f, 600.f);
     const std::string last = courses::normalizeCourseCode(store.getString("courses.last_code"));

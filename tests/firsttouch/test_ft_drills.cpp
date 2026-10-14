@@ -40,14 +40,21 @@ bool hasToast(const Actions& a, ToastKind kind, const std::string& sub = "") {
     return false;
 }
 
-// Starts a drill at frame 100 and runs the placement tick (frame 101). Returns the placement actions.
+// Starts a drill at frame 100, runs the placement tick (frame 101) and the get-ready hold of the first ball (the
+// throttle press, then 3 s) until the release. Returns everything emitted (hold and release).
 Actions startDrill(Harness& h, const std::string& type) {
     h.set("rlt_ft_drill_seed", "1234");
     h.tick(baseSnap(100));
     const Actions cmd = h.command("drill", {type});
     CHECK(!cmd.setBall);  // nothing moves before the next tick
-    return h.tick(baseSnap(101));
+    Actions acc = h.tick(baseSnap(101));
+    Snapshot s = baseSnap(101);
+    acc.merge(passReady(h, s));
+    return acc;
 }
+
+// First frame after the release of the first ball.
+int64_t nextFrame(const Harness& h) { return h.latest.frame + 1; }
 
 // Ticks with (or without) input from `from` to `to` inclusive, returns merged actions.
 Actions tickRange(Harness& h, int64_t from, int64_t to, bool input) {
@@ -179,19 +186,34 @@ TEST(ft_drill_lob_lands_ahead_wall_and_high) {
         const float landX = l.ball.pos.x + l.ball.vel.x * t;
         CHECK(landX > 600.f && landX < 1600.f);
 
+        // The wall drill parks the car itself, parallel to the wall, 1100 (niveau 1) to 1800 uu (niveau 10) from it.
         const DrillSpawn w = makeSpawn(DrillType::Wall, originPose(0.f, Vec3{2000.f, 0.f, kCarZ}), level, rng);
         CHECK_NEAR(w.ball.pos.x, 3985.f, 1e-3f);
         CHECK(w.ball.vel.x < 0.f);
-        CHECK(w.ball.pos.z >= 450.f);
+        CHECK(w.ball.pos.z >= 400.f);
+        CHECK(w.placesCar);
+        CHECK(w.carPose.pos.x >= 4096.f - 1800.5f && w.carPose.pos.x <= 4096.f - 1099.5f);
+        CHECK(std::fabs(w.carPose.fwd.y) > 0.99f);  // parallel to the wall
         const DrillSpawn w2 = makeSpawn(DrillType::Wall, originPose(90.f, Vec3{-1500.f, 0.f, kCarZ}), level, rng);
         CHECK_NEAR(w2.ball.pos.x, -3985.f, 1e-3f);
         CHECK(w2.ball.vel.x > 0.f);
         CHECK(w2.ball.pos.y > 0.f);  // ahead of a car facing +y
+        CHECK(w2.carPose.pos.x < 0.f);
 
+        // Balle haute: hanging ball at niveaux 1 to 6, the ballistic one after.
         const DrillSpawn hb = makeSpawn(DrillType::High, originPose(), level, rng);
-        CHECK(hb.ball.pos.z >= 350.f);
-        CHECK(hb.ball.vel.z >= 450.f);
-        CHECK(hb.ball.pos.x > 600.f);
+        if (playerLevel(level) <= 6) {
+            CHECK(hb.hang == (playerLevel(level) <= 3 ? HangRelease::OnJump : HangRelease::Under));
+            CHECK(hb.ball.vel == Vec3{});
+            CHECK_NEAR(hb.ball.pos.z, kHangZ, 1e-3f);
+            CHECK_NEAR(hb.ball.pos.x, kHangAhead, 1e-3f);
+            CHECK(hb.releaseVz >= 280.f && hb.releaseVz <= 450.f);
+        } else {
+            CHECK(hb.hang == HangRelease::None);
+            CHECK(hb.ball.pos.z >= 350.f);
+            CHECK(hb.ball.vel.z >= 450.f);
+            CHECK(hb.ball.pos.x > 600.f);
+        }
     }
 }
 
@@ -289,7 +311,8 @@ TEST(ft_drill_places_ball_after_grant_timeout_lowers_level_then_next_rep) {
     CHECK_NEAR(h.mod.drillLevel(DrillType::RollIn).level, 0.5f, 1e-5f);
 
     // No touch for 7.5 s while driving: failed rep, level down.
-    const Actions wait = tickRange(h, 102, 101 + 904, true);
+    const int64_t go = h.latest.frame;
+    const Actions wait = tickRange(h, go + 1, go + 903, true);
     CHECK(!wait.setBall);
     st = h.mod.drillStatus();
     CHECK(st.phase == FirstTouchModule::DrillPhase::Pause);
@@ -302,8 +325,8 @@ TEST(ft_drill_places_ball_after_grant_timeout_lowers_level_then_next_rep) {
     CHECK(lv.attempts == 2);  // the returning player had played once (setDrillLevel)
     CHECK(lv.sessionReps == 1);
 
-    // After the pause the next ball comes automatically.
-    const Actions next = tickRange(h, 1006, 1006 + 186, true);
+    // After the pause the next ball comes automatically, after its get-ready hold (0.5 s at niveau 4).
+    const Actions next = tickRange(h, go + 904, go + 904 + 186 + 61, true);
     CHECK(next.setBall.has_value());
     CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::WaitTouch);
 }
@@ -311,10 +334,10 @@ TEST(ft_drill_places_ball_after_grant_timeout_lowers_level_then_next_rep) {
 TEST(ft_drill_idle_reps_are_ignored_then_stopped) {
     Harness h;
     startDrill(h, "pass");
-    int64_t f = 102;
-    for (int rep = 0; rep < 3; ++rep) {  // niveau 1: 9 s per ball, then the 1.5 s pause
-        tickRange(h, f, f + 1081 + 181, false);
-        f += 1081 + 182;
+    int64_t f = nextFrame(h);
+    for (int rep = 0; rep < 3; ++rep) {  // niveau 1: 9 s per ball, the 1.5 s pause, then the 1 s hold
+        tickRange(h, f, f + 1081 + 181 + 121, false);
+        f += 1081 + 182 + 121;
     }
     CHECK_NEAR(h.mod.drillLevel(DrillType::Pass).level, kDrillStartLevel, 1e-5f);
     CHECK(h.mod.drillLevel(DrillType::Pass).attempts == 0);
@@ -332,7 +355,7 @@ TEST(ft_drill_idle_reps_are_ignored_then_stopped) {
 TEST(ft_drill_good_touch_raises_level_and_reports_result) {
     Harness h;
     startDrill(h, "roll_in");
-    const Actions run = runScenario(h, groundPickup(1000.f, 950.f, 1000.f, 1040.f, 130), 125);
+    const Actions run = runScenario(h, groundPickup(1000.f, 950.f, 1000.f, 1040.f, afterGo(h)), 125);
     CHECK(run.results.size() == 1);
     if (!run.results.empty()) {
         const AttemptResult& r = run.results.front();
@@ -367,7 +390,7 @@ TEST(ft_drill_bad_touch_fails_rep) {
     // A ram (900 uu/s faster than the ball, ball shot away) fails even at niveau 1.
     Harness h;
     startDrill(h, "roll_away");
-    const Actions run = runScenario(h, groundPickup(1700.f, 800.f, 1500.f, 2200.f, 130), 125);
+    const Actions run = runScenario(h, groundPickup(1700.f, 800.f, 1500.f, 2200.f, afterGo(h)), 125);
     CHECK(run.results.size() == 1);
     if (!run.results.empty()) CHECK(!run.results.front().success);
     auto st = h.mod.drillStatus();
@@ -381,23 +404,19 @@ TEST(ft_drill_bad_touch_fails_rep) {
     Harness h2;
     setDrillLevel(h2.mod, DrillType::RollAway, 0.5f);
     startDrill(h2, "roll_away");
-    runScenario(h2, groundPickup(1700.f, 800.f, 1500.f, 2200.f, 130), 125);
+    runScenario(h2, groundPickup(1700.f, 800.f, 1500.f, 2200.f, afterGo(h2)), 125);
     CHECK_NEAR(h2.mod.drillLevel(DrillType::RollAway).level, 0.38f, 1e-4f);
 }
 
 TEST(ft_drill_touch_before_placement_is_ignored) {
     Harness h;
-    h.set("rlt_ft_drill_seed", "1234");
-    h.tick(baseSnap(98));
-    h.tick(baseSnap(99));
-    h.tick(baseSnap(100));
-    h.command("drill", {"roll_in"});
-    h.tick(baseSnap(101));  // placement
-    // Touch whose pre state (frame 100) predates the placement, resolved at frame 102.
-    Scenario sc = groundPickup(1000.f, 950.f, 1000.f, 1000.f, 100);
+    startDrill(h, "roll_in");
+    const int64_t go = h.latest.frame;  // the release
+    // Touch whose pre state (the frame before the release) predates it, resolved two frames later.
+    Scenario sc = groundPickup(1000.f, 950.f, 1000.f, 1000.f, go - 1);
     TouchEvent t = buildTouch(sc);
-    t.post1.frame = 101;
-    t.post.frame = 102;
+    t.post1.frame = go + 1;
+    t.post.frame = go + 2;
     h.tickWithTouch(t);
     CHECK(!h.mod.analysisPending());
     CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::WaitTouch);
@@ -411,7 +430,7 @@ TEST(ft_drill_stop_command_releases_activity) {
     CHECK(!h.host.ownsActivity(&h.mod));
     CHECK(!h.mod.drillStatus().active);
     CHECK(hasToast(a, ToastKind::Info, "arrêté"));
-    CHECK(!tickRange(h, 102, 400, true).setBall);
+    CHECK(!tickRange(h, nextFrame(h), nextFrame(h) + 300, true).setBall);
     // Stop when nothing runs: no second release.
     h.command("stop");
     CHECK(h.host.releases == 1);
@@ -423,7 +442,7 @@ TEST(ft_drill_activity_taken_by_another_module) {
     h.host.owner = nullptr;          // the engine gave the activity to someone else...
     h.mod.onActivityStopped();       // ...and notified us
     CHECK(!h.mod.drillStatus().active);
-    const Actions a = tickRange(h, 102, 400, true);
+    const Actions a = tickRange(h, nextFrame(h), nextFrame(h) + 300, true);
     CHECK(!a.setBall && !a.setCar && !a.setBoost);
     CHECK(h.host.releases == 0);
 
@@ -431,7 +450,7 @@ TEST(ft_drill_activity_taken_by_another_module) {
     Harness h2;
     startDrill(h2, "high");
     h2.host.owner = nullptr;
-    CHECK(!h2.tick(baseSnap(102)).setBall);
+    CHECK(!h2.tick(baseSnap(nextFrame(h2))).setBall);
     CHECK(!h2.mod.drillStatus().active);
 }
 
@@ -439,7 +458,7 @@ TEST(ft_drill_world_control_lost_stops_and_releases) {
     Harness h;
     startDrill(h, "pass");
     h.game.worldControlAllowed = false;
-    const Actions a = h.tick(baseSnap(102));
+    const Actions a = h.tick(baseSnap(nextFrame(h)));
     CHECK(!a.setBall);
     CHECK(!h.mod.drillStatus().active);
     CHECK(h.host.releases == 1);
@@ -448,10 +467,14 @@ TEST(ft_drill_world_control_lost_stops_and_releases) {
 TEST(ft_drill_reset_shot_replays_rep_without_counting) {
     Harness h;
     startDrill(h, "roll_in");
-    tickRange(h, 102, 200, true);
+    int64_t f = nextFrame(h);
+    tickRange(h, f, f + 98, true);
     h.event(GameEventKind::ResetShot);
     CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::Place);
-    CHECK(h.tick(baseSnap(201)).setBall.has_value());
+    Snapshot s = baseSnap(f + 99);
+    CHECK(h.tick(s).setBall.has_value());  // placed again, held 1 s (niveau 1)
+    CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::Ready);
+    passReady(h, s);
     CHECK(h.mod.drillLevel(DrillType::RollIn).attempts == 0);
     // A goal during the rep: pause, not counted.
     h.event(GameEventKind::Goal);
@@ -461,24 +484,28 @@ TEST(ft_drill_reset_shot_replays_rep_without_counting) {
     CHECK(h.mod.drillLevel(DrillType::RollIn).attempts == 0);
     // Skip command: next ball at once.
     h.command("skip");
-    CHECK(h.tick(baseSnap(202)).setBall.has_value());
+    CHECK(h.tick(baseSnap(s.frame + 1)).setBall.has_value());
 }
 
 TEST(ft_drill_mix_records_into_concrete_drills) {
     Harness h;
     startDrill(h, "mix");
     CHECK(contains(h.host.lastName, "Mix"));
-    int64_t f = 102;
-    DrillType prev = h.mod.drillStatus().current;
-    int changes = 0;
-    for (int rep = 0; rep < 6; ++rep) {  // niveau 1 everywhere: 9 s per ball
-        tickRange(h, f, f + 1081 + 181, true);
-        f += 1081 + 182;
-        const DrillType cur = h.mod.drillStatus().current;
-        if (cur != prev) ++changes;
-        prev = cur;
+    // A new player: only the two Débutant drills are in the pool, never the same twice in a row.
+    std::vector<DrillType> balls{h.mod.drillStatus().current};
+    int64_t f = nextFrame(h);
+    auto prevPhase = h.mod.drillStatus().phase;
+    for (int i = 0; i < 6 * (1081 + 182 + 121) && h.mod.drillStatus().reps < 6; ++i) {
+        h.tick(baseSnap(f++, throttle()));
+        const auto st = h.mod.drillStatus();
+        if (st.phase == FirstTouchModule::DrillPhase::WaitTouch && prevPhase != st.phase) balls.push_back(st.current);
+        prevPhase = st.phase;
     }
-    CHECK(changes >= 5);
+    CHECK(balls.size() >= 6);
+    for (size_t k = 0; k < balls.size(); ++k) {
+        CHECK(balls[k] == DrillType::RollIn || balls[k] == DrillType::RollAway);
+        if (k > 0) CHECK(balls[k] != balls[k - 1]);
+    }
     int total = 0;
     for (int i = 0; i < kDrillKinds; ++i) total += h.mod.drillLevel(static_cast<DrillType>(i)).attempts;
     CHECK(total == 6);
@@ -505,14 +532,29 @@ TEST(ft_drill_without_car_reset_follows_current_pose) {
     CHECK(place.setBoost.has_value());
     h.set("rlt_ft_drill_boost", "0");
     h.command("skip");
-    // Car now at another place facing +y: the ball spawns in front of it.
-    Snapshot s = makeSnap(150, groundCar(Vec3{-1000.f, 500.f, kCarZ}, Vec3{}, 90.f), makeBall(Vec3{}, Vec3{}));
+    // Car now at another place facing +y: the ball spawns in front of it and is launched at once. A car that is not
+    // held drives freely: a ball frozen in front of it would erase its touches every tick.
+    Snapshot s = makeSnap(nextFrame(h), groundCar(Vec3{-1000.f, 500.f, kCarZ}, Vec3{}, 90.f), makeBall(Vec3{}, Vec3{}));
     const Actions next = h.tick(s);
     CHECK(next.setBall.has_value());
     CHECK(!next.setBoost.has_value());
+    CHECK(!next.setCar.has_value() && !next.freezeCar);  // the player keeps his car
     if (next.setBall) {
         CHECK(next.setBall->pos.y > 700.f);
         CHECK(next.setBall->vel.y > 0.f);
+    }
+    CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::WaitTouch);
+    // The next ticks leave the ball to the physics (and to the player's hits).
+    if (next.setBall) {
+        s.ball.pos = next.setBall->pos;
+        s.ball.vel = next.setBall->vel;
+    }
+    for (int i = 0; i < 60; ++i) {
+        s.frame = nextFrame(h);
+        s.time = static_cast<float>(s.frame) / 120.f;
+        s.ball.pos += s.ball.vel * (1.f / 120.f);
+        const Actions a = h.tick(s);
+        CHECK(!a.setBall.has_value() && !a.freezeCar && !a.setCar.has_value());
     }
 }
 
@@ -525,7 +567,7 @@ TEST(ft_drill_slow_returning_ball_is_told_to_cushion_not_accelerate) {
     const Actions place = startDrill(h, "lob");
     CHECK(place.setBall.has_value());
     // Car drives at 700 into a ball that comes back slowly (120 uu/s) towards it after the bounce.
-    const Actions run = runScenario(h, groundPickup(700.f, -120.f, 650.f, 300.f, 300), 125);
+    const Actions run = runScenario(h, groundPickup(700.f, -120.f, 650.f, 300.f, afterGo(h)), 125);
     CHECK(run.results.size() == 1);
     if (!run.results.empty()) {
         const AttemptResult& r = run.results.front();

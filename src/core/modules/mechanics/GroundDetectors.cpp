@@ -7,6 +7,27 @@ bool WavedashDetector::onDodge(const DodgeRecord& r, const Ctx& c, std::vector<M
     if (r.kind == DodgeKind::Stall) return false;
     const bool fromWall = r.surface == Surface::Wall;
     const bool quick = r.landingTicks >= 0 && r.landingTicks <= kMaxLandTicks;
+    const bool zapIntent = c.cfg.expect(Focus::ZapDash);
+    const bool dashIntent = c.cfg.expect(Focus::Wavedash) || c.cfg.expect(Focus::ChainDash) || zapIntent;
+    if (!quick && dashIntent && !fromWall && r.landingSurface != Surface::Wall) {
+        // Dash practice: a flip far above the floor is a real flip, the dash came too early. Graded with its tip
+        // instead of a silent time-out (fix 5).
+        MechGrade g;
+        g.mech = zapIntent ? Mech::ZapDash : Mech::Wavedash;
+        g.variant = "early";
+        g.tickStart = r.takeoffTick >= 0 ? r.takeoffTick : r.tick;
+        g.tickEnd = r.tick + std::max(r.landingTicks, 0);
+        g.dodgeTick = r.tick;
+        g.add("firstContactTicks", static_cast<float>(r.firstContactTicks));
+        g.add("landingTicks", static_cast<float>(r.landingTicks));
+        g.add("pitchAtDodgeDeg", r.pitchAtDodgeDeg);
+        g.add("dodgeAngleDeg", r.angleDeg);
+        g.err(zapIntent ? "ZAP_NO_BOUNCE" : "WD_TOO_EARLY", 80.f);
+        g.success = false;
+        finalizeGrade(g, 10.f);
+        out.push_back(std::move(g));
+        return true;
+    }
     if (!quick) {
         // Wall dash attempt that never re-attached to the wall.
         const int maxPress = c.cfg.expect(Focus::WallDash) ? 30 : 12;
@@ -30,8 +51,12 @@ bool WavedashDetector::onDodge(const DodgeRecord& r, const Ctx& c, std::vector<M
 
     MechGrade g;
     const Surface landS = r.landingSurface;
-    const bool zap = !r.phaseHadJump && r.prevLandingAtTakeoff >= 0 && r.takeoffTick >= 0 &&
-                     (r.takeoffTick - r.prevLandingAtTakeoff) <= kZapMaxBounceTicks;
+    const bool bounceZap = !r.phaseHadJump && r.prevLandingAtTakeoff >= 0 && r.takeoffTick >= 0 &&
+                           (r.takeoffTick - r.prevLandingAtTakeoff) <= kZapMaxBounceTicks;
+    // Zap dash practice, fallback while the suspension bounce is UNVERIFIED in game: a flip pressed without any jump
+    // while only one or two wheels touch (the first contact of a nose-down landing) is the same move.
+    const bool touchZap = zapIntent && !r.phaseHadJump && r.wheelsAtDodge > 0 && r.wheelsAtDodge < k::kGroundedWheels;
+    const bool zap = bounceZap || touchZap;
     if (landS == Surface::Wall) g.mech = Mech::WallDash;
     else if (landS == Surface::Ceiling) g.mech = Mech::CeilingDash;
     else if (zap) g.mech = Mech::ZapDash;
@@ -178,7 +203,7 @@ void WavedashDetector::onTick(const Ctx& c, std::vector<MechGrade>& out) {
 // ---- Chain wavedash ------------------------------------------------------------------------------------
 void ChainWavedashDetector::onGrade(const MechGrade& g, const Ctx& c, std::vector<MechGrade>& out) {
     const bool isDash = g.mech == Mech::Wavedash || g.mech == Mech::ZapDash || g.mech == Mech::WallDash;
-    if (!isDash || g.variant == "late" || g.variant == "nostick") return;
+    if (!isDash || g.variant == "late" || g.variant == "nostick" || g.variant == "early") return;
     const int gap = c.cfg.chainMaxGapTicks;
     if (count_ > 0 && (g.tickStart - lastLanding_) > gap) flush(c, out);
     if (count_ == 0) {
@@ -320,6 +345,12 @@ void PowerslideDetector::onTick(const Ctx& c, std::vector<MechGrade>& out) {
             g.add("exitSlipDeg", exitSlip_);
             g.add("turnRateDegPerS", rate);
             g.add("throttleRatio", thr);
+            // Where the nose points once the slide is over, relative to the ball (powerslide drill: the turn must
+            // end facing the ball). Meaningless in free play, never displayed.
+            if (s.ball.valid) {
+                const Vec3 toBall = s.ball.pos - s.car.pos;
+                g.add("aimErrorDeg", planarAngleDeg(s.car.basis.fwd, toBall, n));
+            }
             const float keep = lerpPts(retained, 0.85f, 0.5f), slipS = lerpPts(exitSlip_, 8.f, 35.f),
                         rateS = lerpPts(rate, 150.f, 50.f);
             const float score = 0.5f * keep + 0.3f * slipS + 0.2f * rateS;

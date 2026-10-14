@@ -250,9 +250,8 @@ TEST(mechanics_focus_and_drill_ignore_family_toggle) {
     {
         Rig rig;
         rig.set("rlt_me_wavedash", "0");
-        rig.command("drill", {"wavedash"});
-        rig.tick(Inputs{});
-        rig.run(150, dropWavedash());
+        CHECK(rig.startDrill("wavedash"));
+        rig.run(240, dropWavedash());
         const AttemptResult* r = rig.result("mech.wavedash");
         CHECK_MSG(r != nullptr, "the drill asked for wavedashes: graded even with the free-play toggle off");
         if (r) CHECK(r->success);
@@ -387,14 +386,9 @@ TEST(mechanics_speedflip_drill_needs_the_ball) {
     st.setFloat("mechanics.level.speedflip.level", 0.45f);
     st.setInt("mechanics.level.speedflip.attempts", 1);
     rig.mod.load(st);
-    rig.command("drill", {"speedflip"});
-    rig.tick(Inputs{});
-    for (int i = 0; i < 125; ++i) {
-        Inputs in;
-        in.boost = true;
-        in.throttle = 1.f;
-        rig.tick(in);
-    }
+    Inputs hold;
+    hold.boost = true;
+    CHECK(rig.startDrill("speedflip", -1.f, false, hold));
     // A clean speedflip that flies away from the ball (the car is turned before the jump).
     rig.sim.orient(Vec3{-1.f, 0.f, 0.f}, Vec3{0.f, 0.f, 1.f});
     auto script = kickoffSpeedflip(-26.f);
@@ -445,8 +439,7 @@ Script drillHalfFlip(bool driveToBall) {
 TEST(mechanics_halfflip_drill_waits_for_the_ball) {
     {
         Rig rig;
-        rig.command("drill", {"halfflip"});
-        rig.tick(Inputs{});
+        CHECK(rig.startDrill("halfflip"));
         auto script = drillHalfFlip(true);
         int t = 0;
         for (; t < 400 && rig.results.empty(); ++t) {
@@ -466,8 +459,7 @@ TEST(mechanics_halfflip_drill_waits_for_the_ball) {
     }
     {
         Rig rig;  // same half-flip, then the car never reaches the ball: a miss after 2.5 s
-        rig.command("drill", {"halfflip"});
-        rig.tick(Inputs{});
+        CHECK(rig.startDrill("halfflip"));
         auto script = drillHalfFlip(false);
         for (int t = 0; t < 900 && rig.results.empty(); ++t) rig.tick(script(t, rig.sim));
         const AttemptResult* r = rig.result("mech.halfflip");

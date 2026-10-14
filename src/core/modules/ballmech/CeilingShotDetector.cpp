@@ -21,6 +21,12 @@ void CeilingShotDetector::reset() {
     proj_ = GoalProjection{};
 }
 
+void CeilingShotDetector::armOnCeiling(float t) {
+    reset();
+    state_ = State::OnCeiling;
+    tCeilStart_ = t;
+}
+
 bool CeilingShotDetector::engaged(float& since) const {
     if (state_ != State::Falling) return false;
     since = tCeilStart_;

@@ -195,7 +195,7 @@ struct MiniSim {
                 vf = std::fabs(vf) <= d ? 0.f : vf - sgn(vf) * d;
             }
             const float yawRate = in.steer * curvature(std::fabs(vf)) * vf * (in.handbrake ? 1.5f : 1.f);
-            vr *= in.handbrake ? 0.985f : 0.6f;
+            vr *= in.handbrake ? 0.96f : 0.6f;  // RocketSim: the handbrake leaves about a tenth of the lateral friction
             vel = f * vf + rt * vr + n * vn;
             w = (-n) * yawRate;
         }

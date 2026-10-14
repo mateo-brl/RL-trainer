@@ -1,5 +1,7 @@
 // Drill tests: activity gating (fake host), ready / launch world actions, scripted inputs, resolution by grades,
 // foreign grades, timeouts, landing, lost activity, commands.
+#include <optional>
+
 #include "core/common/Controls.h"
 #include "core/modules/ballmech/Mechanics.h"
 #include "tests/TestFramework.h"
@@ -48,10 +50,7 @@ bool anyToastWarning(const Harness& h) {
     return false;
 }
 
-void skipReady(Harness& h) {
-    const int ready = static_cast<int>(h.settings.ballmech.drillReady * kTickRate) + 2;
-    h.idle(ready);
-}
+void skipReady(Harness& h) { h.skipReady(); }
 } // namespace
 
 TEST(bm_drill_refused_without_world_control) {
@@ -102,21 +101,50 @@ TEST(bm_drill_ready_then_launch) {
     CHECK(h.last.setCar.has_value() && h.last.setBall.has_value());
     if (h.last.setCar) CHECK(length(h.last.setCar->vel) < 1e-3f);
     if (h.last.setCar) CHECK(h.last.setCar->boost.has_value());
-    // Launch after the ready time: velocities applied, GO message.
-    bool launched = false;
-    for (int i = 0; i < 200 && !launched; ++i) {
+    // First attempt: held as long as the player does not press the throttle, the pose re-sent on every tick.
+    int held = 0;
+    for (int i = 0; i < 600; ++i) {
         h.idle(1);
-        if (h.last.setCar && !h.last.freezeCar && length(h.last.setCar->vel) > 1.f) {
-            launched = true;
-            CHECK(h.last.goMessage);
-            CHECK(h.last.setBall.has_value());
-            CHECK(h.latest.time >= 0.f);
+        if (h.last.freezeCar && h.last.setCar && h.last.setBall && length(h.last.setCar->vel) < 1e-3f) ++held;
+    }
+    CHECK_EQ(held, 600);
+    CHECK(h.mod.uiState().drill.waitingThrottle);
+    CHECK(h.mod.uiState().drill.phase == "Prépare-toi");
+    {
+        DrawList dl;
+        DrawContext dc{h.settings, h.game, h.profile, h.latest, true, true, 1.f};
+        ViewContext v;
+        h.mod.draw(v, dc, dl);
+        bool prompt = false;
+        for (const auto& p : dl.panels)
+            for (const auto& l : p.lines) prompt = prompt || (!l.detail && l.text == "Appuie sur accélérer quand tu es prêt");
+        CHECK(prompt);
+    }
+    // A press starts the countdown.
+    h.throttleTick(1.f);
+    CHECK(!h.mod.uiState().drill.waitingThrottle);
+    // Countdown 3, 2, 1 (native messages), still held, then GO exactly once: launch without freeze.
+    std::vector<int> counts;
+    int goTick = -1, freezeAfterPress = 0;
+    for (int i = 0; i < 500 && goTick < 0; ++i) {
+        h.idle(1);
+        if (h.last.countdownMessage) counts.push_back(*h.last.countdownMessage);
+        if (h.last.goMessage) {
+            goTick = i;
+            CHECK(!h.last.freezeCar);
+            CHECK(h.last.setCar.has_value() && h.last.setBall.has_value());
+        } else if (h.last.freezeCar) {
+            ++freezeAfterPress;
         }
     }
-    CHECK(launched);
+    CHECK(counts == (std::vector<int>{2, 1}) || counts == (std::vector<int>{3, 2, 1}));
+    CHECK(goTick >= static_cast<int>(2.9f * kTickRate) && goTick <= static_cast<int>(3.1f * kTickRate));
+    CHECK_EQ(freezeAfterPress, goTick);
+    CHECK(h.mod.uiState().drill.phase == "À toi !");
     h.idle(1);
     CHECK(!h.last.setCar.has_value());  // no more placement during the attempt
     CHECK(!h.last.freezeCar);
+    CHECK(!h.last.goMessage);
     const auto u = h.mod.uiState();
     CHECK(u.drill.active);
     CHECK(u.drill.mechId == "powershot");
@@ -135,26 +163,133 @@ TEST(bm_drill_ready_then_launch) {
             CHECK_NEAR(p.pos.y, 0.12f * 1080.f, 0.5f);
         }
     CHECK(drillPanel);
+    // Automatic restarts (here the reset shot key): a short hold (1.5 s at niveaux 1-3), no waiting, GO only.
+    h.event(GameEventKind::ResetShot);
+    int go = -1;
+    for (int i = 0; i < 400 && go < 0; ++i) {
+        h.idle(1);
+        CHECK(!h.last.countdownMessage.has_value());
+        if (h.last.goMessage) go = i;
+    }
+    CHECK(go >= static_cast<int>(1.45f * kTickRate) - 2 && go <= static_cast<int>(1.55f * kTickRate));
+    // "Essai suivant" is clicked in the menu: the player is not in the car yet, so it waits for the throttle again.
+    h.command("next");
+    for (int i = 0; i < 600; ++i) {
+        h.idle(1);
+        CHECK(!h.last.goMessage);
+    }
+    CHECK(h.mod.uiState().drill.phase != "À toi !");
+    h.throttleTick(1.f);
+    go = -1;
+    for (int i = 0; i < 500 && go < 0; ++i) {
+        h.idle(1);
+        if (h.last.goMessage) go = i;
+    }
+    CHECK(go >= static_cast<int>(2.9f * kTickRate) && go <= static_cast<int>(3.1f * kTickRate));
+}
+
+TEST(bm_drill_slow_motion_ends_before_the_next_drill_hold) {
+    // Départ au plafond, niveau 1, runs at 0.75. Another drill started without stopping gets the normal speed back on
+    // the first tick of its get-ready phase (not only at its launch), once.
+    Harness h;
+    warmUp(h);
+    h.command("drill", {"ceiling", "court"});
+    h.skipReady();
+    CHECK(h.last.setGameSpeed.has_value() && std::fabs(*h.last.setGameSpeed - 0.75f) < 1e-6f);
+    h.command("drill", {"flick", "court"});
+    h.idle(1);
+    CHECK(h.last.setGameSpeed.has_value() && std::fabs(*h.last.setGameSpeed - 1.f) < 1e-6f);
+    int sent = 0;
+    for (int i = 0; i < 60; ++i) {
+        h.idle(1);
+        sent += h.last.setGameSpeed ? 1 : 0;
+    }
+    h.skipReady();
+    sent += h.last.setGameSpeed ? 1 : 0;
+    CHECK_EQ(sent, 0);
+}
+
+TEST(bm_drill_ready_ignores_a_held_throttle) {
+    // The throttle still held from what the player did before the drill does not start it: released, then pressed.
+    Harness h;
+    warmUp(h);
+    h.throttleTick(1.f);
+    h.command("drill", {"pinch"});
+    for (int i = 0; i < 240; ++i) h.throttleTick(1.f);
+    CHECK(h.mod.uiState().drill.waitingThrottle);
+    h.throttleTick(0.f);
+    CHECK(h.mod.uiState().drill.waitingThrottle);
+    h.throttleTick(1.f);
+    CHECK(!h.mod.uiState().drill.waitingThrottle);
 }
 
 TEST(bm_drill_flipreset_burns_the_flip) {
+    // Scripted double jump after GO (the car starts without its flip). The flag still there 6 ticks later: the
+    // press was lost, press once more.
+    auto record = [](Harness& h, bool flipGoesAway) {
+        std::vector<int> jumps;  // -1 = no override, 0/1 = jump value
+        for (int i = 0; i < 40; ++i) {
+            SimTick t;
+            t.s = h.latest;
+            t.s.frame += 1;
+            t.s.time = static_cast<float>(t.s.frame) / kTickRate;
+            t.s.in = Inputs{};
+            if (flipGoesAway && jumps.size() >= 3) t.s.car.hasFlip = false;
+            h.tick(t);
+            if (h.last.overrideInputs) jumps.push_back(h.last.overrideInputs->jump ? 1 : 0);
+            else jumps.push_back(-1);
+            if (jumps.size() >= 12) break;
+        }
+        return jumps;
+    };
     Harness h;
     warmUp(h);
     h.command("drill", {"flipreset"});
-    std::vector<int> jumps;  // -1 = no override, 0/1 = jump value
-    for (int i = 0; i < 160; ++i) {
+    h.skipReady();
+    const std::vector<int> kept = record(h, false);
+    CHECK(kept == (std::vector<int>{0, 1, 1, 0, 0, 0, 1, 1, 0, -1, -1, -1}));
+    Harness g;
+    warmUp(g);
+    g.command("drill", {"flipreset"});
+    g.skipReady();
+    const std::vector<int> used = record(g, true);
+    CHECK(used == (std::vector<int>{0, 1, 1, 0, 0, 0, -1, -1, -1, -1, -1, -1}));
+}
+
+TEST(bm_drill_flipreset_burn_guard_without_flip) {
+    // The previous attempt ended in the air without a flip: no scripted jump, the launch keeps the jump impulse.
+    Harness h;
+    Sim sim;
+    orient(sim.s.car, PI / 2, 0, 0);
+    sim.s.ball.pos = {0, 1000, 93};
+    sim.s.car.hasFlip = false;
+    sim.step(10);
+    h.run(sim.out);
+    h.command("drill", {"flipreset"});
+    h.throttleTick(0.f);
+    h.throttleTick(1.f);
+    std::optional<CarPlacement> launchCar;
+    std::optional<BallPlacement> launchBall;
+    for (int i = 0; i < 500 && !launchCar; ++i) {
         h.idle(1);
-        if (h.last.overrideInputs) jumps.push_back(h.last.overrideInputs->jump ? 1 : 0);
-        else if (!jumps.empty()) jumps.push_back(-1);
-        if (jumps.size() >= 6) break;
+        if (h.last.goMessage) {
+            launchCar = h.last.setCar;
+            launchBall = h.last.setBall;
+        }
     }
-    CHECK(jumps.size() >= 5);
-    if (jumps.size() >= 5) {
-        CHECK_EQ(jumps[0], 0);
-        CHECK_EQ(jumps[1], 1);
-        CHECK_EQ(jumps[2], 1);
-        CHECK_EQ(jumps[3], 0);
-        CHECK_EQ(jumps[4], -1);
+    CHECK(launchCar.has_value());
+    int overrides = 0;
+    for (int i = 0; i < 20; ++i) {
+        h.idle(1);
+        if (h.last.overrideInputs) ++overrides;
+    }
+    CHECK_EQ(overrides, 0);
+    if (launchCar) {
+        // The launch velocity is the setup's plus the jump impulse along the car's (rolled) up: relative to the ball
+        // it is the straight approach again, about 300 uu/s at niveau 1 (without the impulse it would be ~400).
+        CHECK(launchBall.has_value());
+        const Vec3 rel = launchCar->vel - launchBall.value_or(BallPlacement{}).vel;
+        CHECK_MSG(length(rel) > 250.f && length(rel) < 350.f, std::to_string(length(rel)));
     }
 }
 
@@ -237,11 +372,18 @@ TEST(bm_drill_timeouts) {
     }
     CHECK(h.mod.drillLevel("aerial") <= level0);
 
-    // Idle player: silent restarts, then the drill pauses itself after 3 attempts.
+    // Idle player at the first attempt: the drill waits for the throttle, car held, nothing recorded.
     Harness idle;
     warmUp(idle);
     idle.command("drill", {"aerial"});
     idle.idle(static_cast<int>(40.f * kTickRate));
+    CHECK(idle.results.empty());
+    CHECK(idle.mod.drillActive());
+    CHECK(idle.mod.uiState().drill.waitingThrottle);
+    CHECK(idle.last.freezeCar);
+    // Once started, an idle player gets silent restarts, then the drill pauses itself after 3 attempts.
+    idle.skipReady();
+    idle.idle(static_cast<int>(60.f * kTickRate));
     CHECK(idle.results.empty());
     CHECK(!idle.mod.drillActive());
     CHECK(idle.host.owner == nullptr);
@@ -510,7 +652,7 @@ TEST(bm_drill_beginner_progression) {
     CHECK(h.mod.uiState().drill.action.find("4 roues") != std::string::npos);
     bool note = false;  // the start message says what level 1 asks
     for (const auto& t : h.toasts)
-        note = note || t.text.find("Niveau 1/10 : poser les 4 roues sur la balle suffit") != std::string::npos;
+        note = note || t.text.find("niveau 1/10 : poser les 4 roues sur la balle suffit") != std::string::npos;
     CHECK(note);
     h.idle(8);  // let the scripted double jump finish
     // Typical first try: the wheels touch the ball, the reset is not used. At level 1 that is the goal.

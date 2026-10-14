@@ -11,8 +11,10 @@
 #include <string>
 #include <vector>
 
+#include "core/common/Controls.h"
 #include "core/common/Text.h"
 #include "core/modules/firsttouch/FirstTouchModule.h"
+#include "core/modules/firsttouch/FirstTouchTutorials.h"
 #include "imgui.h"
 #include "plugin/ui/Ui.h"
 
@@ -41,11 +43,15 @@ struct FtUiData {
     bool pending = false;
     GameContext game;
     bool worldControl = false;
+    PlayerProfile profile;
+    KeyStyle style = KeyStyle::Auto;
 };
 
 FtUiData copyState(const UiContext& ctx) {
     FtUiData d;
     auto lk = ctx.engine.lock();
+    d.profile = ctx.engine.profile();
+    d.style = keyStyleFromIndex(ctx.engine.settings().profile.buttonStyle);
     auto* mod = ctx.engine.get<FirstTouchModule>();
     if (!mod) return d;
     d.found = true;
@@ -298,6 +304,7 @@ void renderHeatmap(const FtUiData& d) {
 const char* phaseLabel(FirstTouchModule::DrillPhase p) {
     switch (p) {
     case FirstTouchModule::DrillPhase::Place: return "placement de la balle";
+    case FirstTouchModule::DrillPhase::Ready: return "prépare-toi";
     case FirstTouchModule::DrillPhase::WaitTouch: return "à toi de jouer";
     case FirstTouchModule::DrillPhase::Evaluate: return "contrôle en cours d'analyse";
     case FirstTouchModule::DrillPhase::Pause: return "pause avant la balle suivante";
@@ -357,16 +364,70 @@ void renderDrillDetails(const FtUiData& d) {
                        static_cast<double>(d.cfg.drillTimeout));
 }
 
+// Tutorial of one drill: the steps (what to do, why, how to know it is right), the in-game panel lines, what niveau 1
+// asks, its parcours complet, and the numbers under "Détails techniques".
+void renderTutorial(const FtUiData& d, ft::DrillType t, const PlayerProfile& profile, KeyStyle style) {
+    const ft::DrillTutorial& tu = ft::drillTutorial(t);
+    auto fill = [&](const char* s) { return ft::fillButtons(s, profile, style); };
+    for (size_t k = 0; k < tu.steps.size(); ++k) {
+        const ft::TutorialStep& st = tu.steps[k];
+        ui::textColored(kAccent, "Étape " + std::to_string(k + 1) + " : " + fill(st.title));
+        ImGui::Indent();
+        if (st.todo && *st.todo) ImGui::TextWrapped("À faire : %s", fill(st.todo).c_str());
+        ImGui::TextWrapped("Pourquoi : %s", fill(st.why).c_str());
+        ImGui::TextWrapped("C'est bon quand : %s", fill(st.ok).c_str());
+        ImGui::Unindent();
+    }
+    if (!tu.panel.empty()) {
+        ImGui::TextDisabled("Dans le panneau en jeu :");
+        ImGui::Indent();
+        for (int k = 0; k < ft::drillPanelCount(t); ++k) ImGui::TextDisabled("%s", ft::drillPanelLine(t, k).c_str());
+        ImGui::Unindent();
+    }
+    if (tu.level1 && *tu.level1) {
+        ui::textColored(d.cfg.goodColor, "Niveau 1 :");
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", tu.level1);
+    }
+    if (tu.fullTitle && *tu.fullTitle) {
+        ui::textColored(kAccent, tu.fullTitle);
+        ImGui::TextWrapped("%s", tu.fullText);
+        if (t != ft::DrillType::Mix) {
+            const int lvl = ft::playerLevel(d.levels[static_cast<size_t>(t)].fullLevel);
+            ImGui::Indent();
+            for (const auto& l : ft::fullLabels(t, lvl)) ImGui::TextDisabled("%s", l.c_str());
+            ImGui::Unindent();
+        }
+    }
+    const std::string techId = std::string("Détails techniques##ft_tech_") + ft::drillId(t);
+    if (ImGui::TreeNode(techId.c_str())) {
+        for (const char* line : tu.tech) ImGui::BulletText("%s", line);
+        if (!tu.fullTech.empty()) {
+            ImGui::TextUnformatted(tu.fullTitle);
+            for (const char* line : tu.fullTech) ImGui::BulletText("%s", line);
+        }
+        ImGui::TreePop();
+    }
+}
+
 void renderDrills(const UiContext& ctx, const FtUiData& d) {
     const bool available = d.cfg.enabled && d.game.mode == GameMode::Freeplay && d.worldControl;
     if (d.drill.active) {
         std::string title = std::string("En cours : ") + ft::drillName(d.drill.type);
-        if (d.drill.type == ft::DrillType::Mix) title += std::string(" (") + ft::drillName(d.drill.current) + ")";
+        if (d.drill.full) title += d.drill.type == ft::DrillType::Mix ? " (séquence de match)" : " (parcours complet)";
+        if (d.drill.type == ft::DrillType::Mix) title += std::string(", ") + ft::drillName(d.drill.current);
         ui::textColored(kAccent, title);
         ImGui::Text("Niveau %d/10, %d/%d réussis, %s.", d.drill.playerLevel, d.drill.successes, d.drill.reps,
                     phaseLabel(d.drill.phase));
+        if (!d.drill.readyLine.empty()) ui::textColored(d.cfg.okColor, d.drill.readyLine);
+        if (!d.drill.nextBall.empty()) ImGui::Text("Prochaine balle : %s", d.drill.nextBall.c_str());
+        if (d.drill.waitingWall) ui::textColored(colors::Orange, "Va vers un mur de côté : la balle arrive quand tu en es près.");
+        if (d.drill.full && d.drill.type == ft::DrillType::Mix)
+            ImGui::Text("Séquence : balle %d/%d, %d réussie(s).", std::min(d.drill.matchBall + 1, ft::kMatchBalls),
+                        ft::kMatchBalls, d.drill.matchPassed);
+        for (const auto& s : d.drill.steps) ImGui::BulletText("%s", s.c_str());
         if (!d.drill.instruction.empty()) ImGui::TextWrapped("À faire : %s", d.drill.instruction.c_str());
-        ImGui::TextWrapped("%s", ft::drillGoal(d.drill.level));
+        if (!d.drill.full) ImGui::TextWrapped("%s", ft::drillGoal(d.drill.level));
         if (!d.drill.lastOutcome.empty())
             ui::textColored(d.drill.lastSuccess ? d.cfg.goodColor : d.cfg.badColor, "Dernier essai : " + d.drill.lastOutcome);
         if (!d.drill.lastTip.empty()) ui::textColored(d.cfg.okColor, "À corriger : " + d.drill.lastTip);
@@ -380,12 +441,14 @@ void renderDrills(const UiContext& ctx, const FtUiData& d) {
     } else if (!available) {
         ui::textColored(colors::Orange, "Les exercices se lancent en freeplay. Ici, seule l'analyse des touches est active.");
     }
-    ImGui::TextWrapped("Chaque exercice place la balle par rapport à ta voiture. Tu commences au niveau 1, où seule ta "
-                       "touche compte : douce et bien placée. À partir du niveau %d, il faut aussi garder la balle près "
-                       "de toi. Le niveau monte quand tu réussis et baisse quand tu rates : les balles vont alors plus "
-                       "vite, arrivent de plus loin ou plus de travers.",
+    ImGui::TextWrapped("Chaque exercice place ta voiture et la balle, puis les tient immobiles un instant : la première "
+                       "balle part quand tu appuies sur accélérer. Tu commences au niveau 1, où seule ta touche compte : "
+                       "douce et bien placée. À partir du niveau %d, il faut aussi garder la balle près de toi.",
                        ft::kControlLevel);
+    ui::textColored(d.cfg.goodColor, ft::progressRule());
     ui::textColored(kAccent, ft::drillAdvice());
+    ImGui::TextWrapped("Parcours complet : la vraie situation de match, toutes les étapes vérifiées dans l'ordre (lire la "
+                       "balle, se placer, ralentir, toucher, garder). Il a son propre niveau.");
     ImGui::TextWrapped("Sans aucune action pendant 3 balles de suite, l'exercice s'arrête : relance-le quand tu veux.");
     ImGui::Spacing();
 
@@ -393,35 +456,50 @@ void renderDrills(const UiContext& ctx, const FtUiData& d) {
     for (int i = 0; i <= static_cast<int>(ft::DrillType::Mix); ++i) {
         const auto t = static_cast<ft::DrillType>(i);
         ImGui::PushID(i);
-        if (!available) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-        const bool clicked = ImGui::Button("Lancer");
-        if (!available) ImGui::PopStyleVar();
-        if (clicked && available) ctx.post(kModule, "drill", {ft::drillId(t)});
-        ImGui::SameLine();
         ui::textColored(kAccent, ft::drillName(t));
         ImGui::SameLine();
         ui::textColored(tierColor(d.cfg, ft::drillTier(t)), ft::tierLabel(ft::drillTier(t)));
         ImGui::TextWrapped("%s", ft::drillDescription(t));
-        ImGui::Indent();
-        const auto steps = ft::drillSteps(t);
-        for (size_t k = 0; k < steps.size(); ++k) ImGui::TextWrapped("%d. %s", static_cast<int>(k + 1), steps[k].c_str());
-        ImGui::Unindent();
+        if (!available) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+        const bool clicked = ImGui::Button("Lancer");
+        ImGui::SameLine();
+        const bool clickedFull = ImGui::Button(t == ft::DrillType::Mix ? "Séquence de match" : "Parcours complet");
+        if (!available) ImGui::PopStyleVar();
+        if (clicked && available) ctx.post(kModule, "drill", {ft::drillId(t)});
+        if (clickedFull && available) ctx.post(kModule, "drill", {ft::drillId(t), "full"});
+        hoverTip(ft::drillTutorial(t).fullText);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Revenir au niveau 1")) ctx.post(kModule, "reset_level", {ft::drillId(t)});
+        hoverTip("Remet l'exercice et son parcours complet au niveau 1. Tes stats ne bougent pas.");
+        const auto& lv = d.levels[static_cast<size_t>(i)];
         if (t != ft::DrillType::Mix) {
-            const auto& lv = d.levels[static_cast<size_t>(i)];
-            char overlay[48];
+            char overlay[64];
             std::snprintf(overlay, sizeof(overlay), "Niveau %d/10", ft::playerLevel(lv.level));
             ui::progressBar(lv.level, overlay, ImGui::GetFontSize() * 12.f);
             ImGui::SameLine();
             ImGui::TextDisabled("meilleur niveau %d, %d essais, %d/%d cette session", ft::playerLevel(lv.best), lv.attempts,
                                 lv.sessionSuccesses, lv.sessionReps);
+            ImGui::TextDisabled("Parcours complet : niveau %d/10, %d/%d réussis%s", ft::playerLevel(lv.fullLevel),
+                                lv.fullSuccesses, lv.fullAttempts, lv.mixUnlocked ? ", dans le mix" : "");
         } else {
-            ImGui::TextDisabled("Chaque balle utilise le niveau de son exercice.");
+            std::string pool;
+            for (int k = 0; k < ft::kDrillKinds; ++k)
+                if (d.levels[static_cast<size_t>(k)].mixUnlocked)
+                    pool += (pool.empty() ? "" : ", ") + std::string(ft::drillName(static_cast<ft::DrillType>(k)));
+            ImGui::TextWrapped("Dans le mix aujourd'hui : %s.", pool.c_str());
+            ImGui::TextDisabled("Séquence de match : niveau %d/10, %d/%d réussies", ft::playerLevel(lv.fullLevel),
+                                lv.fullSuccesses, lv.fullAttempts);
+        }
+        const std::string how = std::string("Comment faire##ft_how_") + ft::drillId(t);
+        if (ImGui::TreeNode(how.c_str())) {
+            renderTutorial(d, t, d.profile, d.style);
+            ImGui::TreePop();
         }
         ImGui::PopID();
         ImGui::Spacing();
     }
-    if (ImGui::SmallButton("Remettre les niveaux à zéro")) ctx.post(kModule, "reset_levels");
-    hoverTip("Tous les exercices repartent du niveau 1.");
+    if (ImGui::SmallButton("Remettre tous les niveaux à zéro")) ctx.post(kModule, "reset_levels");
+    hoverTip("Tous les exercices et leurs parcours complets repartent du niveau 1.");
     ImGui::Spacing();
     renderDrillDetails(d);
 }
@@ -430,6 +508,8 @@ void renderDrills(const UiContext& ctx, const FtUiData& d) {
 void renderCommands() {
     ImGui::TextWrapped("Console BakkesMod (F6) ou touches liées avec \"bind\" :");
     ImGui::BulletText("rlt firsttouch drill <type> : lance un exercice (roll_in, roll_away, pass, lob, wall, high, mix).");
+    ImGui::BulletText("rlt firsttouch drill <type> full : lance son parcours complet (mix full : séquence de match).");
+    ImGui::BulletText("rlt firsttouch reset_level <type> : remet un exercice et son parcours complet au niveau 1.");
     ImGui::BulletText("rlt firsttouch stop : arrête l'exercice en cours.");
     ImGui::BulletText("rlt firsttouch skip : balle suivante sans compter l'essai.");
     ImGui::BulletText("rlt firsttouch reset_stats : remet la session à zéro.");
@@ -450,6 +530,11 @@ void renderFirstTouchTab(UiContext& ctx) {
     }
     ImGui::TextWrapped("Chaque touche est analysée et notée sur 100 : vitesse au contact, point de contact sur la balle et "
                        "contrôle juste après. Les exercices adaptent leur difficulté à ton niveau.");
+    if (ImGui::CollapsingHeader("Lexique##ft_lexicon", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::TextWrapped("%s", ft::lexicon());
+        ImGui::Unindent();
+    }
     if (!d.cfg.enabled) ui::textColored(colors::Orange, "Module désactivé (réglages > Analyse des touches).");
     else if (d.game.mode == GameMode::Online) ui::textColored(colors::Orange, "En ligne : le plugin est en pause.");
     else if (d.game.mode == GameMode::Workshop || d.game.mode == GameMode::CustomTraining)

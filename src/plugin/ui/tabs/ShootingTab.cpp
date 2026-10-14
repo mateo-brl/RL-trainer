@@ -8,6 +8,7 @@
 #include "core/common/Text.h"
 #include "core/common/Units.h"
 #include "core/modules/shooting/ShootingModule.h"
+#include "core/modules/shooting/ShootingTutorials.h"
 #include "imgui.h"
 
 namespace rlt {
@@ -78,11 +79,72 @@ std::string speedText(float uus, const ShootingView& v, int decimals = 1) {
     return formatSpeed(uus, unit, decimals);
 }
 
+// Tutorial of one drill: the steps (what to do, why, how to know it is right), the in-game panel lines, what niveau 1
+// asks, its parcours complet, and the numbers under "Détails techniques".
+void tutorialSection(const ShootingView& v, shoot::ShootDrill d) {
+    const shoot::ShootTutorial& t = shoot::shootTutorial(d);
+    auto fill = [&](const char* text) { return shoot::shootFillButtons(text, v.profile, v.style); };
+    for (size_t k = 0; k < t.steps.size(); ++k) {
+        const shoot::ShootTutorialStep& st = t.steps[k];
+        ui::textColored(colors::Cyan, "Étape " + std::to_string(k + 1) + " : " + fill(st.title));
+        ImGui::Indent();
+        if (st.todo && *st.todo) ImGui::TextWrapped("À faire : %s", fill(st.todo).c_str());
+        ImGui::TextWrapped("Pourquoi : %s", fill(st.why).c_str());
+        ImGui::TextWrapped("C'est bon quand : %s", fill(st.ok).c_str());
+        ImGui::Unindent();
+    }
+    ImGui::TextDisabled("Dans le panneau en jeu :");
+    ImGui::Indent();
+    for (int k = 0; k < shoot::shootPanelCount(d); ++k) ImGui::TextDisabled("%s", shoot::shootPanelLine(d, k).c_str());
+    ImGui::Unindent();
+    wrappedColored(colors::Green, std::string("Niveau 1 : ") + t.level1);
+    ui::textColored(colors::Cyan, t.fullTitle);
+    ImGui::TextWrapped("%s", t.fullText);
+    ImGui::Indent();
+    const int lvl = shoot::shootPlayerLevel(v.status.fullLevels[static_cast<size_t>(d)]);
+    for (const auto& l : shoot::fullLabels(d, lvl)) ImGui::TextDisabled("%s", l.c_str());
+    ImGui::Unindent();
+    const std::string techId = std::string("Détails techniques##sh_tech_") + shoot::shootDrillId(d);
+    if (ImGui::TreeNode(techId.c_str())) {
+        for (const char* line : t.tech) ImGui::BulletText("%s", line);
+        ImGui::TextUnformatted(t.fullTitle);
+        for (const char* line : t.fullTech) ImGui::BulletText("%s", line);
+        ImGui::TreePop();
+    }
+}
+
+// Header of a drill: its tutorial, its levels, "Parcours complet" and "Revenir au niveau 1".
+void drillCard(UiContext& ctx, const ShootingView& v, shoot::ShootDrill d, float level, const char* fullCmd,
+               std::vector<std::string> fullArgs) {
+    ImGui::PushID(static_cast<int>(d) + 100);
+    ui::textColored(colors::Cyan, shoot::shootDrillTitle(d));
+    ImGui::TextWrapped("%s", shoot::shootTutorial(d).intro);
+    const size_t k = static_cast<size_t>(d);
+    ImGui::TextDisabled("Niveau %d/10, parcours complet niveau %d/10 (%d essais)", shoot::shootPlayerLevel(level),
+                        shoot::shootPlayerLevel(v.status.fullLevels[k]), v.status.fullAttempts[k]);
+    fullArgs.push_back("full");
+    if (ImGui::SmallButton("Parcours complet")) ctx.post("shooting", fullCmd, fullArgs);
+    ui::helpMarker(shoot::shootTutorial(d).fullText);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Revenir au niveau 1")) ctx.post("shooting", "reset_level", {shoot::shootDrillId(d)});
+    ui::helpMarker("Remet l'exercice et son parcours complet au niveau 1. Tes stats et records ne bougent pas.");
+    if (ImGui::TreeNode("Comment faire")) {
+        tutorialSection(v, d);
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+    ImGui::Spacing();
+}
+
 void statusSection(UiContext& ctx, const ShootingView& v) {
     const ShootingStatus& st = v.status;
     if (st.mode != ShootMode::None) {
-        ui::textColored(colors::Green, std::string("Exercice en cours : ") + shootModeLabel(st.mode) + " (" +
-                                           shootPhaseLabel(st.phase) + ")");
+        std::string running = std::string("Exercice en cours : ") + shootModeLabel(st.mode);
+        if (st.full) running += std::string(", parcours complet : ") + shoot::shootDrillTitle(static_cast<shoot::ShootDrill>(st.fullKind));
+        ui::textColored(colors::Green, running + " (" + shootPhaseLabel(st.phase) + ")");
+        if (!st.readyLine.empty()) ui::textColored(colors::Yellow, st.readyLine);
+        if (st.movingStart) ui::textColored(colors::Yellow, "Départ en mouvement");
+        for (const auto& line : st.steps) ImGui::BulletText("%s", line.c_str());
         if (st.mode == ShootMode::Flick) {
             ImGui::Text("Flick demandé : %s",
                         st.requestedFlick >= 0 ? shoot::flickTypeLabel(static_cast<shoot::FlickType>(st.requestedFlick))
@@ -128,7 +190,10 @@ void statusSection(UiContext& ctx, const ShootingView& v) {
 void flickSection(UiContext& ctx, const ShootingView& v) {
     ImGui::TextWrapped(
         "La balle est posée sur ton toit. Saute puis flip : le plugin reconnaît le flick, le note et te donne un "
-        "conseil. Commence par le flick avant, voiture à l'arrêt.");
+        "conseil. Commence par le flick avant, voiture à l'arrêt. Aux niveaux 1 et 2, n'importe quel flick cadré compte.");
+    drillCard(ctx, v, shoot::ShootDrill::Flick, v.status.flickLevel, "flick", {"any"});
+    drillCard(ctx, v, shoot::ShootDrill::Roof, v.status.setupLevels[static_cast<size_t>(shoot::TargetSetup::Roof)],
+              "targets", {"roof"});
     ImGui::Text("Tes boutons : %s, %s", actionPrompt(v.profile, GameAction::Jump, v.style).c_str(),
                 shoot::airRollPrompt(v.profile, v.style).c_str());
     if (ImGui::Button("Flicks libres (tous types)")) ctx.post("shooting", "flick", {"any"});
@@ -246,6 +311,13 @@ void targetsSection(UiContext& ctx, const ShootingView& v) {
             std::string(shoot::setupLabel(static_cast<shoot::TargetSetup>(i))) + " : " + levelText(lvl);
         ui::progressBar(lvl, overlay);
     }
+    ui::separatorText("Les exercices pas à pas");
+    drillCard(ctx, v, shoot::ShootDrill::Rolling, v.status.setupLevels[static_cast<size_t>(shoot::TargetSetup::Rolling)],
+              "targets", {"rolling"});
+    drillCard(ctx, v, shoot::ShootDrill::Bouncing,
+              v.status.setupLevels[static_cast<size_t>(shoot::TargetSetup::Bouncing)], "targets", {"bouncing"});
+    drillCard(ctx, v, shoot::ShootDrill::Pass, v.status.setupLevels[static_cast<size_t>(shoot::TargetSetup::Pass)],
+              "targets", {"pass"});
     ui::settingsSection(ctx, "shooting", "Cibles dans le but");
 }
 
@@ -254,7 +326,9 @@ void powerSection(UiContext& ctx, const ShootingView& v) {
         "La balle roule vers toi : frappe-la le plus fort possible. Astuce : boost à fond, puis flip avec le nez "
         "de la voiture dans la balle au dernier moment.");
     if (ImGui::Button("Lancer le défi puissance")) ctx.post("shooting", "power");
-    ImGui::Text("Objectif : %s", speedText(v.cfg.powerGoalKph / kUusToKph, v, 0).c_str());
+    ImGui::Text("Objectif : %s (niveau %d/10)", speedText(v.status.powerGoalKph / kUusToKph, v, 0).c_str(),
+                shoot::shootPlayerLevel(v.status.powerLevel));
+    drillCard(ctx, v, shoot::ShootDrill::Power, v.status.powerLevel, "power", {});
     if (v.stats.powerAll.best > 0.f) {
         ImGui::Text("Record : %s", speedText(v.stats.powerAll.best, v).c_str());
         ImGui::Text("Session : %s en %d tirs", speedText(v.stats.powerSession.best, v).c_str(),
@@ -327,6 +401,8 @@ void commandsSection() {
     ImGui::BulletText("rlt shooting targets [tl|tr|bl|br|center|random] [mix|rolling|bouncing|pass|roof] "
                       "(zone et mise en place données sont sauvegardées)");
     ImGui::BulletText("rlt shooting power : défi de puissance");
+    ImGui::BulletText("rlt shooting flick full / targets <mise en place> full / power full : le parcours complet");
+    ImGui::BulletText("rlt shooting reset_level <flick|roof|rolling|bouncing|pass|power> : revenir au niveau 1");
     ImGui::BulletText("rlt shooting next : nouvel essai tout de suite");
     ImGui::BulletText("rlt shooting setup <mise en place> / zone <zone> : change et sauvegarde la situation ou la "
                       "cible (tout de suite en Cibles, sinon pour le prochain exercice)");
@@ -345,7 +421,15 @@ void renderShootingTab(UiContext& ctx) {
     ImGui::TextWrapped(
         "Tirs de précision dans les zones du but, défi de puissance et flicks avec la balle sur le toit. "
         "Chaque essai est noté avec un conseil, tes records sont sauvegardés.");
+    if (ImGui::CollapsingHeader("Lexique##shooting_lexicon", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        ImGui::TextWrapped("%s", shoot::shootLexicon());
+        ImGui::Unindent();
+    }
     wrappedColored(colors::Green, shoot::shootingAdvice());
+    wrappedColored(colors::Green, shoot::shootProgressRule());
+    ImGui::TextWrapped("La première balle d'un exercice attend que tu appuies sur accélérer, puis compte 3 s. Parcours "
+                       "complet : toute la situation de match, chaque étape vérifiée dans l'ordre, avec son propre niveau.");
     if (!v.cfg.enabled) ui::textColored(colors::Orange, "Module désactivé (voir Exercices, Activer).");
     statusSection(ctx, v);
 

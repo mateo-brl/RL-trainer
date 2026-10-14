@@ -60,11 +60,32 @@ bool SpeedFlipDetector::onDodge(const DodgeRecord& r, const Ctx& c, const Kickof
     const bool expect = c.cfg.expect(Focus::SpeedFlip);
     const float a = std::fabs(r.angleDeg);
     const bool diag = r.kind == DodgeKind::DiagForward || (r.kind == DodgeKind::Forward && a >= 5.f);
-    // In speedflip practice every flip is graded (the flip stays available about 1.25 s after the jump), so that a
-    // late one gets its tip instead of a silent time-out.
-    const bool lowJump = r.ticksSinceFirstJump >= 0 && r.ticksSinceFirstJump <= (expect ? 150 : 30);
+    // In speedflip practice every flip is graded (the flip stays available about 1.25 s after the jump release), so
+    // that a late one gets its tip instead of a silent time-out.
+    const bool lowJump = r.ticksSinceFirstJump >= 0 && r.ticksSinceFirstJump <= (expect ? 180 : 30);
     const bool cancelled = r.cancelTicks >= 0 && r.cancelTicks <= 20;
     const bool boosting = r.inputAtDodge.boost;
+    // Speedflip practice: a side or back flip is a failed attempt with its own tip, never a silent time-out.
+    const bool wrongWay = expect && lowJump &&
+                          (r.kind == DodgeKind::Side || r.kind == DodgeKind::DiagBack || r.kind == DodgeKind::Back);
+    if (wrongWay) {
+        MechGrade g;
+        g.mech = Mech::SpeedFlip;
+        g.variant = r.kind == DodgeKind::Side ? "side" : "back";
+        g.tickStart = r.tick - r.ticksSinceFirstJump;
+        g.tickEnd = r.tick + std::max(r.landingTicks, 0);
+        g.dodgeTick = r.tick;
+        g.add("dodgeAngleDeg", r.angleDeg);
+        g.add("absAngleDeg", a);
+        g.add("targetAngleDeg", c.cfg.speedflipTargetAngleDeg);
+        g.add("jumpToDodgeTicks", static_cast<float>(r.ticksSinceFirstJump));
+        g.add("cancelTicks", static_cast<float>(r.cancelTicks));
+        g.err(r.kind == DodgeKind::Side ? "SF_SIDE_FLIP" : "SF_BACK_FLIP", 90.f);
+        g.success = false;
+        finalizeGrade(g, 5.f);
+        out.push_back(std::move(g));
+        return true;
+    }
     if (!(diag || (expect && r.kind == DodgeKind::Forward))) return false;
     if (!lowJump) return false;
     if (!cancelled && !expect) return false;  // plain diagonal flip
@@ -195,6 +216,22 @@ bool HalfFlipDetector::onDodge(const DodgeRecord& r, const Ctx& c, std::vector<M
     const bool back = r.kind == DodgeKind::Back;
     const bool diagBack = r.kind == DodgeKind::DiagBack;
     const bool cancelled = r.cancelTicks >= 0 && r.cancelTicks <= 60;
+    // Half-flip practice: a front or side flip (or a stall) is a failed attempt with its own tip.
+    if (expect && !back && !diagBack && r.surface == Surface::Floor) {
+        MechGrade g;
+        g.mech = Mech::HalfFlip;
+        g.variant = dodgeVariant(r.kind, r.angleDeg);
+        g.tickStart = r.tick - std::max<int64_t>(r.ticksSinceFirstJump, 0);
+        g.tickEnd = r.tick + std::max(r.landingTicks, 0);
+        g.dodgeTick = r.tick;
+        g.add("dodgeAngleDeg", r.angleDeg);
+        g.add("jumpToDodgeTicks", static_cast<float>(r.ticksSinceFirstJump));
+        g.err("HF_WRONG_FLIP", 90.f);
+        g.success = false;
+        finalizeGrade(g, 5.f);
+        out.push_back(std::move(g));
+        return true;
+    }
     if (!(back || (diagBack && (cancelled || expect)))) return false;
     if (!cancelled && !expect) return false;  // ordinary backflip
     // Without intent, a late push on the stick with no air roll is a backflip landing, not a half-flip.
@@ -259,8 +296,23 @@ bool HalfFlipDetector::onDodge(const DodgeRecord& r, const Ctx& c, std::vector<M
 
 // ---- Flip cancel ---------------------------------------------------------------------------------------
 bool FlipCancelDetector::onDodge(const DodgeRecord& r, const Ctx& c, std::vector<MechGrade>& out) {
-    if (r.kind == DodgeKind::Stall || r.kind == DodgeKind::Side || std::fabs(r.dir.x) <= 0.1f) return false;
     const bool expect = c.cfg.expect(Focus::FlipCancel);
+    // Flip cancel practice: a side flip has nothing to cancel, it is a failed attempt with its own tip.
+    if (expect && (r.kind == DodgeKind::Side || (r.kind != DodgeKind::Stall && std::fabs(r.dir.x) <= 0.1f))) {
+        MechGrade g;
+        g.mech = Mech::FlipCancel;
+        g.variant = dodgeVariant(r.kind, r.angleDeg);
+        g.tickStart = r.tick;
+        g.tickEnd = r.tick + std::max(r.landingTicks, 0);
+        g.dodgeTick = r.tick;
+        g.add("dodgeAngleDeg", r.angleDeg);
+        g.err("FC_WRONG_FLIP", 90.f);
+        g.success = false;
+        finalizeGrade(g, 5.f);
+        out.push_back(std::move(g));
+        return true;
+    }
+    if (r.kind == DodgeKind::Stall || r.kind == DodgeKind::Side || std::fabs(r.dir.x) <= 0.1f) return false;
     const bool cancelled = r.cancelTicks >= 0 && r.cancelTicks <= kMaxCancelTicks;
     if (!cancelled && !expect) return false;
 
@@ -303,7 +355,7 @@ void ComboDetector::onGrade(const MechGrade& g, std::vector<MechGrade>& out) {
         haveHF_ = true;
         return;
     }
-    if (g.mech == Mech::ZapDash && haveSF_ && g.tickStart >= lastSpeedflip_.tickEnd &&
+    if (g.mech == Mech::ZapDash && g.variant != "early" && haveSF_ && g.tickStart >= lastSpeedflip_.tickEnd &&
         g.tickStart - lastSpeedflip_.tickEnd <= kMaxGapTicks) {
         out.push_back(combine(Mech::SpeedZap, lastSpeedflip_, g));
         haveSF_ = false;
@@ -311,6 +363,7 @@ void ComboDetector::onGrade(const MechGrade& g, std::vector<MechGrade>& out) {
         usedSFDodgeTick_ = lastSpeedflip_.dodgeTick;
     }
     if ((g.mech == Mech::Wavedash || g.mech == Mech::ZapDash) && g.variant != "late" && g.variant != "nostick" &&
+        g.variant != "early" &&
         haveHF_ && g.tickStart >= lastHalfFlip_.tickEnd && g.tickStart - lastHalfFlip_.tickEnd <= kMaxGapTicks) {
         out.push_back(combine(Mech::HalfFlipWavedash, lastHalfFlip_, g));
         haveHF_ = false;

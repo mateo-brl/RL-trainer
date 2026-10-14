@@ -1,6 +1,7 @@
 // Pedagogy and compact HUD of the movement mechanics: drill levels a beginner can pass (speedflip first step
 // without the kickoff), demanding top levels, one tip in words per attempt, live step of the exercise, at most three
 // main HUD lines without milliseconds or degrees, difficulty tags and plain texts of the catalogue.
+#include <iterator>
 #include <memory>
 #include <string>
 
@@ -50,16 +51,8 @@ Script speedflipAttempt(float angleDeg, int jumpToFlip, int cancelAfter) {
     };
 }
 
-// Starts the drill of `id` at `level` and runs until GO (countdown included).
-void startDrill(Rig& rig, const std::string& id, float level) {
-    Store st;
-    st.setFloat("mechanics.level." + id + ".level", level);
-    st.setInt("mechanics.level." + id + ".attempts", 1);  // a played level
-    rig.mod.load(st);
-    rig.command("drill", {id});
-    rig.tick(Inputs{});
-    for (int i = 0; i < 200 && rig.mod.status().phase != "Essai en cours"; ++i) rig.tick(Inputs{});
-}
+// Starts the drill of `id` at `level` and runs until GO (get-ready phase included).
+void startDrill(Rig& rig, const std::string& id, float level) { CHECK(rig.startDrill(id, level)); }
 
 std::string describe(const Rig& rig) {
     std::string s;
@@ -281,21 +274,26 @@ TEST(mechanics_drill_live_step_and_timeout_hint) {
         return lines.empty() ? std::string() : lines.back()->text;
     };
     CHECK(rig.mod.status().currentStep == 0);
-    CHECK(action() == "1. Avance avec le boost");
+    CHECK(action() == "1/5 Boost et accélérateur");
     Inputs in;
     in.throttle = 1.f;
     in.boost = true;
     for (int i = 0; i < 20; ++i) rig.tick(in);
     CHECK(rig.mod.status().currentStep == 1);
-    CHECK(action() == "2. Saute");
+    CHECK(action() == "2/5 Petit saut");
     in.jump = true;
     for (int i = 0; i < 8; ++i) rig.tick(in);
     CHECK(rig.mod.status().currentStep == 2);
-    CHECK(action() == "3. Flip en diagonale vers l'avant");
-    // No flip until the time limit: the hint names the missing step, the level does not move.
+    CHECK(action() == "3/5 Flip en diagonale");
+    // No flip until the time limit: a failed attempt with the tip of the missing step (never silent).
     in.jump = false;
-    for (int i = 0; i < 5 * 120 && rig.mod.status().phase == "Essai en cours"; ++i) rig.tick(in);
-    CHECK(rig.results.empty());
+    for (int i = 0; i < 6 * 120 && rig.mod.status().phase == "Essai en cours"; ++i) rig.tick(in);
+    CHECK(rig.count("mech.speedflip") == 1);
+    const AttemptResult* r = rig.result("mech.speedflip");
+    if (r) {
+        CHECK(!r->success);
+        CHECK(!r->tips.empty() && r->tips.front().code == "me.sf_no_flip");
+    }
     CHECK(rig.mod.status().message.find("Il manquait : Flip en diagonale") != std::string::npos);
     const DrawList dl = drawHud(rig);
     checkCompact(dl, "temps écoulé");
@@ -304,7 +302,7 @@ TEST(mechanics_drill_live_step_and_timeout_hint) {
         CHECK(lines.size() == 3);
         if (lines.size() == 3) {
             CHECK(lines[0]->text == "Temps écoulé");
-            CHECK(lines[1]->text == "Il manquait : Flip en diagonale vers l'avant");
+            CHECK(lines[1]->text == "Il manquait : Flip en diagonale");
         }
     }
     CHECK_NEAR(rig.mod.level(Focus::SpeedFlip), 0.f, 1e-6f);
@@ -437,7 +435,15 @@ TEST(mechanics_tips_in_plain_words) {
           "RC_SPEED_LOST", "RC_SLOW_SETTLE", "RC_MISSED_WAVEDASH", "RC_WEAK_WAVEDASH", "RC_CRASHED", "RC_ON_ROOF",
           "PS_SPEED_LOSS", "PS_EXIT_SLIP", "PS_NO_THROTTLE", "SM_LONG_HOLDS", "SM_BOOST_AT_MAX", "SM_NO_THROTTLE",
           "SM_NOT_SUPERSONIC", "SM_TOO_MUCH_BOOST", "COMBO_SLOW_LINK", "ZAP_NO_BOUNCE", "WCHAIN_SLOW", "DRILL_NO_TOUCH",
-          "DRILL_BELOW_LEVEL", "DRILL_CHAIN_SHORT", "DRILL_SLOW_TO_BALL"}) {
+          "DRILL_BELOW_LEVEL", "DRILL_CHAIN_SHORT", "DRILL_SLOW_TO_BALL",
+          // Never-silent timeouts and the "parcours complet" steps.
+          "SF_NO_BOOST", "SF_NO_JUMP", "SF_NO_FLIP", "SF_SIDE_FLIP", "SF_BACK_FLIP", "SF_JUMP_HELD", "SF_NOT_AIMED",
+          "SF_SLOW_TO_BALL", "HF_NO_FLIP", "HF_WRONG_FLIP", "HF_NO_REVERSE", "HF_SLOW_TO_BALL", "FC_NO_FLIP",
+          "FC_WRONG_FLIP", "FC_JUMP_LONG", "DRILL_NO_SPEED", "WD_NO_FLIP", "WD_NO_HOP", "WD_NOT_FORWARD", "ZAP_NO_FLIP",
+          "ZAP_NOSE", "ZAP_LATE", "CHAIN_SLOW", "WALL_NO_DASH", "WALL_NO_CLIMB", "WALL_NOT_RIDING", "FA_NO_JUMP",
+          "FA_TOUCH_LOW", "FA_NOT_PLACED", "ST_NO_STALL", "ST_DOUBLE_JUMP", "ST_TOO_LOW", "AS_NO_SPIN", "AS_NO_TAKEOFF",
+          "RC_NO_CLIMB", "RC_NO_WALL_JUMP", "RC_SHORT_AIR", "PS_NO_SLIDE", "PS_NOT_AIMED", "SM_SLOW_TO_SUPERSONIC",
+          "SM_EARLY_BOOST"}) {
         const std::string t = tipText(code, g, p, 0.5f);
         CHECK_MSG(!t.empty() && !technical(t) && !hasEmDash(t) && !hasEnDash(t), std::string(code) + " : " + t);
         CHECK_MSG(t.find("Recommence en te concentrant") == std::string::npos, code);
@@ -463,7 +469,7 @@ TEST(mechanics_drill_numbers_for_the_tab) {
     CHECK(has("Angle du flip : 30° +/-28°"));
     CHECK(has("Annulation : <= 167 ms"));
     CHECK(has("Retomber sur les roues"));
-    CHECK(has("Temps par essai : 4,0 s"));
+    CHECK(has("Temps par essai : 4,5 s"));
     for (const auto& l : lines) CHECK_MSG(l.find("Score minimum") == std::string::npos, l);  // none at level 1
     const auto top = drillCheckLines(makeDrill(Focus::SpeedFlip, 1.f, 0, 0, rng), DetectConfig{}, SpeedUnit::Uus);
     bool score = false, touch = false;
@@ -500,6 +506,156 @@ TEST(mechanics_speedflip_next_step_is_announced) {
     if (!dl.panels.empty()) {
         const auto lines = mainLines(dl.panels[0]);
         CHECK(lines.size() == 3);
-        if (lines.size() == 3) CHECK(lines[1]->text == rig.mod.drillSetup().goal);
+        if (lines.size() == 3) CHECK(lines[0]->text == rig.mod.drillSetup().goal);
     }
+}
+
+// ---- Tutorials, beginner path, lexicon --------------------------------------------------------------------------
+TEST(mechanics_tutorials_for_every_drill) {
+    PlayerProfile p;
+    p.valid = true;
+    p.usingGamepad = true;
+    p.gamepadBindings = {{"Jump", "XboxTypeS_A"}, {"Boost", "XboxTypeS_B"}, {"Handbrake", "XboxTypeS_X"}};
+    for (int i = 0; i < kFocusCount; ++i) {
+        const Focus f = static_cast<Focus>(i);
+        const Tutorial& t = tutorial(f);
+        const std::string id = focusInfo(f).id;
+        CHECK_MSG(t.focus == f, id);
+        CHECK_MSG(t.intro && *t.intro && t.full && *t.full && t.level1 && *t.level1, id);
+        int steps = 0, panel = 0;
+        for (const TutorialStep& s : t.steps) {
+            if (!s.action) continue;
+            ++steps;
+            CHECK_MSG(s.why && *s.why && s.ok && *s.ok, id);
+            for (const char* x : {s.action, s.why, s.ok}) {
+                const std::string filled = fillButtons(x, p);
+                CHECK_MSG(!technical(filled) && !hasEmDash(filled) && !hasEnDash(filled), id + " : " + filled);
+                CHECK_MSG(filled.find('{') == std::string::npos, id + " : " + filled);  // every placeholder filled
+            }
+        }
+        for (const char* l : t.panel) panel += l ? 1 : 0;
+        CHECK_MSG(steps >= 3 && panel >= 3, id);
+        for (const char* x : {t.intro, t.full, t.level1})
+            CHECK_MSG(!technical(x) && !hasEmDash(x) && !hasEnDash(x), id + " : " + x);
+        // The HUD panel lines of the tab are the steps of the exercise.
+        const FocusInfo& fi = focusInfo(f);
+        for (int k = 0; k < 6 && fi.steps[k]; ++k) CHECK_MSG(t.panel[k] && std::string(t.panel[k]) == fi.steps[k], id);
+        CHECK_MSG(!hasEmDash(fi.tech) && !hasEnDash(fi.tech), id);
+    }
+    // Buttons are the player's own.
+    CHECK(fillButtons("Saute avec {jump}, puis {boost} et {slide}.", p) == "Saute avec Saut (A), puis Boost (B) et Glissade (X).");
+    // The read model gives the tab the filled tutorial.
+    Rig rig;
+    rig.setProfile(p);
+    for (const auto& row : rig.mod.statRows()) {
+        CHECK(!row.intro.empty() && row.tutorial.size() >= 3 && row.panel.size() >= 3);
+        for (const auto& s : row.tutorial) CHECK(s.action.find('{') == std::string::npos);
+    }
+}
+
+TEST(mechanics_beginner_path_and_lexicon) {
+    const auto& path = mechanicsPath();
+    CHECK(path.size() == static_cast<size_t>(kFocusCount) + 1);  // the speedflip twice (step 1, then the kickoff)
+    for (int i = 0; i < kFocusCount; ++i) CHECK(pathIndex(static_cast<Focus>(i)) < static_cast<int>(path.size()));
+    // Spec order of the tab: Powerslide, Boost, Réception, Hélico, Flip cancel, Speedflip étape 1, Half-flip, Fast aerial,
+    // Wavedash, Stall, Speedflip kickoff, Chain, Zap, Wall dash.
+    const Focus order[] = {Focus::Powerslide, Focus::Boost,      Focus::Recovery,  Focus::Helicopter, Focus::FlipCancel,
+                           Focus::SpeedFlip,  Focus::HalfFlip,   Focus::FastAerial, Focus::Wavedash,  Focus::Stall,
+                           Focus::SpeedFlip,  Focus::ChainDash,  Focus::ZapDash,   Focus::WallDash};
+    CHECK(path.size() == std::size(order));
+    for (size_t i = 0; i < path.size() && i < std::size(order); ++i) CHECK(path[i].focus == order[i]);
+    CHECK(std::string(path[10].drillArg) == "kickoff");
+    CHECK(std::string(pathRule()) ==
+          "Passe à l'exercice suivant quand tu réussis environ 3 essais sur 4 au niveau 4. Tu peux toujours revenir en "
+          "arrière.");
+    const std::string lex = lexicon();
+    for (const char* w : {"Flip :", "Annuler un flip :", "Air roll :", "Powerslide :", "Supersonique :", "Kickoff :"})
+        CHECK_MSG(lex.find(w) != std::string::npos, w);
+    for (const auto& e : path) CHECK(!hasEmDash(e.label) && !hasEnDash(e.label) && !hasEmDash(e.block) && !hasEmDash(e.note));
+    CHECK(!hasEmDash(lex) && !hasEnDash(lex));
+    // Difficulty of the spec: Hélico is a beginner drill, Stall an intermediate one.
+    CHECK(focusInfo(Focus::Helicopter).tier == Tier::Beginner);
+    CHECK(focusInfo(Focus::Stall).tier == Tier::Intermediate);
+}
+
+TEST(mechanics_level_commands) {
+    // "Revenir au niveau 1", the speedflip kickoff steps, the "parcours complet".
+    Rig rig;
+    Store st;
+    st.setFloat("mechanics.level.halfflip.level", 0.6f);
+    st.setInt("mechanics.level.halfflip.attempts", 3);
+    st.setFloat("mechanics.full.halfflip.level", 0.4f);
+    st.setInt("mechanics.full.halfflip.attempts", 2);
+    rig.mod.load(st);
+    CHECK_NEAR(rig.mod.level(Focus::HalfFlip), 0.6f, 1e-6f);
+    CHECK_NEAR(rig.mod.fullLevel(Focus::HalfFlip), 0.4f, 1e-6f);
+    Actions a = rig.command("reset_level", {"halfflip"});
+    CHECK_NEAR(rig.mod.level(Focus::HalfFlip), 0.f, 1e-6f);
+    CHECK_NEAR(rig.mod.fullLevel(Focus::HalfFlip), 0.4f, 1e-6f);
+    CHECK(a.requestSave && rig.toastContains("retour au niveau 1"));
+    rig.command("reset_level", {"halfflip", "full"});
+    CHECK_NEAR(rig.mod.fullLevel(Focus::HalfFlip), 0.f, 1e-6f);
+    rig.command("reset_level", {"nope"});
+    CHECK(rig.toastContains("Méca inconnue"));
+    rig.mod.load(st);
+    rig.command("reset_level", {"halfflip", "all"});  // the tab button: both at once
+    CHECK_NEAR(rig.mod.level(Focus::HalfFlip), 0.f, 1e-6f);
+    CHECK_NEAR(rig.mod.fullLevel(Focus::HalfFlip), 0.f, 1e-6f);
+    // Straight to the kickoff steps of the speedflip.
+    rig.command("drill", {"speedflip", "kickoff"});
+    CHECK(displayLevel(rig.mod.level(Focus::SpeedFlip)) == 4);
+    rig.tick(Inputs{});
+    CHECK(rig.mod.drillSetup().stage == 2 && rig.mod.drillSetup().kickoff);
+    rig.command("stop");
+    rig.tick(Inputs{});
+    rig.command("drill", {"wavedash", "full"});
+    CHECK(rig.mod.drillFull());
+    rig.tick(Inputs{});
+    CHECK(rig.mod.drillSetup().full && rig.mod.fullTracker().size() == 4);
+    CHECK(rig.mod.status().full && rig.mod.status().steps.size() == 4);
+}
+
+TEST(mechanics_compact_hud_full_sequences) {
+    for (const char* id : kFamilies) {
+        Rig rig;
+        rig.command("drill", {id, "full"});
+        Inputs in;
+        rig.tick(in);
+        checkCompact(drawHud(rig), std::string(id) + " complet début");
+        rig.tick(in);
+        in.throttle = 1.f;
+        for (int i = 0; i < 12 * 120; ++i) {  // get-ready phase (3 s) and the longest time limit (8 s)
+            rig.tick(in);
+            if (i % 30 == 0) checkCompact(drawHud(rig), std::string(id) + " complet pendant");
+        }
+        CHECK_MSG(rig.mod.status().drillAttempts >= 1, id);  // never silent: the time limit records the attempt
+    }
+}
+
+TEST(mechanics_slow_motion_offered_after_three_misses) {
+    // Three failed attempts in a row: during the next get-ready phase the HUD suggests the slow motion (in words), the
+    // tab gets the streak to show its button.
+    Rig rig;
+    CHECK(rig.startDrill("speedflip", 0.f));
+    auto noFlip = [](int t, MiniSim&) {
+        Inputs in;
+        in.throttle = 1.f;
+        in.boost = true;
+        in.jump = t >= 50 && t < 58;
+        return in;
+    };
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const size_t before = rig.results.size();
+        for (int i = 0; i < 6 * 120 && rig.results.size() == before; ++i) rig.tick(noFlip(i, rig.sim));
+        CHECK(rig.results.size() == before + 1);
+        if (attempt < 2) CHECK(rig.waitGo());
+    }
+    CHECK(rig.mod.status().failStreak == 3);
+    for (int i = 0; i < 300 && rig.mod.status().phase != "Compte à rebours"; ++i) rig.tick(Inputs{});
+    const DrawList dl = drawHud(rig);
+    checkCompact(dl, "ralenti");
+    bool offer = false;
+    if (!dl.panels.empty())
+        for (const auto* l : mainLines(dl.panels[0])) offer = offer || l->text.find("ralenti 0,75") != std::string::npos;
+    CHECK(offer);
 }

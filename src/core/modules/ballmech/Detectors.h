@@ -54,6 +54,9 @@ public:
     void reset() override;
     std::optional<MechGrade> update(const Frame& prev, const Frame& cur, const DetectParams& p) override;
     bool engaged(float& since) const override;
+    // A drill placed the car on the ceiling: start in OnCeiling at `t` (the drop is then graded even if the first
+    // frames on the ceiling were not seen).
+    void armOnCeiling(float t);
 
 private:
     enum class State { Idle, OnCeiling, Falling };

@@ -53,8 +53,14 @@ public:
     void addGoal() { goalPending_ = true; }
     // Frames up to `frame` are treated as a discontinuity (the drill moved the car / ball).
     void ignoreUntil(int64_t frame) { ignoreUntil_ = frame; }
+    // The drill moved only the ball, on purpose, while an attempt runs (ceiling parcours: ball relaunched in front of
+    // the falling car): up to `frame`, a ball jump is not a reset, the detectors keep their state.
+    void allowBallMoveUntil(int64_t frame) { ballMoveUntil_ = frame; }
     // Double tap "read" mode at the next processed frame (drill sent the ball to the backboard).
     void armDoubleTapRead() { armDtRead_ = true; }
+    // The drill placed the car on the ceiling: the ceiling detector starts in OnCeiling at the next processed frame
+    // (insurance: the first frames after a launch are ignored, see ignoreUntil).
+    void armCeiling() { armCeiling_ = true; }
 
     // Processes the snapshots of `h` that are now kDelay ticks old (oldest first).
     void process(const TickHistory& h, bool hasSnapshot, Output& out);
@@ -89,8 +95,10 @@ private:
     bool hasPrevFrame_ = false;
     int64_t lastProcessed_ = INT64_MIN;
     int64_t ignoreUntil_ = INT64_MIN;
+    int64_t ballMoveUntil_ = INT64_MIN;
     bool goalPending_ = false;
     bool armDtRead_ = false;
+    bool armCeiling_ = false;
     std::array<TouchMark, 8> marks_{};
     int markCount_ = 0;
     std::array<int64_t, 4> sdk_{};

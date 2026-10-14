@@ -43,6 +43,10 @@ void MovementCoach::step(const Snapshot& s, std::vector<MechGrade>& out) {
         if (r.tick == fa_.claimedDodgeTick()) continue;
         if (st_.onDodge(r, c, out)) continue;
         if (wd_.onDodge(r, c, out)) continue;
+        // The flip family the player trains gets the dodge first (a boosted diagonal flip in flip cancel practice is
+        // that drill's attempt, not a speedflip filtered out by the focus).
+        if (cfg.focus == Focus::HalfFlip && hf_.onDodge(r, c, out)) continue;
+        if (cfg.focus == Focus::FlipCancel && fc_.onDodge(r, c, out)) continue;
         if (sf_.onDodge(r, c, ko_, out)) continue;
         if (hf_.onDodge(r, c, out)) continue;
         fc_.onDodge(r, c, out);

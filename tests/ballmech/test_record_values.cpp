@@ -33,10 +33,7 @@ void warmUp(Harness& h, int n = 10) {
     h.run(sim.out);
 }
 
-void skipReady(Harness& h) {
-    const int ready = static_cast<int>(h.settings.ballmech.drillReady * kTickRate) + 2;
-    h.idle(ready);
-}
+void skipReady(Harness& h) { h.skipReady(); }
 
 // Idle ticks with the throttle pressed (counts as activity, so the drill times out instead of pausing).
 void active(Harness& h, int n) {

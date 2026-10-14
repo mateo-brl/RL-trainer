@@ -5,9 +5,14 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "core/common/HangingBall.h"
+#include "core/common/Hold.h"
+#include "core/common/Pickup.h"
+#include "core/common/Steps.h"
 #include "core/common/Text.h"
 #include "core/modules/ballmech/Drills.h"
 #include "core/modules/ballmech/Mechanics.h"
+#include "core/modules/ballmech/Parcours.h"
 #include "core/modules/ballmech/Pipeline.h"
 #include "core/modules/ballmech/Stats.h"
 #include "core/modules/ballmech/Tips.h"
@@ -23,6 +28,15 @@ struct BallMechModule::Impl {
     bm::Stats stats;
     bm::DrillSetup setup;
     bm::Pipeline::Output out;
+    ReadyPhase ready;            // get-ready hold before each attempt (fix 1)
+    HoldPose hold;               // what the hold re-sends every tick
+    StepTracker steps;           // full sequence steps (fix 2)
+    bm::ParcoursState parcours;  // what the step checks read (refreshed every Live tick, both starts)
+    HangingBall hang;            // ball waiting in the air (fix 3)
+    pickup::Progress pickup;     // the shared "Ramassage" start has its own staircase (fix 4)
+    bool swallowFamily = false;  // a success found by the step checks: the late grade of the same attempt is dropped
+    bool readyNative = false;    // the get-ready phase sends the native 3, 2, 1 and GO itself
+    float readySeconds = 0.f;    // its countdown
 };
 
 namespace {
@@ -31,6 +45,21 @@ constexpr int64_t kResetDedupFrames = 36;  // 0.3 s
 constexpr float kLandGrace = 0.6f;         // seconds a held grade may still resolve a landed drill attempt
 constexpr float kStairStep = 0.04f;
 constexpr float kStairStart = 0.f;         // a new player starts every drill at level 1 (the easiest)
+constexpr float kAwaitGrade = 8.f;         // full sequence done on its checks: seconds to wait for the detector's grade
+constexpr Color kStepAccent{255, 199, 64, 255};
+
+// Breezi tornado (module check, no grade exists for it): roll >= 230 deg with the air roll held >= 30 % of the air
+// time and the ball within reach >= 70 % of it (FlickDetector's breezi gate plus the ball kept).
+bool tornadoOk(const bm::ParcoursState& st) {
+    if (st.airTicks <= 0) return false;
+    const float airRoll = static_cast<float>(st.airRollTicks) / static_cast<float>(st.airTicks);
+    const float kept = static_cast<float>(st.keptTicks) / static_cast<float>(st.airTicks);
+    return std::fabs(st.rollAccum) * kRadToDeg >= 230.f && airRoll >= 0.3f && kept >= 0.7f;
+}
+
+bool isCriteriaCode(const std::string& c) {
+    return c == "DRILL_NEED_POWER" || c == "DRILL_NEED_TARGET" || c == "DRILL_NEED_DURATION" || c == "DRILL_NEED_SCORE";
+}
 
 Color verdictColor(Verdict v) {
     switch (v) {
@@ -131,11 +160,21 @@ bool flickVariantValid(const std::string& v) {
     return v.empty() || v == "front" || v == "45" || v == "90" || v == "backflip" || v == "side" || v == "reverse";
 }
 
+// Short start where a throttle held through the countdown spoils the attempt at GO: ball balanced on a stopped car
+// (it slides off the roof) or car on the ceiling (it keeps to the ceiling instead of dropping).
+bool throttleSpoilsStart(Mech m, const bm::DrillSetup& d) {
+    if (d.mode == bm::DrillMode::Full) return false;
+    const bool roofStart = length(d.car.vel) < 1.f &&
+                           (m == Mech::Flick || m == Mech::Musty || m == Mech::Breezi || m == Mech::AirDribble);
+    return roofStart || d.armCeiling;
+}
+
 } // namespace
 
 // ---- Construction ------------------------------------------------------------------------------------------
 BallMechModule::BallMechModule() : impl_(std::make_unique<Impl>()) {
     for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, kStairStep, kStairStart);
+    for (int i = 0; i < bm::kMechCount; ++i) modes_[static_cast<size_t>(i)] = static_cast<int>(bm::defaultMode(static_cast<Mech>(i)));
     rng_.reseed(0x62616c6c6d656368ULL);
 }
 
@@ -292,6 +331,14 @@ void BallMechModule::syncPipeline(const TickContext& ctx) {
         if (static_cast<Mech>(drill_.mech) == Mech::PowerShot) en[static_cast<size_t>(bm::Family::Pinch)] = true;
     }
     for (int i = 0; i < bm::kFamilyCount; ++i) pl.setEnabled(static_cast<bm::Family>(i), en[static_cast<size_t>(i)]);
+    // Air roll drill niveau 1 asks 1000 uu/s: the aerial detector must grade softer touches during it.
+    bm::DetectParams p;
+    p.pinchSpeed = cfg_.pinchSpeed;
+    p.aerialMinSpeed = cfg_.aerialMinSpeed;
+    p.powerMinSpeed = cfg_.powerMinSpeed;
+    if (drill_.phase != DrillPhase::Off && static_cast<Mech>(drill_.mech) == Mech::AirRoll)
+        p.aerialMinSpeed = std::min(p.aerialMinSpeed, bm::airRollSpeedNeeded(stairs_[static_cast<size_t>(drill_.mech)].level()));
+    pl.setParams(p);
 }
 
 bool BallMechModule::countReset(int64_t frame) {
@@ -324,6 +371,14 @@ float BallMechModule::drillLevel(const std::string& mechId) const {
     return stairs_[static_cast<size_t>(m)].level();
 }
 
+int BallMechModule::drillMode(const std::string& mechId) const {
+    Mech m;
+    if (!bm::mechFromId(mechId, m)) return 0;
+    return modes_[static_cast<size_t>(m)];
+}
+
+float BallMechModule::pickupLevel() const { return impl_->pickup.staircase().level(); }
+
 float BallMechModule::drillTimeout() const {
     const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
     return bm::mechInfo(drill_.mech).drillTimeout * std::max(0.5f, cfg_.drillTimeoutScale) * bm::drillTimeFactor(level);
@@ -341,9 +396,17 @@ const Tip* BallMechModule::drillTip() const {
 std::string BallMechModule::drillActionNow() const {
     const Mech m = static_cast<Mech>(drill_.mech);
     const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
+    const int n = bm::playerLevel(level);
     if (m == Mech::FlipReset && drill_.phase == DrillPhase::Live && resetAvailable_)
-        return bm::playerLevel(level) < bm::kFrConvertLevel ? "Reset obtenu ! Tu peux flipper dedans"
-                                                            : "Reset obtenu : flippe dans la balle !";
+        return n < bm::kFrConvertLevel ? "Reset obtenu ! Tu peux flipper dedans" : "Reset obtenu : flippe dans la balle !";
+    const StepTracker& st = impl_->steps;
+    if (drill_.full && !st.empty()) {
+        if (st.running()) return st.currentLine();
+        return st.number(0) + st.steps().front().label;  // before GO: the first step
+    }
+    if (m == Mech::FlipReset && n < bm::kFrConvertLevel && impl_->setup.airRollHint != 0)
+        return std::string("1. Air roll à ") + (impl_->setup.airRollHint < 0 ? "gauche" : "droite") +
+               ", roues vers la balle  2. Pose les 4 roues dessus";
     return bm::drillAction(m, level, impl_->setup.flickTarget);
 }
 
@@ -421,14 +484,53 @@ void BallMechModule::handleGrade(bm::MechGrade& g, const TickContext& ctx, Actio
     if (drill_.phase == DrillPhase::Live && !drill_.resolved) {
         const Mech dm = static_cast<Mech>(drill_.mech);
         const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
+        const int n = bm::playerLevel(level);
+        StepTracker& steps = impl_->steps;
+        const float now = ctx.snap.time;
         const bool matches = bm::gradeMatchesDrill(dm, g) || (dm == Mech::PowerShot && g.family == bm::Family::Pinch);
         if (matches) {
             const int minScore = bm::drillMinScore(cfg_.successScore, level);
             bm::DrillVerdict v = bm::judgeDrill(dm, g, level, minScore, cfg_.pinchSpeed);
             if (dm == Mech::PowerShot && g.family == bm::Family::Pinch) {
                 const bool onTarget = !g.projection.valid || g.projection.onTarget;
-                v.success = g.value("exit_speed") >= 2000.f + 1200.f * level && onTarget &&
+                v.success = g.value("exit_speed") >= bm::powerShotSpeedNeeded(level) && onTarget &&
                             g.score * 100.f >= static_cast<float>(minScore);
+            }
+            // Breezi niveaux 1-2: the tornado alone, checked by the module (a flip that missed does not undo it).
+            if (dm == Mech::Breezi && n < bm::kBzTornadoLevel && !v.success && tornadoOk(impl_->parcours)) {
+                v.success = true;
+                v.extraErrors.clear();
+            }
+            if (drill_.full) {
+                // The full sequence asks a little more than the short drill where a step names it.
+                if (dm == Mech::PowerShot && g.family == bm::Family::PowerShot && g.variant != "flip_shot" && v.success) {
+                    v.success = false;
+                    v.extraErrors.insert(v.extraErrors.begin(), "PS_NO_FLIP");
+                }
+                if (dm == Mech::AirRoll && g.value("off_axis") > 90.f && v.success) {
+                    v.success = false;
+                    v.extraErrors.insert(v.extraErrors.begin(), "AE_OFF_CENTER");
+                }
+                if (steps.isComplete()) {
+                    // Done on the step checks (reset obtained, first air touch): the grade brings the measures.
+                    v.success = true;
+                    v.extraErrors.clear();
+                } else if (steps.running()) {
+                    if (v.success) {
+                        while (steps.running()) steps.complete(now);
+                    } else {
+                        const std::string crit = bm::criteriaStep(dm, n);
+                        bool criteria = !v.extraErrors.empty();
+                        for (const auto& e : v.extraErrors) criteria = criteria && isCriteriaCode(e);
+                        if (criteria && !crit.empty() && steps.indexOf(crit) > steps.currentRequired()) {
+                            while (steps.running() && steps.currentRequired() < steps.indexOf(crit)) steps.complete(now);
+                        }
+                        std::string code = !v.extraErrors.empty() ? v.extraErrors.front()
+                                                                  : (!g.errors.empty() ? g.errors.front() : std::string());
+                        steps.fail(now, code);
+                    }
+                }
+                if (!v.success && dm == Mech::Ceiling && impl_->parcours.tooFast) v.extraErrors.push_back("CEIL_TOO_FAST");
             }
             AttemptResult r = makeResult(g, drill_.mech, v.success, v.extraErrors, ctx.profile);
             drill_.lastVerdict = v.success ? std::string("Réussi ! ") + verdictLabel(r.verdict) + " " + fmt0(r.score) +
@@ -440,12 +542,19 @@ void BallMechModule::handleGrade(bm::MechGrade& g, const TickContext& ctx, Actio
             resolveDrill(v.success, ctx);
             return;
         }
+        // Full sequence: grades of other mechanics before the last step are part of the way there (a touch while
+        // climbing the wall, a pop on the way to the ball): ignored (fix 2).
+        if (drill_.full && !steps.onLastStep()) return;
         // Another mechanic resolved the attempt: it failed for the drill (main tip: wrong mechanic, then the drill's).
         const std::string what = bm::gradeTitle(g);
+        if (drill_.full) steps.fail(now, "DRILL_WRONG_MECH");
         failDrill("DRILL_WRONG_MECH", ctx, out);
         drill_.lastVerdict = std::string("Raté (") + what + ")";
         return;
     }
+    // A success found by the step checks already ended this attempt: its late grade is the same attempt.
+    if (drill_.phase == DrillPhase::Result && impl_->swallowFamily && bm::gradeMatchesDrill(static_cast<Mech>(drill_.mech), g))
+        return;
     if (g.drillOnly) return;
     const int mech = static_cast<int>(bm::mechOf(g));
     const bool success = g.success && g.score * 100.f + 1e-3f >= static_cast<float>(cfg_.successScore);
@@ -485,7 +594,10 @@ void BallMechModule::onTouch(const TouchEvent& touch, const TickContext& ctx, Ac
     m.hitLocation = touch.hitLocation;
     m.hitNormal = touch.hitNormal;
     impl_->pipeline.addTouch(m);
-    if (drill_.phase == DrillPhase::Live) drill_.activity = true;
+    if (drill_.phase == DrillPhase::Live) {
+        drill_.activity = true;
+        touchThisTick_ = true;
+    }
 }
 
 void BallMechModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, Actions& out) {
@@ -514,6 +626,7 @@ void BallMechModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, Ac
             const int64_t frame = ev.frame >= 0 ? ev.frame : ctx.snap.frame;
             impl_->pipeline.addSdkReset(frame);
             countReset(frame);
+            if (drill_.phase == DrillPhase::Live) resetThisTick_ = true;
         }
         break;
     }
@@ -525,6 +638,10 @@ void BallMechModule::onActivityStopped() {
     drill_.phase = DrillPhase::Off;
     drill_.burnStep = -1;
     impl_->pipeline.flick().setTarget("");
+    impl_->ready.stop();
+    impl_->hang.stop();
+    impl_->steps.reset();
+    gameSpeedSet_ = false;  // the engine puts the game speed back when the activity ends
 }
 
 // ---- Drills ------------------------------------------------------------------------------------------------
@@ -556,11 +673,12 @@ bool BallMechModule::startDrill(int mech, const TickContext& ctx, Actions& out) 
     drill_.mech = mech;
     drill_.attempts = attempts;
     drill_.successes = successes;
-    beginAttempt(ctx);
+    beginAttempt(ctx, ReadyKind::First);
     const float level = stairs_[static_cast<size_t>(mech)].level();
-    const std::string note = bm::drillLevelNote(static_cast<Mech>(mech), level);
-    t.text = bm::fillButtons(mi.drillHint, ctx.profile, keyStyle_) + " Niveau " + std::to_string(bm::playerLevel(level)) +
-             "/10" + (note.empty() ? "." : " : " + note + ".");
+    const bm::DrillMode mode = static_cast<bm::DrillMode>(modes_[static_cast<size_t>(mech)]);
+    const std::string note = bm::drillLevelNote(static_cast<Mech>(mech), level, mode);
+    t.text = bm::fillButtons(mi.drillHint, ctx.profile, keyStyle_) + " " + bm::modeLabel(static_cast<Mech>(mech), mode) +
+             ", niveau " + std::to_string(bm::playerLevel(level)) + "/10" + (note.empty() ? "." : " : " + note + ".");
     t.kind = ToastKind::Info;
     out.toasts.push_back(t);
     return true;
@@ -571,7 +689,11 @@ void BallMechModule::stopDrill(Actions* out, bool release) {
     drill_.phase = DrillPhase::Off;
     drill_.burnStep = -1;
     impl_->pipeline.flick().setTarget("");
+    impl_->ready.stop();
+    impl_->hang.stop();
+    impl_->steps.reset();
     if (release) releaseActivity();
+    gameSpeedSet_ = false;  // the engine restores the game speed with the activity
     if (out) {
         ToastMessage t;
         t.title = "Mécas balle";
@@ -580,14 +702,22 @@ void BallMechModule::stopDrill(Actions* out, bool release) {
     }
 }
 
-void BallMechModule::beginAttempt(const TickContext& ctx) {
+void BallMechModule::beginAttempt(const TickContext& ctx, ReadyKind kind) {
     const size_t mi = static_cast<size_t>(drill_.mech);
+    const Mech m = static_cast<Mech>(drill_.mech);
     const float level = stairs_[mi].level();
+    const int n = bm::playerLevel(level);
     rng_.reseed(mix64(static_cast<uint64_t>(ctx.snap.frame) ^ (++rngCounter_ * 0x9e3779b97f4a7c15ULL)));
     const int team = ctx.snap.car.valid ? ctx.snap.car.team : 0;
-    impl_->setup = bm::makeDrillSetup(static_cast<Mech>(drill_.mech), level, team, ctx.snap.car,
-                                      ctx.snap.ball.radius > 10.f ? ctx.snap.ball.radius : 91.25f, rng_, flickVariant_);
-    impl_->pipeline.flick().setTarget(impl_->setup.flickTarget);
+    bm::SetupOptions o;
+    o.mode = static_cast<bm::DrillMode>(modes_[mi]);
+    o.pickupNiveau = impl_->pickup.niveau();
+    o.flickVariant = flickVariant_;
+    impl_->setup = bm::makeDrillSetup(m, level, team, ctx.snap.car, ctx.snap.ball.radius > 10.f ? ctx.snap.ball.radius : 91.25f,
+                                      rng_, o);
+    const bm::DrillSetup& d = impl_->setup;
+    impl_->pipeline.flick().setTarget(d.flickTarget);
+    drill_.full = d.mode == bm::DrillMode::Full;
     drill_.phase = DrillPhase::Ready;
     drill_.phaseStart = ctx.snap.time;
     drill_.burnStep = -1;
@@ -596,22 +726,76 @@ void BallMechModule::beginAttempt(const TickContext& ctx) {
     drill_.failAt = -1.f;
     drill_.failCode.clear();
     drill_.resolved = false;
+    drill_.completeAt = -1.f;
+    drill_.flickLanded = false;
+    impl_->swallowFamily = false;
+    impl_->hang.stop();
+    // Steps of the full sequence (shown before GO: the first one is the instruction).
+    if (drill_.full) impl_->steps.setSteps(bm::parcoursSteps(m, n, d, impl_->parcours));
+    else impl_->steps.clear();
+    // Get-ready hold (fix 1): car and ball re-placed with zero velocity on every tick until GO. The first attempt
+    // waits for the throttle then counts 3, 2, 1; the next ones hold 1.5 s at niveaux 1-3, the setting above.
+    impl_->hold = HoldPose{};
+    impl_->hold.car = d.car;
+    BallPlacement held = d.ball;
+    held.vel = {};
+    held.angVel = {};
+    impl_->hold.ball = held;
+    impl_->hold.boost = d.car.boost;
+    ReadyPhase::Options ro;
+    if (kind == ReadyKind::First) {
+        ro = ReadyPhase::firstAttempt();
+        ro.nativeMessages = cfg_.drillGo;
+    } else {
+        ro = ReadyPhase::timed(bm::drillReadyTime(level, cfg_.drillReady));
+    }
+    // Ball balanced on a stopped car, or car on the ceiling: a throttle still held at GO would throw the ball off the
+    // roof (keep the car on the ceiling), so GO waits until it is let go, on every hold.
+    ro.waitThrottleRelease = throttleSpoilsStart(m, d);
+    impl_->readyNative = ro.nativeMessages;
+    impl_->readySeconds = ro.countdown;
+    impl_->ready.start(ctx.snap.time, ro);
 }
 
-void BallMechModule::applySetup(const TickContext& ctx, Actions& out, bool launch) {
-    (void)ctx;
+void BallMechModule::launch(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
     const bm::DrillSetup& d = impl_->setup;
+    const Mech m = static_cast<Mech>(drill_.mech);
+    const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
     CarPlacement c = d.car;
-    BallPlacement b = d.ball;
-    if (!launch) {
-        c.vel = {};
-        c.angVel = {};
-        b.vel = {};
-        b.angVel = {};
-        out.freezeCar = true;
+    drill_.burnStep = -1;
+    if (d.burnFlip) {
+        // The scripted double jump gives back the impulse the setup took off. A car without its flip (the previous
+        // attempt ended in the air) cannot jump: no script, and the velocity keeps the impulse.
+        if (s.car.hasFlip) drill_.burnStep = 0;
+        else c.vel += basisFromRot(c.rot).up * bm::arena::kJumpImpulse;
     }
     out.setCar = c;
-    out.setBall = b;
+    if (d.hangBall) {
+        impl_->hang.hang(d.ball.pos);
+        impl_->hang.update(s, out);
+    } else {
+        out.setBall = d.ball;
+    }
+    if (d.gameSpeed < 0.999f || gameSpeedSet_) {
+        out.setGameSpeed = d.gameSpeed;
+        gameSpeedSet_ = d.gameSpeed < 0.999f;
+    }
+    // The first attempt's countdown sent its own GO; the short holds get the native GO only (no 3, 2, 1).
+    if (cfg_.drillGo && !impl_->readyNative && impl_->readySeconds >= 0.3f) out.goMessage = true;
+    drill_.launchFrame = s.frame;
+    impl_->pipeline.ignoreUntil(s.frame + 2);
+    impl_->pipeline.resetDetectors();
+    impl_->pipeline.clearHeld();
+    if (d.doubleTapRead) impl_->pipeline.armDoubleTapRead();
+    if (d.armCeiling) impl_->pipeline.armCeiling();
+    bm::parcoursBegin(impl_->parcours, m, bm::playerLevel(level), d, s.car.valid ? s.car.team : 0, !ctx.game.isCustomMap);
+    if (drill_.full) impl_->steps.start(s.time);
+    impl_->pickup.beginAttempt();
+    touchThisTick_ = false;
+    resetThisTick_ = false;
+    drill_.phase = DrillPhase::Live;
+    drill_.phaseStart = s.time;
 }
 
 void BallMechModule::resolveDrill(bool success, const TickContext& ctx) {
@@ -625,7 +809,7 @@ void BallMechModule::resolveDrill(bool success, const TickContext& ctx) {
     drill_.phaseStart = ctx.snap.time;
 }
 
-void BallMechModule::failDrill(const char* code, const TickContext& ctx, Actions& out) {
+void BallMechModule::failDrill(const char* code, const TickContext& ctx, Actions& out, bool withPrimary) {
     const Mech dm = static_cast<Mech>(drill_.mech);
     const bm::MechInfo& mi = bm::mechInfo(dm);
     AttemptResult r;
@@ -638,8 +822,17 @@ void BallMechModule::failDrill(const char* code, const TickContext& ctx, Actions
     r.time = ctx.snap.time;
     r.metrics.push_back(bm::makeMetric("attempt_time", "Durée de l'essai", ctx.snap.time - drill_.phaseStart, "s"));
     std::vector<std::string> codes{code};
-    if (std::string(code) != primaryFailCode(dm)) codes.push_back(primaryFailCode(dm));
+    if (dm == Mech::Ceiling && impl_->parcours.tooFast) codes.push_back("CEIL_TOO_FAST");
+    if (withPrimary && std::string(code) != primaryFailCode(dm)) codes.push_back(primaryFailCode(dm));
     r.tips = bm::buildTips(codes, ctx.profile, keyStyle_);
+    // A step's own tip when the code has none in the table (never a failure without advice, fix 5).
+    if (r.tips.empty() && drill_.full && impl_->steps.failed() && !impl_->steps.failure().tip.empty()) {
+        Tip t;
+        t.code = bm::tipCode(code);
+        t.text = impl_->steps.failure().tip;
+        t.weight = 30.f;
+        r.tips.push_back(std::move(t));
+    }
     // Nothing was measured: no record value (a 0 placeholder would read as a real, if poor, value).
     r.valueForRecord = 0.f;
     r.hasRecordValue = false;
@@ -648,6 +841,183 @@ void BallMechModule::failDrill(const char* code, const TickContext& ctx, Actions
     drill_.hasResult = true;
     publish(std::move(r), drill_.mech, nullptr, ctx, out);
     resolveDrill(false, ctx);
+}
+
+bool BallMechModule::idleTimeout(const TickContext& ctx, Actions& out) {
+    if (drill_.activity) return false;
+    if (++drill_.idleTimeouts >= 3) {
+        stopDrill(&out, true);
+        ToastMessage t;
+        t.title = "Mécas balle";
+        t.text = "Exercice mis en pause : tu n'as pas joué depuis 3 essais.";
+        out.toasts.push_back(t);
+    } else {
+        beginAttempt(ctx);
+    }
+    return true;
+}
+
+void BallMechModule::stepFailed(const TickContext& ctx, Actions& out) {
+    const StepTracker::Failure& f = impl_->steps.failure();
+    if (f.timedOut && idleTimeout(ctx, out)) return;
+    if (f.group == pickup::kGroup) {
+        // A missed pickup is not an attempt of the mechanic: it only feeds the pickup's own staircase (fix 4).
+        AttemptResult r;
+        r.module = "ballmech";
+        r.skill = bm::mechInfo(drill_.mech).skill;
+        r.title = "Ramassage : raté";
+        r.success = false;
+        r.verdict = Verdict::Fail;
+        r.time = ctx.snap.time;
+        // The step's own text (it knows whether the ball was resting or rolling); the code gives the HUD line.
+        Tip t;
+        t.code = bm::tipCode(f.code);
+        t.text = f.tip.empty() ? impl_->steps.missingText() : bm::fillButtons(f.tip, ctx.profile, keyStyle_);
+        t.weight = 30.f;
+        r.tips.push_back(std::move(t));
+        drill_.lastVerdict = "Ramassage raté";
+        drill_.lastSuccess = false;
+        drill_.result = r;
+        drill_.hasResult = true;
+        drill_.resolved = true;
+        drill_.idleTimeouts = 0;
+        drill_.phase = DrillPhase::Result;
+        drill_.phaseStart = ctx.snap.time;
+        out.requestSave = true;
+        return;
+    }
+    const std::string code = f.code.empty() ? std::string(primaryFailCode(static_cast<Mech>(drill_.mech))) : f.code;
+    failDrill(code.c_str(), ctx, out, false);
+}
+
+void BallMechModule::checksSucceeded(const TickContext& ctx, Actions& out) {
+    // The steps alone prove the success (breezi tornado at niveaux 1-2), or the grade did not come in time.
+    const Mech dm = static_cast<Mech>(drill_.mech);
+    const bm::ParcoursState& st = impl_->parcours;
+    bm::MechGrade g;
+    g.family = bm::mechInfo(dm).family;
+    g.success = true;
+    g.tStart = drill_.phaseStart;
+    g.tEnd = ctx.snap.time;
+    g.drillOnly = true;
+    if (dm == Mech::Breezi) {
+        g.variant = "tornado";
+        const float airRoll = st.airTicks ? static_cast<float>(st.airRollTicks) / static_cast<float>(st.airTicks) : 0.f;
+        const float kept = st.airTicks ? static_cast<float>(st.keptTicks) / static_cast<float>(st.airTicks) : 0.f;
+        const float rollDeg = std::fabs(st.rollAccum) * kRadToDeg;
+        g.metrics.push_back(bm::makeMetric("roll_deg", "Roulis accumulé", rollDeg, "°", 360.f));
+        g.metrics.push_back(bm::makeMetric("air_roll_frac", "Air roll tenu", airRoll * 100.f, "%"));
+        g.metrics.push_back(bm::makeMetric("kept_frac", "Balle près de toi", kept * 100.f, "%", 100.f));
+        g.score = clamp01(0.5f + 0.25f * bm::score01(rollDeg, 230.f, 360.f) + 0.25f * kept);
+    } else {
+        g.variant = dm == Mech::FlipReset ? "obtained" : "steps";
+        g.score = 0.6f;
+    }
+    AttemptResult r = makeResult(g, drill_.mech, true, {}, ctx.profile);
+    if (dm == Mech::FlipReset) r.title = "Flip reset : reset obtenu";
+    else if (dm == Mech::AirDribble) r.title = "Air dribble : pop et touche en l'air";
+    drill_.lastVerdict = std::string("Réussi ! ") + verdictLabel(r.verdict) + " " + fmt0(r.score) + "/100";
+    drill_.result = r;
+    drill_.hasResult = true;
+    publish(std::move(r), drill_.mech, &g, ctx, out);
+    impl_->swallowFamily = true;
+    resolveDrill(true, ctx);
+}
+
+void BallMechModule::tornadoLanded(const TickContext& ctx, Actions& out) {
+    // Breezi (short start): a carried jump that came back down without a flick grade. Niveaux 1-2: the tornado alone
+    // is the goal; from niveau 3 the flip was missing. Never a silent timeout (fix 5).
+    const int n = bm::playerLevel(stairs_[static_cast<size_t>(drill_.mech)].level());
+    const bool ok = tornadoOk(impl_->parcours);
+    if (n < bm::kBzTornadoLevel && ok) {
+        checksSucceeded(ctx, out);
+        return;
+    }
+    failDrill(ok ? "FL_NO_CONTACT" : "FL_BREEZI_NO_SPIN", ctx, out, false);
+}
+
+void BallMechModule::fullTick(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
+    const float now = s.time;
+    const Mech dm = static_cast<Mech>(drill_.mech);
+    StepTracker& steps = impl_->steps;
+    const bm::DrillSetup& d = impl_->setup;
+    if (steps.running()) steps.update(s, &ctx);
+    // The pickup's staircase records its result (an idle player's timeout is no attempt: silent restart below).
+    const bool idleTimedOut = steps.failed() && steps.failure().timedOut && !drill_.activity;
+    if (d.pickup && !idleTimedOut && impl_->pickup.update(steps) != 0) out.requestSave = true;
+    // Hanging ball: let go at the release step (or when the car comes close); a touch frees it by itself.
+    HangingBall& hang = impl_->hang;
+    if (hang.hanging()) {
+        const bool byStep = !d.releaseStep.empty() && steps.done(d.releaseStep);
+        const bool byDist = d.releaseDist > 0.f && distance(s.car.pos, hang.position()) < d.releaseDist;
+        if ((byStep || byDist) && d.releaseApex > 0.f) {
+            // Ceiling parcours, niveaux 1-3: where the car drops depends on its heading on the wall, so the ball is
+            // relaunched from the car's real fall, right in front of its nose (one setBall: moved, then let go).
+            const BallPlacement b = bm::ceilingReleaseAim(s.car, d.releaseApex);
+            hang.hang(b.pos);
+            hang.release(b.vel);
+            // The ball jumps on the next snapshot: not a reset, the ceiling detector keeps the drop it is following.
+            impl_->pipeline.allowBallMoveUntil(s.frame + 4);
+        } else if (byStep || byDist) {
+            hang.release(d.releaseVel);
+        }
+    }
+    hang.update(s, out, impl_->parcours.touch);
+
+    if (steps.failed()) {
+        stepFailed(ctx, out);
+        return;
+    }
+    if (steps.isComplete()) {
+        if (bm::onChecksComplete(dm) == bm::CompleteAction::Resolve) {
+            checksSucceeded(ctx, out);
+            return;
+        }
+        if (drill_.completeAt < 0.f) drill_.completeAt = now;
+        if (now - drill_.completeAt > kAwaitGrade) checksSucceeded(ctx, out);
+        return;  // waiting for the grade: no generic check can fail a done sequence
+    }
+
+    // Generic checks, on only from the step that needs them (fix 2).
+    const int world = impl_->parcours.worldWheels;
+    const bool landOn = bm::landingCheckOn(dm, steps);
+    const bool lostOn = bm::ballLostCheckOn(dm, steps);
+    if (!landOn) drill_.airborneSeen = false;
+    else if (world == 0) drill_.airborneSeen = true;
+    if (drill_.failAt < 0.f) {
+        if (landOn && drill_.airborneSeen && world >= 3 && s.car.pos.z < 300.f) {
+            drill_.failAt = now + kLandGrace;
+            drill_.failCode = bm::landingCode(dm);
+        } else if (landOn && dm == Mech::AirDribble && s.ball.pos.z <= 110.f) {
+            drill_.failAt = now + kLandGrace;
+            drill_.failCode = "AD_SHORT";
+        } else if (lostOn && s.ball.pos.z < s.ball.radius + 40.f && distance(s.car.pos, s.ball.pos) > 300.f) {
+            drill_.failAt = now + kLandGrace;
+            drill_.failCode = "DRILL_BALL_LOST";
+        }
+    }
+    if (drill_.failAt >= 0.f) {
+        const bool recovered = (drill_.failCode != "DRILL_BALL_LOST" && world == 0 && s.car.pos.z > 50.f &&
+                                (dm != Mech::AirDribble || s.ball.pos.z > 110.f)) ||
+                               (drill_.failCode == "DRILL_BALL_LOST" && distance(s.car.pos, s.ball.pos) <= 300.f);
+        if (recovered) {
+            drill_.failAt = -1.f;
+            drill_.failCode.clear();
+        } else if (now >= drill_.failAt) {
+            const std::string code = drill_.failCode;
+            steps.fail(now, code);
+            failDrill(code.c_str(), ctx, out, false);
+            return;
+        }
+    }
+    // Safety net: the sum of the step limits (a step without a limit waits for its grade).
+    float total = 3.f;
+    for (const Step& st : steps.steps()) total += st.timeout;
+    if (now - drill_.phaseStart > total) {
+        steps.failOnTimeout(now);
+        stepFailed(ctx, out);
+    }
 }
 
 void BallMechModule::drillTick(const TickContext& ctx, Actions& out) {
@@ -662,36 +1032,49 @@ void BallMechModule::drillTick(const TickContext& ctx, Actions& out) {
     if (now < drill_.phaseStart - 0.5f) drill_.phaseStart = now;  // game time went backwards (map reload)
     switch (drill_.phase) {
     case DrillPhase::Ready:
-        if (now - drill_.phaseStart >= cfg_.drillReady) {
-            applySetup(ctx, out, true);
-            if (cfg_.drillGo && cfg_.drillReady >= 0.3f) out.goMessage = true;
-            drill_.launchFrame = s.frame;
-            impl_->pipeline.ignoreUntil(s.frame + 2);
-            impl_->pipeline.resetDetectors();
-            impl_->pipeline.clearHeld();
-            if (impl_->setup.doubleTapRead) impl_->pipeline.armDoubleTapRead();
-            drill_.burnStep = impl_->setup.burnFlip ? 0 : -1;
-            drill_.phase = DrillPhase::Live;
-            drill_.phaseStart = now;
-        } else {
-            applySetup(ctx, out, false);
+        if (gameSpeedSet_ && impl_->setup.gameSpeed > 0.999f) {  // next attempt not slowed: normal speed already for its hold
+            out.setGameSpeed = 1.f;
+            gameSpeedSet_ = false;
         }
+        // GO tick: launch without holding (the hold's freeze would swallow the inputs the player already gives).
+        if (impl_->ready.update(s, out)) launch(ctx, out);
+        else applyHold(impl_->hold, &s, out);
         break;
     case DrillPhase::Live: {
         if (drill_.burnStep >= 0) {
-            // Scripted double jump right after the launch: the car starts without its flip (flip reset drill).
+            // Scripted double jump right after the launch: the car starts without its flip (flip reset drill). If the
+            // flip is still there 6 ticks later (the first press was lost), press once more.
             Inputs in;
-            in.jump = drill_.burnStep == 1 || drill_.burnStep == 2;
-            out.overrideInputs = in;
-            if (++drill_.burnStep > 3) drill_.burnStep = -1;
-        } else if (s.in.jump || s.in.boost || std::fabs(s.in.throttle) > 0.1f || bm::stickMagnitude(s.in) > 0.3f) {
+            const int k = drill_.burnStep;
+            if (k == 6 && !s.car.hasFlip) {
+                drill_.burnStep = -1;
+            } else {
+                in.jump = k == 1 || k == 2 || k == 6 || k == 7;
+                out.overrideInputs = in;
+                if (++drill_.burnStep > 8) drill_.burnStep = -1;
+            }
+        }
+        if (drill_.burnStep < 0 &&
+            (s.in.jump || s.in.boost || std::fabs(s.in.throttle) > 0.1f || bm::stickMagnitude(s.in) > 0.3f)) {
             drill_.activity = true;
         }
-        const int world = bm::worldWheelContacts(s);
+        const Mech dm = static_cast<Mech>(drill_.mech);
+        bm::parcoursTick(impl_->parcours, s, touchThisTick_, resetThisTick_);
+        touchThisTick_ = false;
+        resetThisTick_ = false;
+        if (drill_.full) {
+            if (!drill_.resolved) fullTick(ctx, out);
+            break;
+        }
+        const int world = impl_->parcours.worldWheels;
         if (world == 0 && s.frame > drill_.launchFrame + 3) drill_.airborneSeen = true;
         const bm::MechInfo& mi = bm::mechInfo(drill_.mech);
+        if (!drill_.resolved && dm == Mech::Breezi && impl_->parcours.landedAfterJump && !drill_.flickLanded) {
+            drill_.flickLanded = true;
+            tornadoLanded(ctx, out);
+            break;
+        }
         if (!drill_.resolved && drill_.failAt < 0.f) {
-            const Mech dm = static_cast<Mech>(drill_.mech);
             const bool flickFamily = dm == Mech::Flick || dm == Mech::Musty || dm == Mech::Breezi;
             if (mi.airborneDrill && drill_.airborneSeen && world >= 3 && s.car.pos.z < 300.f) {
                 drill_.failAt = now + kLandGrace;
@@ -701,17 +1084,7 @@ void BallMechModule::drillTick(const TickContext& ctx, Actions& out) {
                 drill_.failAt = now + kLandGrace;
                 drill_.failCode = "DRILL_BALL_LOST";
             } else if (now - drill_.phaseStart > drillTimeout()) {
-                if (drill_.activity) {
-                    failDrill("DRILL_TIMEOUT", ctx, out);
-                } else if (++drill_.idleTimeouts >= 3) {
-                    stopDrill(&out, true);
-                    ToastMessage t;
-                    t.title = "Mécas balle";
-                    t.text = "Exercice mis en pause : tu n'as pas joué depuis 3 essais.";
-                    out.toasts.push_back(t);
-                } else {
-                    beginAttempt(ctx);
-                }
+                if (!idleTimeout(ctx, out)) failDrill("DRILL_TIMEOUT", ctx, out);
                 break;
             }
         }
@@ -754,16 +1127,37 @@ void BallMechModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
                   ToastKind::Warning);
             return;
         }
-        if (m == Mech::Flick && cmd.args.size() >= 2) {
-            const std::string v = cmd.args[1] == "any" || cmd.args[1] == "tous" ? "" : cmd.args[1];
-            if (flickVariantValid(v)) flickVariant_ = v;
+        for (size_t i = 1; i < cmd.args.size(); ++i) {
+            bm::DrillMode mode;
+            if (bm::modeFromId(cmd.args[i], mode)) {
+                modes_[static_cast<size_t>(m)] = static_cast<int>(mode);
+                modeChosen_[static_cast<size_t>(m)] = true;
+                out.requestSave = true;
+            } else if (m == Mech::Flick) {
+                const std::string v = cmd.args[i] == "any" || cmd.args[i] == "tous" ? "" : cmd.args[i];
+                if (flickVariantValid(v)) flickVariant_ = v;
+            }
         }
         startDrill(static_cast<int>(m), ctx, out);
     } else if (n == "stop") {
         if (drill_.phase == DrillPhase::Off) return;
         stopDrill(&out, true);
     } else if (n == "next" || n == "restart") {
-        if (drill_.phase != DrillPhase::Off) beginAttempt(ctx);
+        // Posted from the menu: wait for the throttle like a first attempt, the player is not in the car yet.
+        if (drill_.phase != DrillPhase::Off) beginAttempt(ctx, ReadyKind::First);
+    } else if (n == "mode" && cmd.args.size() >= 2) {
+        Mech m;
+        bm::DrillMode mode;
+        if (!bm::mechFromId(cmd.args[0], m) || !bm::modeFromId(cmd.args[1], mode)) {
+            toast("Usage : mode <méca> <court|parcours>", ToastKind::Warning);
+            return;
+        }
+        modes_[static_cast<size_t>(m)] = static_cast<int>(mode);
+        modeChosen_[static_cast<size_t>(m)] = true;
+        out.requestSave = true;
+        // The running drill of that mechanic switches at its next attempt.
+        if (drill_.phase != DrillPhase::Off && drill_.mech == static_cast<int>(m) && drill_.phase != DrillPhase::Live)
+            beginAttempt(ctx, ReadyKind::First);  // posted from the menu: wait for the throttle
     } else if (n == "level" && cmd.args.size() >= 2) {
         Mech m;
         char* end = nullptr;
@@ -791,6 +1185,7 @@ void BallMechModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
         impl_->stats.clear();
         for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, kStairStep, kStairStart);
         levelChosen_.fill(false);
+        impl_->pickup.reset();
         drill_.attempts = drill_.successes = 0;
         hasLast_ = false;
         lastHasPath_ = false;
@@ -854,35 +1249,96 @@ void BallMechModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
         if (panelHasContent(p, compact)) out.panel(std::move(p));
     }
 
-    // ---- Drill panel (top-left exercise zone): last result, its main tip, then what to do now.
+    // ---- Drill panel (top-left exercise zone): last result, its main tip, then what to do now. During a full
+    // sequence the steps replace the action line (validated steps turn green, the current one is highlighted) and
+    // the previous result becomes detail lines, so the compact HUD keeps at most 3 main lines.
     if (drill_.phase != DrillPhase::Off) {
         const bm::MechInfo& mi = bm::mechInfo(drill_.mech);
+        const Mech dm = static_cast<Mech>(drill_.mech);
         const float level = stairs_[static_cast<size_t>(drill_.mech)].level();
+        const StepTracker& steps = impl_->steps;
+        const bm::ParcoursState& ps = impl_->parcours;
         DrawPanel d;
         d.pos = {clamp01(cfg_.drillHudX) * W, clamp01(cfg_.drillHudY) * H};
         d.title = std::string("Exercice : ") + mi.title + " (" + levelText(level) + ")";
         d.scale = scale;
         d.minWidth = 260.f * scale;
-        if (drill_.attempts > 0 && !drill_.lastVerdict.empty()) {
-            d.lines.push_back(hudLine(drill_.lastVerdict + "   (" + std::to_string(drill_.successes) + "/" +
-                                          std::to_string(drill_.attempts) + " réussis)",
-                                      drill_.lastSuccess ? kGreen : Color{255, 100, 70, 255}));
-            if (cfg_.hudTip) {
-                if (const Tip* t = drillTip()) d.lines.push_back(hudLine(bm::hudTipText(*t), kTipColor));
-                else if (drill_.lastSuccess) d.lines.push_back(hudLine(kWellDone, kGreen));
+        const bool liveSteps = drill_.full && drill_.phase == DrillPhase::Live && !steps.idle();
+        const bool resultSteps = drill_.full && drill_.phase == DrillPhase::Result && steps.finished();
+        // Gauges of the live attempt: wheels toward the ball (flip reset), nose down (musty).
+        PanelLine gauge;
+        bool hasGauge = false;
+        if (drill_.phase == DrillPhase::Live && !drill_.resolved && ctx.hasSnapshot && ctx.snap.car.valid && ctx.snap.ball.valid) {
+            const Snapshot& sn = ctx.snap;
+            if (dm == Mech::FlipReset && !resetAvailable_ && distance(sn.car.pos, sn.ball.pos) < 1200.f && ps.worldWheels == 0) {
+                const float a = bm::undersideAlignment(sn.car, sn.ball);
+                gauge = hudLine("Roues vers la balle", a > 0.8f ? kGreen : Color{255, 110, 70, 255});
+                gauge.bar = clamp01((a + 1.f) * 0.5f);
+                gauge.barColor = gauge.color;
+                hasGauge = true;
+            } else if (dm == Mech::Musty && ps.airPhase) {
+                const float pitch = std::asin(clampf(sn.car.basis.fwd.z, -1.f, 1.f)) * kRadToDeg;
+                gauge = hudLine("Nez vers le bas", pitch <= -35.f ? kGreen : Color{255, 110, 70, 255});
+                gauge.bar = clamp01(-pitch / 60.f);
+                gauge.barColor = gauge.color;
+                hasGauge = true;
             }
         }
-        PanelLine act = hudLine(drillActionNow(), colors::White);
-        if (drill_.phase == DrillPhase::Ready) {
-            act.bar = cfg_.drillReady > 0.f ? clamp01((now - drill_.phaseStart) / cfg_.drillReady) : 1.f;
-            act.barColor = {255, 220, 120, 255};
-        } else if (drill_.phase == DrillPhase::Live) {
-            const float left = std::max(0.f, drillTimeout() - (now - drill_.phaseStart));
-            act.text += "   " + fmt0(std::ceil(left)) + " s";
-            act.bar = clamp01(left / std::max(0.1f, drillTimeout()));
-            act.barColor = {90, 170, 255, 255};
+        const bool demoteResult = drill_.phase == DrillPhase::Live && (liveSteps || hasGauge);
+        if (drill_.hasResult && !drill_.lastVerdict.empty() && (drill_.attempts > 0 || drill_.full)) {
+            const std::string counts = drill_.attempts > 0 ? "   (" + std::to_string(drill_.successes) + "/" +
+                                                                 std::to_string(drill_.attempts) + " réussis)"
+                                                           : std::string();
+            d.lines.push_back(hudLine(drill_.lastVerdict + counts, drill_.lastSuccess ? kGreen : Color{255, 100, 70, 255},
+                                      demoteResult, demoteResult ? 0.9f : 1.f));
+            if (cfg_.hudTip) {
+                if (const Tip* t = drillTip()) d.lines.push_back(hudLine(bm::hudTipText(*t), kTipColor, demoteResult, demoteResult ? 0.9f : 1.f));
+                else if (drill_.lastSuccess) d.lines.push_back(hudLine(kWellDone, kGreen, demoteResult, demoteResult ? 0.9f : 1.f));
+            }
         }
-        d.lines.push_back(act);
+        if (liveSteps || resultSteps) {
+            StepHudStyle style;
+            style.flashSeconds = resultSteps ? 0.f : 1.f;
+            std::vector<PanelLine> lines;
+            appendStepLines(lines, steps, now, style);
+            // Time left on the step to do now.
+            const int req = steps.currentRequired();
+            if (liveSteps && req < steps.size()) {
+                const float left = steps.timeLeft(now);
+                const std::string prefix = steps.number(req);
+                for (auto& l : lines)
+                    if (!l.detail && l.text.rfind(prefix, 0) == 0 && left < 1e8f)
+                        l.text += "   " + fmt0(std::ceil(std::max(0.f, left))) + " s";
+            }
+            for (auto& l : lines) d.lines.push_back(std::move(l));
+        } else {
+            PanelLine act = hudLine(drillActionNow(), drill_.full ? kStepAccent : colors::White);
+            if (drill_.phase == DrillPhase::Ready) {
+                const ReadyPhase& rp = impl_->ready;
+                if (rp.counting()) {
+                    const float total = std::max(0.1f, impl_->readySeconds);
+                    act.bar = clamp01(1.f - rp.remaining(now) / total);
+                    act.barColor = {255, 220, 120, 255};
+                }
+            } else if (drill_.phase == DrillPhase::Live) {
+                const float left = std::max(0.f, drillTimeout() - (now - drill_.phaseStart));
+                act.text += "   " + fmt0(std::ceil(left)) + " s";
+                act.bar = clamp01(left / std::max(0.1f, drillTimeout()));
+                act.barColor = {90, 170, 255, 255};
+            }
+            d.lines.push_back(act);
+            // First attempt: wait for the throttle, then "Départ dans 3" (the later holds are short: the bar only).
+            // A start where the throttle spoils everything (ball balanced on a stopped car, car on the ceiling) says
+            // to let go of it during the countdown, and on every hold GO waits for that (line shown then too).
+            const bool releaseWait = impl_->ready.waitingRelease(now);  // "Lâche l'accélérateur pour partir"
+            if (drill_.phase == DrillPhase::Ready && (impl_->ready.waiting() || impl_->readyNative || releaseWait)) {
+                std::string line = impl_->ready.hudLine(now);
+                if (impl_->ready.counting() && !releaseWait && throttleSpoilsStart(dm, impl_->setup))
+                    line += " : lâche l'accélérateur";
+                d.lines.push_back(hudLine(line, kStepAccent));
+            }
+        }
+        if (hasGauge) d.lines.push_back(gauge);
         // Details (full HUD only): situation, counters, the last attempt's measures, how to stop.
         d.lines.push_back(hudLine("Situation : " + impl_->setup.label, {220, 220, 220, 255}, true, 0.9f));
         const float rate = drill_.attempts > 0 ? static_cast<float>(drill_.successes) / static_cast<float>(drill_.attempts) : 0.f;
@@ -896,6 +1352,15 @@ void BallMechModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
         }
         d.lines.push_back(hudLine("Arrêter : rlt ballmech stop", {220, 220, 220, 255}, true, 0.9f));
         out.panel(std::move(d));
+
+        // 3D guide of the first levels (ceiling start): the ball's path to the meeting point and a ring there.
+        const bm::DrillSetup& su = impl_->setup;
+        if (!drill_.resolved && (drill_.phase == DrillPhase::Ready || drill_.phase == DrillPhase::Live) && su.hasMeet) {
+            const Color gc{120, 200, 255, 200};
+            for (int i = 0; i + 1 < su.guideCount; ++i)
+                out.line3D(su.guide[static_cast<size_t>(i)], su.guide[static_cast<size_t>(i + 1)], gc, 2.f, occ);
+            out.circle3D(su.meetPoint, {0.f, 0.f, 1.f}, 120.f, {255, 199, 64, 220}, 3.f, 24, occ);
+        }
     }
 
     // ---- 3D: flip reset ring and last shot path (bounded: <= 24 + 24 segments)
@@ -948,6 +1413,9 @@ BallMechModule::UiState BallMechModule::uiState() const {
         v.difficulty = bm::difficultyLabel(mi.difficulty);
         v.order = order[static_cast<size_t>(i)];
         v.progression = bm::drillProgression(static_cast<Mech>(i));
+        v.mode = modes_[static_cast<size_t>(i)];
+        v.modeShort = bm::modeLabel(static_cast<Mech>(i), bm::DrillMode::Short);
+        v.modeFull = bm::modeLabel(static_cast<Mech>(i), bm::DrillMode::Full);
         v.attempts = ms.attempts;
         v.successes = ms.successes;
         v.sessionAttempts = ms.sessionAttempts;
@@ -979,7 +1447,28 @@ BallMechModule::UiState BallMechModule::uiState() const {
         d.timeLeft = drill_.phase == DrillPhase::Live ? std::max(0.f, drillTimeout() - (lastTickTime_ - drill_.phaseStart)) : 0.f;
         d.lastVerdict = drill_.lastVerdict;
         d.lastSuccess = drill_.lastSuccess;
+        d.full = drill_.full;
+        d.modeLabel = bm::modeLabel(static_cast<Mech>(drill_.mech), static_cast<bm::DrillMode>(modes_[static_cast<size_t>(drill_.mech)]));
+        d.waitingThrottle = drill_.phase == DrillPhase::Ready && impl_->ready.waiting();
+        const StepTracker& st = impl_->steps;
+        if (drill_.full && !st.empty()) {
+            for (int i = 0; i < st.size(); ++i) {
+                std::string line = st.number(i) + st.steps()[static_cast<size_t>(i)].label;
+                const StepState ss = st.state(i);
+                if (ss == StepState::Done) line += " : OK";
+                else if (ss == StepState::Failed) line += " : raté";
+                d.steps.push_back(std::move(line));
+            }
+            d.currentStep = st.running() ? st.current() : -1;
+            if (st.failed()) d.missing = st.missingText();
+            if (drill_.phase == DrillPhase::Live && st.running()) {
+                const float left = st.timeLeft(lastTickTime_);
+                d.timeLeft = left < 1e8f ? std::max(0.f, left) : 0.f;
+            }
+        }
+        if (drill_.phase == DrillPhase::Ready) d.timeLeft = 0.f;
     }
+    u.pickupLevel = impl_->pickup.niveau();
     return u;
 }
 
@@ -992,6 +1481,11 @@ void BallMechModule::save(Store& store) const {
         store.setInt(key + ".chosen", levelChosen_[static_cast<size_t>(i)] ? 1 : 0);
     }
     store.setString("ballmech.flick_variant", flickVariant_);
+    for (int i = 0; i < bm::kMechCount; ++i) {
+        if (!modeChosen_[static_cast<size_t>(i)]) continue;
+        store.setInt(std::string("ballmech.mode.") + bm::mechInfo(i).id, modes_[static_cast<size_t>(i)]);
+    }
+    impl_->pickup.save(store, "ballmech.pickup");
 }
 
 void BallMechModule::load(const Store& store) {
@@ -1006,6 +1500,14 @@ void BallMechModule::load(const Store& store) {
     }
     const std::string v = store.getString("ballmech.flick_variant", "");
     flickVariant_ = flickVariantValid(v) ? v : "";
+    for (int i = 0; i < bm::kMechCount; ++i) {
+        const std::string key = std::string("ballmech.mode.") + bm::mechInfo(i).id;
+        const int mode = static_cast<int>(store.getInt(key, -1));
+        modeChosen_[static_cast<size_t>(i)] = mode == 0 || mode == 1;
+        modes_[static_cast<size_t>(i)] = modeChosen_[static_cast<size_t>(i)] ? mode : static_cast<int>(bm::defaultMode(static_cast<Mech>(i)));
+    }
+    impl_->pickup.reset();
+    if (store.getInt("ballmech.pickup.attempts", 0) > 0) impl_->pickup.load(store, "ballmech.pickup");
 }
 
 } // namespace rlt

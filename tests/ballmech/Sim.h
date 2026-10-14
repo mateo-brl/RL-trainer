@@ -315,6 +315,27 @@ struct Harness {
         }
     }
 
+    // One tick with the given throttle (the rest of the last snapshot kept, as idle()).
+    void throttleTick(float throttle) {
+        SimTick t;
+        t.s = latest;
+        t.s.frame += 1;
+        t.s.time = static_cast<float>(t.s.frame) / kTickRate;
+        t.s.car.pos += t.s.car.vel * DT;
+        t.s.ball.pos += t.s.ball.vel * DT;
+        t.s.in = Inputs{};
+        t.s.in.throttle = throttle;
+        tick(t);
+    }
+
+    // The get-ready phase until GO: the first attempt waits for a throttle press (released, then pressed), then
+    // counts down; later attempts only count down. Stops on the GO tick (the drill is live).
+    void skipReady(int maxTicks = 1200) {
+        throttleTick(0.f);
+        throttleTick(1.f);
+        for (int i = 0; i < maxTicks && mod.drillActive() && mod.uiState().drill.phase != "À toi !"; ++i) idle(1);
+    }
+
     void event(GameEventKind kind, const std::string& detail = "", int64_t frame = -1) {
         GameEvent ev;
         ev.kind = kind;

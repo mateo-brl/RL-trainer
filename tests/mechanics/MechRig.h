@@ -85,7 +85,8 @@ struct OtherModule : Module {
 };
 
 // Drives the module like the engine does: tick context, routing filter on world control (checked after the
-// callback, as Engine::route does), placements applied to the MiniSim, touches near the ball.
+// callback, as Engine::route does), placements applied to the MiniSim, a simple ball (gravity, floor bounce, pushed
+// on a touch) and touches resolved with the car hitbox (OBB, the player's hitbox from the profile).
 struct Rig {
     SettingsSchema schema;
     Settings settings;
@@ -101,7 +102,13 @@ struct Rig {
     bool frozen = false;
     bool ballAtCentre = false;   // the drill ball (game axes, centre spot) for touches
     Vec3 ballGame{1e5f, 1e5f, 92.75f};
+    Vec3 ballVel;                // game axes
+    bool ballPhysics = true;     // gravity and floor bounce between placements
     bool touched = false;
+    int touchFrame = -1;         // CarState::lastBallTouchFrame of the next snapshots
+    float touchTime = -1.f;      // game time of the first touch since the last ball placement
+    float touchBallZ = 0.f;
+    float closestGap = 1e9f;     // closest hitbox to ball surface distance since the last ball placement
     Actions raw, routed;
     std::vector<AttemptResult> results;
     std::vector<ToastMessage> toasts;
@@ -169,14 +176,30 @@ struct Rig {
         profile = p;
         mod.onProfileChanged(profile);
     }
+    // Distance between the car hitbox and the ball surface in the last snapshot (negative: overlapping).
+    float hitboxGapNow() const {
+        return mech::hitboxGap(last.car, ballGame, profile.hitboxExtent * 0.5f, profile.hitboxOffset);
+    }
+    void stepBall() {
+        if (!ballPhysics) return;
+        ballVel.z += k::kGravityZ * k::kDt;
+        ballGame += ballVel * k::kDt;
+        if (ballGame.z < 92.75f) {
+            ballGame.z = 92.75f;
+            ballVel.z = ballVel.z < -60.f ? -ballVel.z * 0.6f : 0.f;
+        }
+    }
     Actions tick(const Inputs& playerIn, bool paused = false) {
         sim.tick(frozen ? Inputs{} : playerIn);
         if (frozen) {
             sim.vel = {};
             sim.w = {};
         }
+        if (!paused) stepBall();
         last = sim.snap(frame++, playerIn);
         last.ball.pos = ballGame;
+        last.ball.vel = ballVel;
+        last.car.lastBallTouchFrame = touchFrame;
         last.paused = paused;
         history.push(last);
         hasSnap = true;
@@ -188,21 +211,80 @@ struct Rig {
         if (routed.setCar) sim.place(*routed.setCar);
         if (routed.setBall) {
             ballGame = routed.setBall->pos;
+            ballVel = routed.setBall->vel;
             touched = false;
+            touchTime = -1.f;
+            closestGap = 1e9f;
         }
         // The snapshot predates a placement routed this tick: no touch test against the old car position.
-        if (!routed.setCar && !touched && length(last.car.pos - ballGame) < 200.f) {
-            touched = true;
-            TouchEvent t;
-            t.frame = last.frame;
-            t.pre = last;
-            t.post1 = last;
-            t.post = last;
-            Actions ta;
-            mod.onTouch(t, ctx(), ta);
-            route(ta);
+        if (!routed.setCar) {
+            const float gap = hitboxGapNow();
+            closestGap = std::min(closestGap, gap);
+            if (!touched && gap <= 0.f) {
+                touched = true;
+                touchFrame = static_cast<int>(last.frame);
+                if (touchTime < 0.f) {
+                    touchTime = last.time;
+                    touchBallZ = ballGame.z;
+                }
+                // The ball leaves with the car's speed plus a push away from the car.
+                ballVel = last.car.vel * 1.1f + normalize(ballGame - last.car.pos) * 400.f;
+                TouchEvent t;
+                t.frame = last.frame;
+                t.pre = last;
+                t.post1 = last;
+                t.post = last;
+                Actions ta;
+                mod.onTouch(t, ctx(), ta);
+                route(ta);
+            }
         }
         return routed;
+    }
+    // Feeds a hand-made snapshot (kinematic sequences the MiniSim cannot make: walls, suspension bounce) instead of
+    // the simulated car. Frame and time follow the rig's clock.
+    Actions feed(Snapshot s) {
+        s.frame = frame++;
+        s.time = static_cast<float>(s.frame) / 120.f;
+        s.car.valid = true;
+        s.ball.valid = true;
+        s.ball.pos = ballGame;
+        last = s;
+        history.push(last);
+        hasSnap = true;
+        Actions a;
+        mod.onTick(ctx(), a);
+        raw = a;
+        routed = route(a);
+        return routed;
+    }
+    // Starts the drill of `id` (optionally at a saved `level`, or its "parcours complet") and plays the get-ready
+    // phase like a player: throttle released once, then pressed (with `hold`, e.g. boost for a kickoff) until GO.
+    // Returns true when the attempt runs.
+    bool startDrill(const std::string& id, float level = -1.f, bool full = false, Inputs hold = Inputs{}) {
+        if (level >= 0.f) {
+            Store st;
+            const std::string key = std::string(full ? "mechanics.full." : "mechanics.level.") + id;
+            st.setFloat(key + ".level", level);
+            st.setInt(key + ".attempts", 1);  // a played level
+            mod.load(st);
+        }
+        std::vector<std::string> args{id};
+        if (full) args.push_back("full");
+        command("drill", args);
+        return waitGo(hold);
+    }
+    // Plays a get-ready phase (first attempt or later) until GO; the throttle starts it when the drill waits for it.
+    bool waitGo(Inputs hold = Inputs{}) {
+        hold.throttle = 0.f;
+        tick(hold);  // placement
+        tick(hold);  // throttle seen released
+        hold.throttle = 1.f;
+        for (int i = 0; i < 6 * 120; ++i) {
+            if (mod.status().phase == "Essai en cours") return true;
+            tick(hold);
+        }
+        return mod.status().phase == "Essai en cours";
     }
     void run(int n, const Script& s) {
         for (int i = 0; i < n; ++i) tick(s(i, sim));
@@ -273,7 +355,8 @@ inline Script groundWavedash(int startTick = 10) {
     };
 }
 
-// Dash at the landing of a drop (wavedash drill): no first jump, tilt then dodge near the floor.
+// Dash at the landing of a drop (wavedash drill): no first jump, tilt then dodge near the floor (the rear wheels
+// less than 6 uu above it on the next tick, whatever the fall speed).
 inline Script dropWavedash() {
     auto S = std::make_shared<WdS>();
     return [=](int, MiniSim& c) {
@@ -281,7 +364,7 @@ inline Script dropWavedash() {
         in.throttle = 1.f;
         if (S->phase == 0 && c.wheelCount() == 0) {
             in.pitch = pitchToNose(c, 20.f);
-            if (c.vel.z < 0.f && c.rearWheelZ() < 6.f) {
+            if (c.vel.z < 0.f && c.rearWheelZ() + c.vel.z * k::kDt < 6.f) {
                 S->phase = 1;
                 S->dodgeT = 0;
             }
@@ -290,6 +373,40 @@ inline Script dropWavedash() {
             in.jump = true;
             in.pitch = -1.f;
             S->dodgeT++;
+        }
+        return in;
+    };
+}
+
+// Fast aerial toward the rig's ball: `reaction` ticks after the start, jump held `hold` ticks with boost and the stick
+// pulled, double jump `gap` ticks after the release, then boost and aim at where the ball will be (lead).
+inline Script fastAerialAt(const Rig* rig, int reaction, int hold, int gap) {
+    return [=](int t, MiniSim& c) {
+        Inputs in;
+        in.throttle = 1.f;
+        const int J = reaction, DJ = J + hold + gap;
+        in.boost = t >= J;
+        if (t >= J && t < J + hold) {
+            in.jump = true;
+            in.pitch = 1.f;
+        }
+        if (t >= J + hold && t < DJ) in.pitch = 1.f;
+        if (t >= DJ && t < DJ + 2) in.jump = true;
+        if (t >= DJ + 2) {
+            const Vec3 ball = mirrorY(rig->ballGame), bv = mirrorY(rig->ballVel);
+            float tau = 0.3f;
+            Vec3 q = ball;
+            for (int k = 0; k < 3; ++k) {
+                q = ball + bv * tau;
+                q.z += 0.5f * k::kGravityZ * tau * tau;
+                tau = length(q - c.pos) / 1400.f;
+            }
+            const Vec3 to = normalize(q - c.pos);
+            const Vec3 e = cross(c.fwd(), to) + cross(c.up(), Vec3{0.f, 0.f, 1.f}) * 0.2f;
+            const Vec3 acc = e * 16.f - c.w * 4.5f;
+            in.pitch = clampf(dot(acc, c.right()) / 12.46f, -1.f, 1.f);
+            in.yaw = clampf(dot(acc, -c.up()) / 9.11f, -1.f, 1.f);
+            in.roll = clampf(dot(acc, c.fwd()) / 38.34f, -1.f, 1.f);
         }
         return in;
     };

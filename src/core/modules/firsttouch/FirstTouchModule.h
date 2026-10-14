@@ -9,11 +9,15 @@
 #include <vector>
 
 #include "core/common/Adaptive.h"
+#include "core/common/HangingBall.h"
+#include "core/common/Hold.h"
 #include "core/common/Module.h"
 #include "core/common/Rng.h"
+#include "core/common/Steps.h"
 #include "core/modules/firsttouch/FirstTouchAnalysis.h"
 #include "core/modules/firsttouch/FirstTouchConfig.h"
 #include "core/modules/firsttouch/FirstTouchDrills.h"
+#include "core/modules/firsttouch/FirstTouchFull.h"
 #include "core/modules/firsttouch/FirstTouchStats.h"
 
 namespace rlt {
@@ -69,10 +73,13 @@ public:
         std::vector<Tip> tips;
     };
 
-    enum class DrillPhase : int { Idle = 0, Place = 1, WaitTouch = 2, Evaluate = 3, Pause = 4 };
+    // Ready: car and ball held still before the release (get-ready hold, fix 1); the first ball of a drill waits for
+    // the throttle, then counts down.
+    enum class DrillPhase : int { Idle = 0, Place = 1, WaitTouch = 2, Evaluate = 3, Pause = 4, Ready = 5 };
 
     struct DrillView {
         bool active = false;
+        bool full = false;                           // "parcours complet"
         ft::DrillType type = ft::DrillType::Mix;     // requested drill
         ft::DrillType current = ft::DrillType::RollIn;  // concrete drill of the current rep
         DrillPhase phase = DrillPhase::Idle;
@@ -85,6 +92,11 @@ public:
         std::string lastOutcome;     // verdict of the last rep ("Réussi ! 72/100", "Temps écoulé.")
         std::string lastTip;         // the one tip of the last failed rep, in words ("" after a success)
         bool lastSuccess = false;
+        std::string readyLine;       // "Appuie sur accélérer quand tu es prêt" / "Départ dans 2" ("" when not holding)
+        std::string nextBall;        // Mix: name of the next ball
+        std::vector<std::string> steps;  // parcours complet: the step lines ("2/4 Ralentis : OK")
+        int matchBall = 0, matchPassed = 0;  // séquence de match: balls played / passed in the current sequence
+        bool waitingWall = false;    // Chute du mur without car reset: no side wall close enough yet
     };
 
     struct DrillLevelView {
@@ -93,6 +105,9 @@ public:
         int attempts = 0, successes = 0;  // all-time (staircase)
         float recentRate = 0.f;
         int sessionReps = 0, sessionSuccesses = 0;
+        bool mixUnlocked = false;    // the drill is in the Mix pool
+        float fullLevel = 0.f;       // parcours complet (0..1)
+        int fullAttempts = 0, fullSuccesses = 0;
     };
 
     struct DribbleView {
@@ -140,15 +155,18 @@ private:
 
     struct Drill {
         bool active = false;
+        bool full = false;                 // parcours complet
         ft::DrillType type = ft::DrillType::Mix;
         ft::DrillType current = ft::DrillType::RollIn;
         DrillPhase phase = DrillPhase::Idle;
         bool havePose = false;
-        ft::DrillPose pose;
+        ft::DrillPose pose;                // where the player started the drill
+        ft::DrillPose repPose;             // pose of the current rep (anchored, or placed by the drill)
         Rng rng{0x853c49e6748fea9bULL};
         int64_t placeFrame = 0;
         float deadline = 0.f;
         float now = 0.f;
+        float goTime = 0.f;
         float repLevel = 0.f;
         ft::DrillCriteria repCriteria;
         bool repInput = false;
@@ -156,6 +174,44 @@ private:
         std::string lastOutcome;
         std::string lastTip;
         bool lastSuccess = false;
+        // Get-ready hold.
+        bool firstRep = true;
+        bool carHeld = false;              // the car is placed / held by the drill this rep
+        ReadyPhase ready;
+        HoldPose hold;
+        ft::DrillSpawn spawn;
+        float wallSide = 1.f;              // Chute du mur: side of the next rep (alternates)
+        bool waitingWall = false;
+        // What is drawn: the predicted path (hold), the landing / meeting circle.
+        ft::BallTrack path;
+        bool showLanding = false;
+        Vec3 landing;
+        bool showMeet = false;
+        Vec3 meet;
+        // Hanging ball of "Balle haute" (niveaux 1 to 6).
+        HangingBall hang;
+        ft::HangRelease hangMode = ft::HangRelease::None;
+        float hangVz = 0.f;
+        float underSince = -1.f;
+        bool prevJump = false;
+        bool underBall = false;            // ball over the front half of the roof on the last tick
+        // Mix: next ball and the séquence de match.
+        ft::DrillType nextType = ft::DrillType::RollIn;
+        bool haveNext = false;
+        int matchBall = 0, matchPassed = 0;
+        // Parcours complet.
+        ft::FullSetup fullSetup;
+        ft::FullState fullState;
+        StepTracker steps;
+        bool touchPending = false;         // first touch seen by onTouch, handled on the next onTick
+        ft::TouchMetrics touchMetrics;
+        Snapshot touchPre;
+        // Live facts for the HUD.
+        float ballDist = 1e9f;             // hitbox centre to ball centre (uu)
+        float speedDiff = 0.f;             // roulante qui s'éloigne: car speed - ball speed along its path
+        int floorBounces = 0;
+        float prevBallVz = 0.f;
+        bool havePrevBall = false;
     };
 
     // Analysis.
@@ -169,13 +225,24 @@ private:
     void refreshUnit();
 
     // Drills.
-    void startDrill(ft::DrillType type, const TickContext& ctx, Actions& out);
+    void startDrill(ft::DrillType type, bool full, const TickContext& ctx, Actions& out);
     void stopDrill(Actions* out, const std::string& message);
     void tickDrill(const TickContext& ctx, Actions& out);
+    void placeRep(const TickContext& ctx, Actions& out);
+    void placeFullRep(const TickContext& ctx, Actions& out);
+    void placeMatchBall(const TickContext& ctx, Actions& out);
+    void launchRep(const Snapshot& s, Actions& out);
+    void tickHanging(const Snapshot& s, Actions& out);
+    void tickFull(const TickContext& ctx, Actions& out);
+    void updateLiveFacts(const Snapshot& s);
     void drillRepDone(bool success, float score, const std::string& tip, Actions& out);
+    void fullRepDone(bool success, Actions& out);
+    void matchBallDone(bool success, const std::string& outcome, const std::string& tip, Actions& out);
     ft::DrillCriteria criteriaFor(float level) const;
     void recordDrillRep(bool success);
     void rebuildStaircases();
+    std::array<float, ft::kDrillKinds> mixWeights(bool matchOnly, const ft::DrillPose* pose) const;
+    std::string currentPanelLine(const DrawContext& ctx) const;
 
     // Drawing.
     // Compact HUD (ctx.compactHud): at most 3 main lines per panel, secondary lines flagged `detail`, no heatmap,
@@ -183,6 +250,7 @@ private:
     void drawStatsPanel(const ViewContext& view, const DrawContext& ctx, DrawList& out) const;
     void drawHeatmap(float anchorX, float topY, bool anchorRight, float scale, DrawList& out) const;
     void drawDrillPanel(const ViewContext& view, const DrawContext& ctx, DrawList& out) const;
+    void drawDrillWorld(const DrawContext& ctx, DrawList& out) const;
     void drawContactMarker(const ViewContext& view, const DrawContext& ctx, DrawList& out) const;
     Color scoreColor(float score) const;
     Color zoneColor(ft::SpeedZone z) const;
@@ -227,6 +295,8 @@ private:
     // Drills.
     Drill drill_;
     std::array<Staircase, ft::kDrillKinds> stairs_;
+    std::array<Staircase, ft::kDrillKinds + 1> fullStairs_;  // parcours complet of each drill, + the séquence de match
+    int64_t touchFrame_ = -1;  // frame of the last car touch event (hanging ball: never re-placed on that tick)
     std::array<float, ft::kDrillKinds> drillBest_{};
     std::array<int, ft::kDrillKinds> drillSessionReps_{};
     std::array<int, ft::kDrillKinds> drillSessionSuccesses_{};

@@ -6,9 +6,15 @@
 // Flow: onTick feeds the MovementCoach (detection hub) with each snapshot; every grade passes the family toggles
 // and the map category (both skipped for the family the player focuses on or drills) and the focus filter, then
 // becomes an AttemptResult (Actions::results), updates the stats and the HUD panel. Drills own the world-control
-// activity: placement, frozen countdown, slow motion, auto-reset. A drill attempt counts when it meets the pass
-// conditions of its level (Drills.h, the first one missed gives the single tip), the score the level asks for and,
-// at the top levels, the detector's own success; the result moves the family's Staircase (new player: level 1/10).
+// activity: placement, get-ready phase, slow motion, auto-reset. Every attempt starts held: car (and ball) put back at
+// the start pose with zero velocity on EVERY tick (gravity would make an air start fall during the countdown), on the
+// first attempt until the player presses the throttle and then 3 s, after an automatic reset for the drill's own
+// countdown (2 s, 1.5 s for the short drills); on GO they get their launch velocity. A drill attempt counts when it
+// meets the pass conditions of its level (Drills.h, the first one missed gives the single tip), the score the level
+// asks for and, at the top levels, the detector's own success; the result moves the family's Staircase (new player:
+// level 1/10). A time limit without a result is never silent: it records a failed attempt with the tip of the first
+// step that was missing. The "parcours complet" of a family (drill command "drill <id> full") grades every step with
+// the shared StepTracker and has its own staircase.
 // The HUD panel keeps three main lines (result, one tip, the action to do now), the rest is detail. On its own
 // normal stop the module routes the speed
 // restore as the owner, then gives the activity back; when the activity ends any other way (stop button, handover,
@@ -18,15 +24,20 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "core/common/Adaptive.h"
 #include "core/common/Controls.h"
+#include "core/common/HangingBall.h"
+#include "core/common/Hold.h"
 #include "core/common/Module.h"
 #include "core/common/Rng.h"
+#include "core/common/Steps.h"
 #include "core/modules/mechanics/Drills.h"
+#include "core/modules/mechanics/FullSequence.h"
 #include "core/modules/mechanics/MechStats.h"
 #include "core/modules/mechanics/MechanicsConfig.h"
 #include "core/modules/mechanics/MovementCoach.h"
@@ -52,6 +63,9 @@ public:
         int currentStep = -1;             // live: index of the next action in `steps` (-1 when no attempt runs)
         std::vector<std::string> checks;  // pass conditions of the level, with their numbers
         int drillAttempts = 0, drillSuccesses = 0;
+        bool full = false;                // "parcours complet" running
+        bool waitingForThrottle = false;  // get-ready phase: the car is held until the player presses the throttle
+        int failStreak = 0;               // drill attempts failed in a row (3+: the slow motion is suggested)
         bool worldControl = false;
         float gameSpeed = 1.f; // game speed this module applies (1 when it does not control the world)
         // A focus slow motion or a "restore_speed" waits for another module's exercise to end.
@@ -65,6 +79,15 @@ public:
         mech::Tier tier = mech::Tier::Beginner;
         std::string memo, tech, progression;
         std::vector<std::string> steps;
+        // Tutorial with the player's own buttons (MechCatalog.h tutorial()).
+        std::string intro, full, level1;
+        struct TutoStep {
+            std::string action, why, ok;
+        };
+        std::vector<TutoStep> tutorial;
+        std::vector<std::string> panel;  // HUD lines of the drill, in order
+        float fullLevel = 0.f;
+        int fullLevelNumber = 1;
         bool enabled = true;   // family toggle
         int attempts = 0, successes = 0;
         int sessionAttempts = 0, sessionSuccesses = 0;
@@ -111,7 +134,11 @@ public:
     const LastAttempt& lastAttempt() const { return last_; }
     mech::Focus focus() const { return focus_; }
     bool drillActive() const { return drill_.active; }
+    bool drillFull() const { return drill_.active && drill_.full; }
     mech::Focus drillFocus() const { return drill_.focus; }
+    // Staircase level of the "parcours complet" of a family.
+    float fullLevel(mech::Focus f) const;
+    const StepTracker& fullTracker() const { return tracker_; }
     float appliedGameSpeed() const { return appliedSpeed_; }
     bool speedWaiting() const { return focusSpeedWanted_ || restoreWanted_; }
     float level(mech::Focus f) const;
@@ -121,21 +148,35 @@ public:
     bool kickoffLive() const { return coach_.kickoff().live(); }
 
 private:
+    // Countdown = get-ready phase (car held: waiting for the throttle, then the countdown).
     enum class Phase : int { Setup, Countdown, Running, Showing };
+    // How the next attempt starts: First = wait for the throttle then 3 s (drill start, or after an attempt where the
+    // player did nothing), Auto = the drill's own countdown, Manual = retry or reset by the player (3 s).
+    enum class Start : int { First, Auto, Manual };
+    enum class HeldFor : int { None, Touch, Landing };
     struct Drill {
         bool active = false;
+        bool full = false;        // "parcours complet"
         mech::Focus focus = mech::Focus::None;
         Phase phase = Phase::Setup;
-        float phaseEnd = 0.f;     // countdown end (game time)
+        Start nextStart = Start::First;
         float startTime = 0.f;    // GO / start of the attempt
+        int64_t goFrame = 0;
         float showUntil = 0.f;
-        float touchTime = -1.f;   // first ball touch of the attempt
+        float touchTime = -1.f;   // first ball touch of the attempt (or the reach of a near-miss level)
+        float touchBallZ = 0.f;   // ball height at that touch
+        float minGap = 1e9f;      // closest hitbox to ball distance of the attempt (uu)
+        bool reached = false;     // near-miss level: the car passed close enough to the ball
+        bool anyInput = false;    // the player touched the controls during the attempt
         int attempt = 0;          // index (alternates sides / spots)
         int attempts = 0, successes = 0;
+        int failStreak = 0;
         int floorTicks = 0;
+        int runOk = 0;            // wall dash run: successful wall dashes so far
         uint32_t cues = 0;        // mech::Cue bits seen since the start of the attempt (live step)
         bool timedOut = false;    // the attempt ended at the time limit without a result
         bool newStage = false;    // this attempt starts a new step of the progression (until its result)
+        std::string missing;      // step that was missing (timeout / failed step), for the HUD
         std::string message;
     };
 
@@ -147,10 +188,26 @@ private:
     SpeedUnit speedUnit() const { return resolveUnit(SpeedUnit::Auto, profile_.metric); }
 
     void setFocus(mech::Focus f, const TickContext& ctx, Actions& out);
-    void startDrill(mech::Focus f, const TickContext& ctx, Actions& out);
+    void startDrill(mech::Focus f, const TickContext& ctx, Actions& out, bool full = false);
     void stopWorld(const TickContext& ctx, Actions& out);
     void runWorld(const TickContext& ctx, Actions& out);
-    void beginAttempt(const TickContext& ctx, Actions& out);
+    void beginAttempt(const TickContext& ctx, Actions& out, Start start);
+    // GO tick: launch velocities, no hold (the player's inputs already count), detectors and step tracker started.
+    void launch(const TickContext& ctx, Actions& out);
+    // Running tick before the detectors: hanging ball, reach of the ball, inputs seen.
+    void runAttempt(const TickContext& ctx, Actions& out);
+    // Running tick after the detectors: step tracker of the "parcours complet".
+    void runFull(const TickContext& ctx, Actions& out);
+    void finishFull(const TickContext& ctx, Actions& out);
+    // A drill attempt ended without a grade (time limit, car fell off the wall...): one failed attempt, recorded, with
+    // the tip of `code` (fix 5).
+    void recordMiss(const char* code, const TickContext& ctx, Actions& out);
+    // The drill attempt is over: staircase, counters, message, Showing phase.
+    void closeDrillAttempt(bool ok, float t);
+    Staircase& staircase(mech::Focus f, bool full);
+    float levelFor(mech::Focus f, bool full) const { return full ? fullLevel(f) : level(f); }
+    // Error code when nothing happened before the time limit, by family.
+    static const char* defaultMiss(mech::Focus f);
     // Live progress of the attempt (which step the player has reached).
     void trackCues(const Snapshot& s);
     bool cueSeen(mech::Cue c) const { return (drill_.cues >> static_cast<unsigned>(c)) & 1u; }
@@ -187,12 +244,21 @@ private:
         return a;
     }
     std::array<Staircase, mech::kFocusCount> levels_ = freshLevels();
+    std::array<Staircase, mech::kFocusCount> fullLevels_ = freshLevels();  // "parcours complet" of each family
     mech::Focus focus_ = mech::Focus::None;
     Rng rng_{0x6d65636861ULL};
 
     Drill drill_;
     mech::DrillSetup setup_;
-    std::optional<mech::MechGrade> held_;  // fast aerial drill: waits for the ball touch
+    ReadyPhase ready_;                     // get-ready phase of the attempt
+    HoldPose hold_;                        // start pose held during it
+    HangingBall hanging_;                  // fast aerial: the ball waiting in the air
+    StepTracker tracker_;                  // "parcours complet"
+    std::shared_ptr<mech::FullLive> live_; // what its step checks read
+    Snapshot prevSnap_;
+    bool hasPrevSnap_ = false;
+    std::optional<mech::MechGrade> held_;  // drill grade waiting for the ball touch or the landing
+    HeldFor heldFor_ = HeldFor::None;
     float heldTime_ = 0.f;
 
     bool focusSpeedOwned_ = false;   // activity held only for the focus slow motion

@@ -3,6 +3,7 @@
 // families (one per UI row / focus / drill / settings toggle) and their French names and explanations.
 
 #include <string>
+#include <vector>
 
 namespace rlt::mech {
 
@@ -73,10 +74,44 @@ struct FocusInfo {
     Mech primary;         // mechanic whose stats represent the family
     Tier tier;
     const char* memo;     // the move in a few words (HUD)
-    const char* steps[5]; // what to do, in order, one action each (nullptr after the last)
+    const char* steps[6]; // what to do, in order, one action each (nullptr after the last): the HUD panel lines
     const char* tech;     // the technical numbers (tab, "Détails techniques")
     const char* progression;  // how the exercise changes with the level
 };
+
+// Tutorial of a drill, in plain words (tutoiement, no numbers: they are in FocusInfo::tech). Button names are
+// placeholders ({jump}, {boost}, {slide}, {airroll}, {throttle}) filled with the player's own buttons (fillButtons).
+struct TutorialStep {
+    const char* action;  // what to do (nullptr after the last step)
+    const char* why;     // "Pourquoi"
+    const char* ok;      // "C'est bon quand"
+};
+struct Tutorial {
+    Focus focus;
+    const char* intro;          // "Ce que c'est"
+    TutorialStep steps[6];
+    const char* full;           // "Parcours complet": what changes when the player does every step himself
+    const char* level1;         // what makes niveau 1 easier
+    const char* panel[7];       // HUD lines of the exercise (nullptr after the last)
+};
+const Tutorial& tutorial(Focus f);
+
+// Beginner path of the tab (spec order): one entry per exercise, the speedflip twice (its first step without the ball,
+// then the kickoff steps later in the path).
+struct PathEntry {
+    Focus focus;
+    const char* label;     // "Speedflip étape 1, sans balle (niveaux 1 à 3)"
+    const char* block;     // block header ("Conduite (Débutant)"), repeated for each entry of the block
+    const char* note;      // when to move on / prerequisite ("" when none)
+    const char* drillArg;  // extra drill argument ("kickoff" for the speedflip kickoff steps, "" otherwise)
+};
+const std::vector<PathEntry>& mechanicsPath();
+// Position of the family in the path (its first entry), 0-based.
+int pathIndex(Focus f);
+// "Passe à l'exercice suivant quand tu réussis environ 3 essais sur 4 au niveau 4..."
+const char* pathRule();
+// Short definitions of the words the tutorials use (flip, annuler, air roll, powerslide, supersonique, kickoff).
+const char* lexicon();
 
 const MechInfo& mechInfo(Mech m);
 const FocusInfo& focusInfo(Focus f);

@@ -124,15 +124,17 @@ TEST(courses_idle_on_workshop_course_maps) {
 TEST(courses_countdown_freezes_places_and_releases) {
     Harness h;
     const Actions start = h.command("rings", {"air", code42()});
-    CHECK(hasChat(start, "RLT1-A050"));
+    CHECK(hasChat(start, "RLT2-A050"));
     CHECK(h.host.ownsActivity(&h.mod));
     CHECK_EQ(h.host.name, std::string("Anneaux"));
     CHECK(h.mod.phase() == CoursesPhase::Setup);
     const auto& course = h.mod.course();
+    // First attempt: the car is held (re-placed every tick, zero velocity) until the player presses the throttle.
     const Actions first = h.tick();
     CHECK(first.freezeCar);
     CHECK(first.setCar.has_value());
-    CHECK(first.countdownMessage && *first.countdownMessage == 2);
+    CHECK(!first.countdownMessage);
+    CHECK(h.mod.ready().waiting());
     if (first.setCar) {
         CHECK_NEAR(first.setCar->pos.x, course.start.carPos.x, 0.5);
         CHECK_NEAR(first.setCar->pos.y, course.start.carPos.y, 0.5);
@@ -141,18 +143,38 @@ TEST(courses_countdown_freezes_places_and_releases) {
     }
     CHECK(first.setBall.has_value());  // car course: ball parked in a top corner
     if (first.setBall) CHECK(first.setBall->pos.z > 1900.f);
-    int ones = 0, ticks = 1;
+    for (int i = 0; i < 240; ++i) {  // two seconds without throttle: still waiting, still held
+        const Actions a = h.tick();
+        CHECK(a.freezeCar && a.setCar && !a.countdownMessage && !a.goMessage);
+    }
+    CHECK(h.mod.phase() == CoursesPhase::Countdown);
+    // Throttle pressed: 3, 2, 1 then GO, 3 s later.
+    h.snap.in.throttle = 1.f;
+    int threes = 0, ones = 0, ticks = 0;
     Actions last;
-    while (h.mod.phase() != CoursesPhase::Running && ticks < 400) {
+    while (h.mod.phase() != CoursesPhase::Running && ticks < 600) {
         last = h.tick();
+        if (last.countdownMessage && *last.countdownMessage == 3) ++threes;
         if (last.countdownMessage && *last.countdownMessage == 1) ++ones;
         ++ticks;
     }
+    CHECK_EQ(threes, 1);
     CHECK_EQ(ones, 1);
-    CHECK_EQ(ticks, 241);  // 2 s at 120 Hz, then the release tick
+    CHECK_EQ(ticks, 361);  // the press tick, 3 s at 120 Hz, then GO
     CHECK(last.goMessage);
     CHECK(!last.freezeCar);
     CHECK(last.setCar && length(last.setCar->vel) > 700.f);  // rolling start towards the first ring
+    // Next attempt (automatic): no waiting, the 2 s countdown of the setting.
+    h.snap.in.throttle = 0.f;
+    h.command("restart");
+    const Actions again = h.tick();
+    CHECK(again.countdownMessage && *again.countdownMessage == 2);
+    int n = 1;
+    while (h.mod.phase() != CoursesPhase::Running && n < 400) {
+        h.tick();
+        ++n;
+    }
+    CHECK_EQ(n, 241);
 }
 
 TEST(courses_air_course_finish_result_and_personal_best) {

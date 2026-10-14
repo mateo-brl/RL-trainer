@@ -13,6 +13,8 @@ using namespace shtest;
 
 namespace {
 
+float levelOfShoot(int niveau) { return static_cast<float>(niveau - 1) / 9.f; }
+
 void runTicks(Harness& h, World& w, int n) {
     for (int i = 0; i < n; ++i) {
         const Actions a = h.tick(w.snap());
@@ -22,7 +24,12 @@ void runTicks(Harness& h, World& w, int n) {
 }
 
 void runToLive(Harness& h, World& w) {
-    for (int i = 0; i < 600 && h.mod.phase() != ShootPhase::Live; ++i) runTicks(h, w, 1);
+    // The first attempt of a drill waits for the throttle (released once, then pressed), then counts down.
+    for (int i = 0; i < 900 && h.mod.phase() != ShootPhase::Live; ++i) {
+        w.in.throttle = i < 2 ? 0.f : 1.f;
+        runTicks(h, w, 1);
+    }
+    w.in.throttle = 0.f;
 }
 
 ViewContext viewFor(const World& w) {
@@ -259,6 +266,10 @@ TEST(shooting_hud_names_the_45_and_90_flicks_without_degrees) {
         CHECK(std::string(flickTypeHudLabel(static_cast<FlickType>(i))).find("\xC2\xB0") == std::string::npos);
     for (const char* type : {"45", "90"}) {
         Harness h;
+        Store st;  // niveau 4: the requested type counts (niveaux 1 and 2 accept any flick)
+        st.setFloat("shooting.stair.flick.level", levelOfShoot(4));
+        st.setInt("shooting.stair.flick.attempts", 1);
+        h.mod.load(st);
         World w;
         h.tick(w.snap());
         h.command("flick", {type});
@@ -267,10 +278,12 @@ TEST(shooting_hud_names_the_45_and_90_flicks_without_degrees) {
         runToLive(h, w);
         w.ballRides = true;
         runTicks(h, w, 5);
+        CHECK(noDegrees(mainLines(h, w, "flick live")));
+        runTicks(h, w, 40);  // the ball settles: "Balle stable" names the flick to do
         const auto live = mainLines(h, w, "flick live");
         CHECK(noDegrees(live));
         bool named = false;
-        for (const auto& l : live) named = named || l.find("À toi : Flick ") == 0;
+        for (const auto& l : live) named = named || l.find("Balle stable : Flick ") == 0;
         CHECK(named);
     }
     // The result title (HUD headline) has no degrees either.

@@ -152,7 +152,7 @@ void renderOverview(UiContext& ctx, const CoachUiData& d) {
     const int done = std::min(o.todayAttempts, need);
     char overlay[64];
     std::snprintf(overlay, sizeof(overlay), "%d/%d aujourd'hui", done, need);
-    ImGui::ProgressBar(static_cast<float>(done) / static_cast<float>(need), ImVec2(-1.f, 0.f), overlay);
+    ui::progressBar(static_cast<float>(done) / static_cast<float>(need), overlay);
     tooltip("Fais au moins " + plural(need, "essai noté", "essais notés") +
             " par jour pour prolonger ta série. S'entraîner un peu chaque jour vaut mieux "
             "qu'une longue séance par semaine.");
@@ -194,7 +194,7 @@ void renderGoals(UiContext& ctx, const CoachUiData& d) {
         else ImGui::TextUnformatted(g.label.c_str());
         char overlay[32];
         std::snprintf(overlay, sizeof(overlay), "%d/%d", g.progress, g.target);
-        ImGui::ProgressBar(g.ratio(), ImVec2(-90.f, 0.f), overlay);
+        ui::progressBar(g.ratio(), overlay, -90.f);
         ImGui::SameLine();
         if (ImGui::SmallButton("Retirer")) ctx.post("coach", "goal_remove", {std::to_string(i + 1)});
         ImGui::PopID();
@@ -333,7 +333,7 @@ void renderSkills(UiContext& ctx, const CoachUiData& d) {
     if (d.skills.empty()) {
         ImGui::TextWrapped(
             "Aucun essai noté pour l'instant. Lance un exercice du plan conseillé ou joue en freeplay : "
-            "chaque essai noté par les autres onglets apparaît ici.");
+            "chaque essai noté par les autres pages apparaît ici.");
         return;
     }
     // Keep a valid selection (default: the first skill).
@@ -429,8 +429,10 @@ void renderHistory(const CoachUiData& d) {
             values.push_back(static_cast<float>(p.attempts));
             maxV = std::max(maxV, static_cast<float>(p.attempts));
         }
-        ImGui::PlotHistogram("##coach_days", values.data(), static_cast<int>(values.size()), 0,
-                             "Essais par jour (14 derniers jours)", 0.f, maxV * 1.15f, ImVec2(-1.f, 70.f));
+        // Title above the chart, not over it: light text on the amber bars is unreadable.
+        ImGui::TextUnformatted("Essais par jour (14 derniers jours)");
+        ImGui::PlotHistogram("##coach_days", values.data(), static_cast<int>(values.size()), 0, nullptr, 0.f,
+                             maxV * 1.15f, ImVec2(-1.f, 70.f));
         tooltip("Du " + d.days.front().date + " au " + d.days.back().date + ".");
     }
     if (d.sessions.empty()) {
@@ -506,7 +508,7 @@ void renderCoachTab(UiContext& ctx) {
         return;
     }
     ImGui::TextWrapped(
-        "Chaque essai noté dans les autres onglets arrive ici : stats, records, erreurs qui reviennent, "
+        "Chaque essai noté dans les autres pages arrive ici : stats, records, erreurs qui reviennent, "
         "séries de jours et un plan d'entraînement qui s'adapte à toi.");
     if (!d.cfg.enabled)
         ui::textColored(colors::Orange,

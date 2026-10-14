@@ -463,6 +463,89 @@ TEST(maps_hud_own_timing_prompts_and_profile_line) {
     CHECK(!containsText(d.panels.front(), "Chrono auto"));
 }
 
+namespace {
+
+// Lines the compact HUD shows (the engine drops the detail lines).
+std::vector<std::string> shownLines(const DrawPanel& p) {
+    std::vector<std::string> out;
+    for (const auto& l : p.lines)
+        if (!l.detail) out.push_back(l.text);
+    return out;
+}
+
+bool shownHas(const DrawPanel& p, const std::string& needle) {
+    for (const auto& s : shownLines(p))
+        if (s.find(needle) != std::string::npos) return true;
+    return false;
+}
+
+} // namespace
+
+TEST(maps_hud_compact_keeps_chrono_split_and_record) {
+    Harness h;
+    h.settings.maps.hudProfile = true;
+    h.applySettings();
+    enterGiant(h);
+    lethRun(h, 1.f, 2.f);  // record 40 s, splits every 2 s
+    h.step(100.f, lethVars(false, 1));
+    h.step(100.1f, lethVars(true, 1));
+    h.step(101.6f, lethVars(true, 2, 3));
+    DrawPanel p = h.draw().panels.front();
+    CHECK_EQ(shownLines(p).size(), static_cast<size_t>(3));
+    CHECK(shownHas(p, "Chrono 0:01.50"));
+    CHECK(shownHas(p, "Split 1 : -0.50 s"));
+    CHECK(shownHas(p, "Niveau 2/20"));
+    CHECK(!shownHas(p, "Record"));  // a split is shown: the record waits
+    CHECK(!shownHas(p, "Profil"));
+    CHECK(!shownHas(p, "Morts"));
+    CHECK(containsText(p, "Record : 0:40.00"));  // still in the full HUD
+    CHECK(containsText(p, "Profil : "));
+    // Finished: the last run and the record stay, the level goes.
+    float t = 101.6f;
+    for (int lvl = 3; lvl <= 20; ++lvl) h.step(t += 1.f, lethVars(true, lvl));
+    h.step(t += 1.f, lethVars(true, 1));
+    p = h.draw().panels.front();
+    CHECK(shownLines(p).size() <= 3u);
+    CHECK(shownHas(p, "Dernier run"));
+    CHECK(shownHas(p, "(record !)"));
+    CHECK(shownHas(p, "Record : "));
+    CHECK(!shownHas(p, "Niveau"));
+    for (const auto& s : shownLines(p)) CHECK(s.find(" ms") == std::string::npos);
+}
+
+TEST(maps_hud_compact_own_timing_shows_the_prompt) {
+    Harness h;
+    h.setContext(GameMode::Workshop, true, "Some_Map");
+    h.tick(0.1f, {}, {});
+    DrawPanel p = h.draw().panels.front();
+    CHECK(shownHas(p, "Pret : le chrono part quand tu bouges"));
+    CHECK(!shownHas(p, "Record : aucun"));  // nothing to beat yet: detail
+    h.tick(0.2f, {}, {800.f, 0.f, 0.f});
+    h.tick(3.2f, {}, {800.f, 0.f, 0.f});
+    h.event(GameEventKind::Goal);
+    p = h.draw().panels.front();
+    CHECK(shownHas(p, "Dernier run : 0:03.00"));
+    CHECK(shownHas(p, "pour relancer un run"));
+    CHECK(shownLines(p).size() <= 3u);
+}
+
+TEST(maps_hud_compact_skips_a_panel_without_main_line) {
+    Harness h;
+    h.settings.maps.fallbackTiming = false;
+    h.applySettings();
+    h.setContext(GameMode::Workshop, true, "Some_Map");
+    h.tick(0.1f, {}, {});
+    CHECK_EQ(h.draw().panels.size(), static_cast<size_t>(1));  // full HUD: map name and "no record yet"
+    ViewContext v;
+    v.valid = true;
+    v.screenW = 1920.f;
+    v.screenH = 1080.f;
+    DrawContext d{h.settings, h.game, h.profile, h.snap, h.hasSnapshot, false, 1.f, true};
+    DrawList out;
+    h.mod.draw(v, d, out);
+    CHECK(out.panels.empty());
+}
+
 TEST(maps_commands_favorites_played_category) {
     Harness h;
     h.command("fav", {kGiant});

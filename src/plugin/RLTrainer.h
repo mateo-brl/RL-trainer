@@ -1,8 +1,10 @@
 #pragma once
 // BakkesMod entry point: wires hooks, drawable, cvars, timers and the ImGui windows to the core Engine.
 
+#include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "core/engine/Engine.h"
@@ -12,10 +14,7 @@
 #include "plugin/services/MapsService.h"
 #include "plugin/services/ProfileService.h"
 #include "plugin/services/UpdateService.h"
-
-namespace rlt {
-struct UiContext;
-}
+#include "plugin/ui/Ui.h"
 
 class RLTrainer : public BakkesMod::Plugin::BakkesModPlugin,
                   public BakkesMod::Plugin::PluginSettingsWindow,
@@ -46,6 +45,7 @@ private:
     void registerCommands();
     void schedulePeriodic();
     void periodic();
+    void applyMenuKey();
 
     void onVehicleInput(CarWrapper car, void* params);
     void onHitBall(CarWrapper car, void* params);
@@ -69,6 +69,7 @@ private:
     rlt::Renderer renderer_;
 
     bool windowOpen_ = false;
+    bool closeRequested_ = false;  // togglemenu already queued after the cross was clicked
     bool configDirty_ = false;
     float configDirtyTimer_ = 0.f;
     float saveTimer_ = 0.f;
@@ -80,4 +81,12 @@ private:
     bool hasLastDraw_ = false;
     std::vector<std::string> hookedPre_;
     std::vector<std::string> hookedPost_;
+
+    // Menu key (rlt_menu_key). The cvar callback (any thread) raises the flag, periodic() applies it on the game
+    // thread; the UI reads the status through UiContext::menuKeyStatus.
+    std::atomic<bool> menuKeyDirty_{true};  // true: applied once menuKeyWait_ is over
+    float menuKeyWait_ = 5.f;               // seconds before the first bind (game thread)
+    std::string menuKeyBound_;              // game thread: key whose bind runs rlt_menu ("" = none)
+    std::mutex menuKeyMutex_;
+    rlt::MenuKeyStatus menuKeyStatus_;      // guarded by menuKeyMutex_
 };

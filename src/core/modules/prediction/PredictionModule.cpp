@@ -756,26 +756,38 @@ void PredictionModule::drawPanel(const pr::PredictedPath& p, int now, bool withI
     panel.anchorX = cfg_.panelX > 0.5f ? Align::Right : Align::Left;
     panel.title = hudText("Prédiction", accents);
     panel.scale = cfg_.textScale * std::max(0.1f, ctx.hudScale) * 0.9f;
-    auto line = [&](const std::string& text, const Color& c) {
+    // Compact HUD: goal, interception and landing first (at most three lines); the ball speed at the interception
+    // point, the touch zone when three lines are already there, and "ball on the floor" are details.
+    auto line = [&](const std::string& text, const Color& c, bool detail = false) {
         PanelLine l;
         l.text = hudText(text, accents);
         l.color = c;
+        l.detail = detail;
         panel.lines.push_back(std::move(l));
     };
-    if (p.landingIndex >= now) line("Atterrit dans " + seconds1(at(p.landingIndex).t - tNow), cfg_.landingColor);
-    else if (!pr::ballAirborne(p.posAt(now), p.velAt(now), p.params.arenaRadius)) line("Balle au sol", colors::Grey);
-    if (p.zoneStart >= 0 && p.zoneEnd >= now)
-        line("Zone de touche dans " + seconds1(at(std::max(p.zoneStart, now)).t - tNow), cfg_.zoneColor);
-    if (withIntercept && intercept_.found && intercept_.index >= now) {
+    const bool goal = cfg_.showGoalWarning && p.goalIndex >= now;
+    const bool intercept = withIntercept && intercept_.found && intercept_.index >= now;
+    const bool landing = p.landingIndex >= now;
+    const bool zone = p.zoneStart >= 0 && p.zoneEnd >= now;
+    if (landing) line("Atterrit dans " + seconds1(at(p.landingIndex).t - tNow), cfg_.landingColor);
+    else if (!pr::ballAirborne(p.posAt(now), p.velAt(now), p.params.arenaRadius)) line("Balle au sol", colors::Grey, true);
+    if (zone)
+        line("Zone de touche dans " + seconds1(at(std::max(p.zoneStart, now)).t - tNow), cfg_.zoneColor,
+             goal && intercept && landing);
+    if (intercept) {
         const SpeedUnit unit = resolveUnit(static_cast<SpeedUnit>(std::clamp(cfg_.unit, 0, 3)), ctx.profile.metric);
         line("Interception dans " + seconds1(intercept_.t - tNow), cfg_.interceptColor);
-        line("Arrive à " + formatBallSpeed(intercept_.ballSpeed2D, unit), cfg_.interceptColor);
+        line("Arrive à " + formatBallSpeed(intercept_.ballSpeed2D, unit), cfg_.interceptColor, true);
     }
-    if (cfg_.showGoalWarning && p.goalIndex >= now) {
+    if (goal) {
         line(goalLabel(p.goalSide, team) + " dans " + seconds1(at(p.goalIndex).t - tNow),
              goalColor(p.goalSide, team).withAlpha(255.f));
     }
     if (panel.lines.empty()) return;
+    // Nothing left once the details are dropped: no empty panel with only its title.
+    if (ctx.compactHud &&
+        std::none_of(panel.lines.begin(), panel.lines.end(), [](const PanelLine& l) { return !l.detail; }))
+        return;
     out.panel(std::move(panel));
 }
 

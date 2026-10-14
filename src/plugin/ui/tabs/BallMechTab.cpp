@@ -6,6 +6,8 @@
 #include "core/common/Controls.h"
 #include "core/common/Text.h"
 #include "core/modules/ballmech/BallMechModule.h"
+#include "core/modules/ballmech/Drills.h"
+#include "core/modules/ballmech/Mechanics.h"
 #include "core/modules/ballmech/Tips.h"
 #include "imgui.h"
 #include "plugin/ui/Ui.h"
@@ -62,6 +64,26 @@ void tooltipWrapped(const std::string& text) {
     ImGui::EndTooltip();
 }
 
+const char* const kBeginnerAdvice =
+    "Débutant : commence par la frappe puissante et le tir aérien, puis le flick et l'air roll shot. Le musty, le "
+    "flip reset et le breezi viennent après.";
+
+// Mechanics in learning order (easiest first), as indexes into st.mechs.
+std::vector<size_t> byDifficulty(const BallMechModule::UiState& st) {
+    std::vector<size_t> idx(st.mechs.size());
+    for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+    std::stable_sort(idx.begin(), idx.end(),
+                     [&st](size_t a, size_t b) { return st.mechs[a].order < st.mechs[b].order; });
+    return idx;
+}
+
+// "level" command argument for a displayed level (1..10), as a fraction the module reads exactly.
+std::string levelArg(int n) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%.4f", static_cast<double>(bm::levelOfPlayer(std::max(1, std::min(10, n)))));
+    return buf;
+}
+
 void drawLastResult(const BallMechModule::UiState& st, SpeedUnit unit) {
     ui::separatorText("Dernière méca détectée");
     if (!st.hasLast) {
@@ -74,9 +96,17 @@ void drawLastResult(const BallMechModule::UiState& st, SpeedUnit unit) {
     char overlay[32];
     std::snprintf(overlay, sizeof(overlay), "%d / 100", static_cast<int>(r.score + 0.5f));
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, vec4(vc));
-    ImGui::ProgressBar(std::max(0.f, std::min(1.f, r.score / 100.f)), ImVec2(-1.f, 0.f), overlay);
+    ui::progressBar(std::max(0.f, std::min(1.f, r.score / 100.f)), overlay);
     ImGui::PopStyleColor();
-    if (!r.metrics.empty() && ImGui::CollapsingHeader("Mesures##bm_last", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (!r.tips.empty()) {
+        ui::textColored({255, 220, 120, 255}, "Conseil :");
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", r.tips.front().text.c_str());
+    } else if (r.success) {
+        ui::textColored({60, 230, 90, 255}, "Bien joué, continue comme ça !");
+    }
+    if (!ImGui::CollapsingHeader("Détails techniques##bm_last")) return;
+    if (!r.metrics.empty()) {
         ImGui::Columns(3, "bm_last_metrics", false);
         ImGui::TextDisabled("Mesure");
         ImGui::NextColumn();
@@ -102,11 +132,9 @@ void drawLastResult(const BallMechModule::UiState& st, SpeedUnit unit) {
         }
         ImGui::Columns(1);
     }
-    if (!r.tips.empty()) {
-        ImGui::TextUnformatted("Conseils :");
-        for (const auto& t : r.tips) ImGui::BulletText("%s", t.text.c_str());
-    } else if (r.success) {
-        ui::textColored({60, 230, 90, 255}, "Bien joué, continue comme ça !");
+    if (r.tips.size() > 1) {
+        ImGui::TextUnformatted("Autres conseils :");
+        for (size_t i = 1; i < r.tips.size(); ++i) ImGui::BulletText("%s", r.tips[i].text.c_str());
     }
 }
 
@@ -114,12 +142,18 @@ void drawDrillStatus(UiContext& ctx, const BallMechModule::UiState& st, const Pl
                      const std::string& otherActivity) {
     const auto& d = st.drill;
     if (d.active) {
-        ui::separatorText("Exercice en cours : " + d.title);
-        ImGui::Text("%s | Niveau %d %% | %s", d.label.c_str(), static_cast<int>(d.level * 100.f + 0.5f), d.phase.c_str());
-        if (d.timeLeft > 0.f) ImGui::Text("Temps restant : %.1f s", static_cast<double>(d.timeLeft));
+        ui::separatorText("Exercice en cours : " + d.title + " (niveau " + std::to_string(d.levelNumber) + "/10)");
+        ImGui::TextWrapped("À faire : %s", d.action.c_str());
+        ImGui::TextWrapped("%s", bm::fillButtons(d.hint, profile, st.keyStyle).c_str());
+        if (d.timeLeft > 0.f) ImGui::Text("Temps restant : %d s", static_cast<int>(d.timeLeft + 0.99f));
+        else ImGui::TextUnformatted(d.phase.c_str());
         ImGui::Text("Essais : %d | Réussis : %d", d.attempts, d.successes);
         if (!d.lastVerdict.empty()) ui::textColored(d.lastSuccess ? Color{60, 230, 90, 255} : Color{255, 110, 80, 255}, d.lastVerdict);
-        ImGui::TextWrapped("%s", bm::fillButtons(d.hint, profile, st.keyStyle).c_str());
+        if (!d.tip.empty()) {
+            ui::textColored({255, 220, 120, 255}, "Conseil :");
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", d.tip.c_str());
+        }
         if (ImGui::Button("Essai suivant##bm")) ctx.post("ballmech", "next");
         ImGui::SameLine();
         if (ImGui::Button("Arrêter l'exercice##bm")) ctx.post("ballmech", "stop");
@@ -131,19 +165,23 @@ void drawDrillStatus(UiContext& ctx, const BallMechModule::UiState& st, const Pl
 }
 
 void drawMechGrid(UiContext& ctx, const BallMechModule::UiState& st, const PlayerProfile& profile, bool worldControl) {
-    ui::separatorText("Tes mécas");
-    ImGui::Columns(6, "bm_grid", true);
-    const char* heads[] = {"Méca", "Essais", "Réussite", "Moy. / record", "Progression", "Exercice"};
+    ui::separatorText("Tes mécas (des plus simples aux plus dures)");
+    ImGui::TextWrapped("%s", kBeginnerAdvice);
+    ImGui::Columns(7, "bm_grid", true);
+    const char* heads[] = {"Méca", "Difficulté", "Essais", "Réussite", "Moy. / record", "Progression", "Exercice"};
     for (const char* h : heads) {
         ImGui::TextDisabled("%s", h);
         ImGui::NextColumn();
     }
     ImGui::Separator();
-    for (const auto& m : st.mechs) {
+    for (size_t i : byDifficulty(st)) {
+        const auto& m = st.mechs[i];
         ImGui::PushID(m.id.c_str());
         if (m.detectionEnabled) ImGui::TextUnformatted(m.title.c_str());
         else ImGui::TextDisabled("%s (désactivée)", m.title.c_str());
         tooltipWrapped(m.what + "\n\nLa clé : " + bm::fillButtons(m.key, profile, st.keyStyle));
+        ImGui::NextColumn();
+        ImGui::TextUnformatted(m.difficulty.c_str());
         ImGui::NextColumn();
         ImGui::Text("%d", m.attempts);
         if (m.sessionAttempts > 0) {
@@ -167,11 +205,11 @@ void drawMechGrid(UiContext& ctx, const BallMechModule::UiState& st, const Playe
             if (ImGui::SmallButton("Lancer")) ctx.post("ballmech", "drill", {m.id});
             ImGui::SameLine();
         }
-        ImGui::TextDisabled("niv. %d %%", static_cast<int>(m.drillLevel * 100.f + 0.5f));
+        ImGui::Text("niv. %d/10", m.levelNumber);
         ImGui::SameLine();
-        if (ImGui::SmallButton("-")) ctx.post("ballmech", "level", {m.id, std::to_string(std::max(0, static_cast<int>(m.drillLevel * 100.f + 0.5f) - 10))});
+        if (ImGui::SmallButton("-")) ctx.post("ballmech", "level", {m.id, levelArg(m.levelNumber - 1)});
         ImGui::SameLine();
-        if (ImGui::SmallButton("+")) ctx.post("ballmech", "level", {m.id, std::to_string(std::min(100, static_cast<int>(m.drillLevel * 100.f + 0.5f) + 10))});
+        if (ImGui::SmallButton("+")) ctx.post("ballmech", "level", {m.id, levelArg(m.levelNumber + 1)});
         ImGui::NextColumn();
         ImGui::PopID();
     }
@@ -214,17 +252,47 @@ void drawRecords(UiContext& ctx, const BallMechModule::UiState& st, SpeedUnit un
     }
 }
 
-void drawGuide(const BallMechModule::UiState& st, const PlayerProfile& profile) {
-    ImGui::TextWrapped("Chaque méca est détectée toute seule pendant que tu joues. Survole une méca dans le tableau pour "
-                       "un rappel rapide, ou ouvre-la ci-dessous.");
-    for (const auto& m : st.mechs) {
-        const std::string header = m.title + "##guide_" + m.id;
+void drawGuide(const BallMechModule::UiState& st, const PlayerProfile& profile, SpeedUnit unit) {
+    ImGui::TextWrapped("Chaque méca est détectée toute seule pendant que tu joues. Ouvre une méca pour savoir quoi "
+                       "faire, dans l'ordre. Elles sont rangées de la plus simple à la plus dure.");
+    ImGui::TextWrapped("%s", kBeginnerAdvice);
+    for (size_t i : byDifficulty(st)) {
+        const auto& m = st.mechs[i];
+        const std::string header = m.title + " (" + m.difficulty + ")##guide_" + m.id;
         if (!ImGui::CollapsingHeader(header.c_str())) continue;
         ImGui::Indent();
         ImGui::TextWrapped("%s", m.what.c_str());
+        ui::textColored({255, 220, 120, 255}, "Ce qu'il faut faire :");
+        for (size_t k = 0; k < m.steps.size(); ++k) {
+            const std::string step = bm::fillButtons(m.steps[k], profile, st.keyStyle);
+            ImGui::TextWrapped("%d. %s", static_cast<int>(k + 1), step.c_str());
+        }
         ui::textColored({255, 220, 120, 255}, "La clé pour réussir :");
         ImGui::TextWrapped("%s", bm::fillButtons(m.key, profile, st.keyStyle).c_str());
-        ImGui::TextDisabled("Exercice : %s", bm::fillButtons(m.drillHint, profile, st.keyStyle).c_str());
+        ui::textColored({255, 220, 120, 255}, "L'exercice :");
+        ImGui::TextWrapped("%s Ton niveau : %d/10. Il monte quand tu réussis et baisse quand tu rates.",
+                           bm::fillButtons(m.drillHint, profile, st.keyStyle).c_str(), m.levelNumber);
+        ImGui::TextWrapped("%s", m.progression.c_str());
+
+        // Numbers for those who want them: what a success needs at each level, time per attempt.
+        bm::Mech mech;
+        const std::string techId = "Détails techniques##tech_" + m.id;
+        if (bm::mechFromId(m.id, mech) && ImGui::CollapsingHeader(techId.c_str())) {
+            ImGui::Indent();
+            auto criteria = [&](float level) {
+                return bm::drillCriteria(mech, level, st.successScore, st.pinchSpeed, unit);
+            };
+            ImGui::TextWrapped("Niveau 1 : %s.", criteria(0.f).c_str());
+            ImGui::TextWrapped("Niveau 10 : %s.", criteria(1.f).c_str());
+            ImGui::TextWrapped("Ton niveau (%d/10) : %s.", m.levelNumber, criteria(m.drillLevel).c_str());
+            const float base = bm::mechInfo(mech).drillTimeout * std::max(0.5f, st.timeoutScale);
+            ImGui::Text("Temps par essai : %d s au niveau 1, %d s au niveau 10.",
+                        static_cast<int>(base * bm::drillTimeFactor(0.f) + 0.5f),
+                        static_cast<int>(base * bm::drillTimeFactor(1.f) + 0.5f));
+            ImGui::TextWrapped("Tes mesures détaillées (en ms, degrés, vitesses) sont dans Tableau de bord > "
+                               "Dernière méca détectée > Détails techniques.");
+            ImGui::Unindent();
+        }
         ImGui::Unindent();
     }
     ui::separatorText("Tes boutons");
@@ -233,7 +301,7 @@ void drawGuide(const BallMechModule::UiState& st, const PlayerProfile& profile) 
     ImGui::Text("Air roll : %s", bm::airRollPrompt(profile, st.keyStyle).c_str());
     ImGui::Text("Glissade : %s", actionPrompt(profile, GameAction::Powerslide, st.keyStyle).c_str());
 
-    ui::separatorText("Console (F6)");
+    if (!ImGui::CollapsingHeader("Commandes console (F6)##bm_console")) return;
     ImGui::BulletText("rlt ballmech drill <méca> [variante] : lance un exercice");
     ImGui::TextDisabled("    mécas : flipreset, ceiling, flick, musty, breezi, doubletap, airdribble, airroll, aerial, "
                         "pinch, powershot");
@@ -241,6 +309,7 @@ void drawGuide(const BallMechModule::UiState& st, const PlayerProfile& profile) 
     ImGui::BulletText("rlt ballmech stop : arrête l'exercice");
     ImGui::BulletText("rlt ballmech next : passe à l'essai suivant");
     ImGui::BulletText("rlt ballmech level <méca> <0-100> : règle le niveau d'un exercice");
+    ImGui::TextDisabled("    0 = niveau 1, 100 = niveau 10");
     ImGui::BulletText("rlt ballmech variant <flick> : flick demandé dans l'exercice Flick");
     ImGui::BulletText("rlt ballmech reset_session / reset_stats : remet la session / tout à zéro");
 }
@@ -272,8 +341,9 @@ void renderBallMechTab(UiContext& ctx) {
     }
     const SpeedUnit unit = resolveUnit(SpeedUnit::Auto, profile.metric);
 
-    ImGui::TextWrapped("Flip resets, ceiling shots, flicks (musty, breezi...), double taps, air dribbles, air roll "
-                       "shots, pinchs et frappes : tout est détecté et noté automatiquement, avec un conseil adapté.");
+    ImGui::TextWrapped("Joue normalement en freeplay : tes frappes, tirs aériens, flicks, pinchs, air dribbles, double "
+                       "taps, ceiling shots et flip resets sont reconnus et notés tout seuls, avec un conseil à chaque "
+                       "fois. Pour travailler une méca, lance son exercice.");
     if (!st.enabled) ui::textColored(colors::Orange, "Module désactivé : active-le dans Réglages.");
     else if (game.mode == GameMode::Online) ui::textColored(colors::Orange, "En ligne : rien n'est analysé.");
     else if (!st.detecting) ui::textColored(colors::Grey, "Pas d'analyse dans ce mode de jeu pour le moment.");
@@ -293,7 +363,7 @@ void renderBallMechTab(UiContext& ctx) {
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Guide des mécas")) {
-            drawGuide(st, profile);
+            drawGuide(st, profile, unit);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Réglages")) {

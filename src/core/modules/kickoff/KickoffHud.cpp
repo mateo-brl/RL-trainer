@@ -1,4 +1,6 @@
 // Drawing of the kickoff module: HUD panel (top-left drill zone), big centred countdown, ghost box, path line.
+// Compact HUD: the panel keeps at most 3 main lines (result or chrono, the one tip in words, what comes next); the
+// mode, the ghost, the split times, the measures and the other tips are `detail` lines.
 #include <algorithm>
 #include <cmath>
 
@@ -10,7 +12,7 @@ namespace rlt {
 
 namespace {
 
-constexpr Color kGrey{170, 170, 170, 255};
+constexpr Color kDetail{205, 205, 205, 255};
 constexpr Color kTip{255, 220, 120, 255};
 constexpr Color kAhead{90, 230, 120, 255};
 constexpr Color kBehind{255, 110, 90, 255};
@@ -21,6 +23,9 @@ std::string signedSecs(float s) {
     const std::string n = formatNumber(s, 2);
     return (s > 0.f && n != "0.00" ? "+" : "") + n;
 }
+
+// Whole seconds left, rounded up ("2 s" until the last second is over).
+std::string wholeSecs(float s) { return std::to_string(static_cast<int>(std::ceil(std::max(0.f, s) - 1e-3f))) + " s"; }
 
 Color verdictColor(Verdict v) {
     switch (v) {
@@ -37,25 +42,14 @@ Color splitColor(float delta) {
     return colors::White;
 }
 
-// Greedy word wrap on byte length (accents count double, good enough for HUD lines).
-std::vector<std::string> wrap(const std::string& text, size_t maxChars) {
-    std::vector<std::string> lines;
-    std::string cur;
-    size_t i = 0;
-    while (i < text.size()) {
-        size_t j = text.find(' ', i);
-        if (j == std::string::npos) j = text.size();
-        const std::string word = text.substr(i, j - i);
-        if (!cur.empty() && cur.size() + 1 + word.size() > maxChars) {
-            lines.push_back(cur);
-            cur.clear();
-        }
-        if (!cur.empty()) cur += ' ';
-        cur += word;
-        i = j + 1;
+// The 50/50 in two words for the main line.
+const char* duelShort(KickoffDuel d) {
+    switch (d) {
+    case KickoffDuel::PlayerClear:
+    case KickoffDuel::PlayerNarrow: return "kickoff gagné";
+    case KickoffDuel::Neutral: return "50/50 neutre";
+    default: return "kickoff perdu";
     }
-    if (!cur.empty()) lines.push_back(cur);
-    return lines;
 }
 
 void addLine(DrawPanel& p, const std::string& text, Color c, bool accents, float scale = 1.f, float bar = -1.f,
@@ -69,45 +63,63 @@ void addLine(DrawPanel& p, const std::string& text, Color c, bool accents, float
     p.lines.push_back(std::move(l));
 }
 
-void appendResult(DrawPanel& p, const KickoffResultView& r, const DrawContext& ctx, bool accents, int maxTips) {
+void addDetail(DrawPanel& p, const std::string& text, Color c, bool accents, float scale = 0.9f) {
+    addLine(p, text, c, accents, scale);
+    p.lines.back().detail = true;
+}
+
+// Tip of the last drill attempt, kept as a reminder until the next result (none after a great kickoff).
+const KickoffTipLoss* reminderTip(const KickoffResultView& r) {
+    if (!r.valid || r.passive || r.grade.tips.empty()) return nullptr;
+    const KickoffTipLoss& t = r.grade.tips.front();
+    return t.tip == KickoffTip::GreatKickoff ? nullptr : &t;
+}
+
+// Main lines of a result: verdict, score, time and 50/50, then the one tip (or the unlimited boost warning).
+void appendResult(DrawPanel& p, const KickoffResultView& r, bool accents) {
     const KickoffMetrics& m = r.metrics;
-    std::string time;
-    if (m.touched) time = "Temps : " + secs(m.timeToTouch);
-    else if (m.estimated) time = "Temps estimé : ~" + secs(m.timeToTouch);
-    else time = "Balle pas touchée";
-    if (r.newPb && m.touched) {
-        addLine(p, time + "  RECORD !", kAhead, accents);
-    } else {
-        if (r.previousBest > 0.f && m.touched) time += "  (record " + secs(r.previousBest) + ")";
-        addLine(p, time, colors::White, accents);
-    }
     const Verdict v = verdictFromScore(static_cast<float>(r.grade.total));
-    addLine(p, "Note : " + std::to_string(r.grade.total) + "/100  " + verdictLabel(v), verdictColor(v), accents, 1.f,
-            static_cast<float>(r.grade.total) / 100.f, verdictColor(v));
-    std::string kind = kickoffTypeName(m.type);
-    if (r.hasDuel) kind += std::string("  -  ") + kickoffDuelName(r.duel.outcome);
-    addLine(p, kind, r.hasDuel && kickoffDuelWon(r.duel.outcome) ? kAhead : colors::White, accents);
+    std::string head = std::string(verdictLabel(v)) + " " + std::to_string(r.grade.total) + "/100 : ";
+    // "RECORD" only when an earlier best was beaten (the first kickoff of a spawn is always a record).
+    if (m.touched) head += secs(m.timeToTouch) + (r.newPb && r.previousBest > 0.f ? " RECORD" : "");
+    else if (m.estimated) head += "~" + secs(m.timeToTouch);
+    else head += "balle pas touchée";
+    if (r.hasDuel) head += std::string(", ") + duelShort(r.duel.outcome);
+    addLine(p, head, verdictColor(v), accents, 1.f, static_cast<float>(r.grade.total) / 100.f, verdictColor(v));
+
+    // Unlimited boost makes the run unrealistic: that warning replaces the tip. The drill limits the boost at every
+    // placement, so this mostly concerns passive kickoffs.
+    if (m.boostLooksUnlimited) addLine(p, "Boost illimité détecté : record non compté.", colors::Orange, accents);
+    else if (!r.grade.tips.empty()) addLine(p, kickoffTipText(r.grade.tips.front().tip), kTip, accents);
+}
+
+// Detail lines of a result: why the boost warning, type and 50/50, record, measures, the other tips.
+void appendResultDetails(DrawPanel& p, const KickoffResultView& r, const DrawContext& ctx, bool accents) {
+    const KickoffMetrics& m = r.metrics;
+    if (m.boostLooksUnlimited)
+        addDetail(p,
+                  r.passive ? "Lance l'exercice : il le coupe pendant tes essais."
+                            : "Pas pu le couper ici : coupe-le en freeplay.",
+                  colors::Orange, accents);
+
+    std::string kind = std::string("Type : ") + kickoffTypeName(m.type);
+    if (r.hasDuel) {
+        kind += std::string(", ") + kickoffDuelName(r.duel.outcome);
+        if (!r.opponent.empty()) kind += " contre " + r.opponent;
+    }
+    addDetail(p, kind, kDetail, accents);
+    if (m.touched && !r.newPb && r.previousBest > 0.f)
+        addDetail(p, "Record : " + secs(r.previousBest), kDetail, accents);
     if (m.touched) {
         const SpeedUnit unit = resolveUnit(SpeedUnit::Auto, ctx.profile.metric);
-        addLine(p,
-                "Vitesse : " + formatSpeed(m.speedToBall, unit, 0) +
-                    "   Décalage : " + formatNumber(std::fabs(m.lateralOffset), 0) + " uu",
-                kGrey, accents, 0.9f);
+        addDetail(p,
+                  "Vitesse : " + formatSpeed(m.speedToBall, unit, 0) +
+                      "   Décalage : " + formatNumber(std::fabs(m.lateralOffset), 0) + " uu",
+                  kDetail, accents);
     }
-    int shown = 0;
-    for (const auto& t : r.grade.tips) {
-        if (shown >= maxTips) break;
-        for (const auto& l : wrap(kickoffTipText(t.tip), 58)) addLine(p, l, kTip, accents, 0.9f);
-        ++shown;
-    }
-    // Safety net: the drill limits the boost at every placement, so this mostly concerns passive kickoffs.
-    if (m.boostLooksUnlimited) {
-        addLine(p, "Boost illimité détecté : record non compté.", colors::Orange, accents, 0.85f);
-        addLine(p,
-                r.passive ? "Lance l'exercice : il le coupe pendant tes essais."
-                          : "Pas pu le couper ici : coupe-le en freeplay.",
-                colors::Orange, accents, 0.85f);
-    }
+    const size_t firstDetailTip = m.boostLooksUnlimited ? 0 : 1;  // the first tip is a main line
+    for (size_t i = firstDetailTip; i < r.grade.tips.size(); ++i)
+        addDetail(p, kickoffTipText(r.grade.tips[i].tip), kTip, accents);
 }
 
 } // namespace
@@ -181,23 +193,17 @@ void KickoffModule::drawDrillHud(const ViewContext& view, const DrawContext& ctx
 
     DrawPanel p;
     p.pos = {cfg_.hudX * view.screenW, cfg_.hudY * view.screenH};
-    p.scale = s;
-    p.minWidth = 270.f * s;
-    p.title = hudText(std::string("Kickoff : ") + info.name + (team_ == KickoffTeam::Orange ? " (orange)" : ""), acc);
-
-    std::string mode = std::string("Mode : ") + kickoffModeName(mode_);
+    p.scale = s * cfg_.hudScale;
+    p.minWidth = 270.f * p.scale;
+    std::string title = std::string("Kickoff : ") + info.name + (team_ == KickoffTeam::Orange ? " (orange)" : "");
     if (mode_ == KickoffMode::Sequence) {
         const int idx = std::min(kKoSpawnCount, sequenceDone_ + (phase_ == KickoffPhase::Done ? 0 : 1));
-        mode += "  " + std::to_string(idx) + "/" + std::to_string(kKoSpawnCount);
+        title += ", " + std::to_string(idx) + "/" + std::to_string(kKoSpawnCount);
     }
-    addLine(p, mode, kGrey, acc, 0.9f);
-    if (ghostActive_) {
-        std::string gl =
-            std::string("Fantôme : ") + kickoffGhostModeName(repGhostMode_) + " (" + secs(ghost_.arrivalTime()) + ")";
-        if (ghostFallback_) gl += ", pas encore de record";
-        addLine(p, gl, cfg_.ghostColor.withAlpha(255.f), acc, 0.9f);
-    }
+    p.title = hudText(title, acc);
 
+    // Main lines, at most 3: countdown or chrono (or the result), the one tip, what to do now or what comes next.
+    const KickoffTipLoss* reminder = reminderTip(last_);
     const int countdownSecs = std::max(1, cfg_.countdownSeconds);
     if (phase_ == KickoffPhase::Placing) {
         addLine(p, "Placement de la voiture...", colors::White, acc, 1.1f);
@@ -205,44 +211,59 @@ void KickoffModule::drawDrillHud(const ViewContext& view, const DrawContext& ctx
         const int64_t left = nominalGo_ - frame;
         const int n = std::clamp(static_cast<int>((left + 119) / 120), 1, countdownSecs);
         addLine(p, "Décompte : " + std::to_string(n), colors::White, acc, 1.2f);
+        if (reminder) addLine(p, kickoffTipText(reminder->tip), kTip, acc);
         addLine(p,
-                "Pré-appuie " + actionPrompt(ctx.profile, GameAction::Boost, style) + " + " +
+                "Appuie déjà sur " + actionPrompt(ctx.profile, GameAction::Boost, style) + " + " +
                     actionPrompt(ctx.profile, GameAction::Throttle, style),
-                kTip, acc, 0.9f);
+                colors::White, acc);
         if (cfg_.bigCountdown)
             out.text({view.screenW * 0.5f, view.screenH * cfg_.countdownY}, std::to_string(n), colors::White, 6.f * s,
                      true, Align::Center);
     } else if (phase_ == KickoffPhase::Live) {
         addLine(p, "Chrono : " + secs(liveTimeAt(frame)), colors::White, acc, 1.2f);
+        if (reminder) addLine(p, kickoffTipText(reminder->tip), kTip, acc);
         if (cfg_.bigCountdown && frame - goFrame_ < 60)
             out.text({view.screenW * 0.5f, view.screenH * cfg_.countdownY}, "GO !", kAhead, 6.f * s, true,
                      Align::Center);
+    } else if (phase_ == KickoffPhase::Done && last_.valid && !last_.passive) {
+        appendResult(p, last_, acc);
+        const float wait = cfg_.resetDelay - static_cast<float>(frame - doneFrame_) * kTickDt;
+        if (mode_ == KickoffMode::Sequence && sequenceDone_ >= kKoSpawnCount) {
+            if (wait > 0.f) addLine(p, "Fin de la série dans " + wholeSecs(wait), colors::White, acc);
+        } else if (waitingForNext_ || !cfg_.autoRepeat) {
+            // Without the automatic chain, Reset starts the next kickoff (also during the pause).
+            const std::string reset = actionPrompt(ctx.profile, GameAction::ResetShot, style);
+            addLine(p, "Appuie sur " + reset + " pour relancer.", colors::White, acc);
+        } else if (wait > 0.f) {
+            addLine(p, "Essai suivant dans " + wholeSecs(wait), colors::White, acc);
+        }
+    }
+
+    // Detail lines (full HUD only).
+    if (phase_ == KickoffPhase::Done && last_.valid && !last_.passive) appendResultDetails(p, last_, ctx, acc);
+    addDetail(p, std::string("Mode : ") + kickoffModeName(mode_), kDetail, acc);
+    if (ghostActive_) {
+        std::string gl =
+            std::string("Fantôme : ") + kickoffGhostModeName(repGhostMode_) + " (" + secs(ghost_.arrivalTime()) + ")";
+        if (ghostFallback_) gl += ", pas encore de record";
+        addDetail(p, gl, cfg_.ghostColor.withAlpha(255.f), acc);
     }
     if (cfg_.showSplits && (phase_ == KickoffPhase::Live || phase_ == KickoffPhase::Done)) {
         const char* ref = ghostActive_ ? "fantôme" : kickoffLevelName(kickoffLevelFromIndex(cfg_.gradeTarget));
         for (const auto& sp : liveSplits_) {
             if (!sp.reached) continue;
             const int pct = static_cast<int>(std::lround(sp.fraction * 100.f));
-            addLine(
+            addDetail(
                 p,
                 std::to_string(pct) + " % : " + secs(sp.playerTime) + "  (" + signedSecs(sp.delta) + " vs " + ref + ")",
-                splitColor(sp.delta), acc, 0.9f);
+                splitColor(sp.delta), acc);
         }
     }
-    if (phase_ == KickoffPhase::Done && last_.valid && !last_.passive) {
-        appendResult(p, last_, ctx, acc, 2);
-        if (waitingForNext_) {
-            const std::string reset = actionPrompt(ctx.profile, GameAction::ResetShot, style);
-            addLine(p, "Appuie sur " + reset + " pour relancer.", kGrey, acc, 0.9f);
-        } else {
-            const float wait = cfg_.resetDelay - static_cast<float>(frame - doneFrame_) * kTickDt;
-            if (wait > 0.f) addLine(p, "Essai suivant dans " + formatNumber(wait, 1) + " s", kGrey, acc, 0.9f);
-        }
-    } else if (last_.valid && !last_.passive) {
+    if (phase_ != KickoffPhase::Done && last_.valid && !last_.passive) {
         std::string prev = "Dernier : ";
         prev += last_.metrics.touched ? secs(last_.metrics.timeToTouch) : std::string("pas de touche");
         prev += ", " + std::to_string(last_.grade.total) + "/100";
-        addLine(p, prev, kGrey, acc, 0.85f);
+        addDetail(p, prev, kDetail, acc, 0.85f);
     }
     out.panel(std::move(p));
 }
@@ -252,11 +273,12 @@ void KickoffModule::drawResultCard(const ViewContext& view, const DrawContext& c
     const bool acc = ctx.settings.general.hudAccents;
     DrawPanel p;
     p.pos = {cfg_.hudX * view.screenW, cfg_.hudY * view.screenH};
-    p.scale = ctx.hudScale;
-    p.minWidth = 270.f * ctx.hudScale;
+    p.scale = ctx.hudScale * cfg_.hudScale;
+    p.minWidth = 270.f * p.scale;
     const KickoffSpawnInfo& info = kickoffSpawnInfo(last_.metrics.spawn);
     p.title = hudText(std::string(compactTitle ? "Kickoff analysé : " : "Kickoff : ") + info.name, acc);
-    appendResult(p, last_, ctx, acc, 1);
+    appendResult(p, last_, acc);
+    appendResultDetails(p, last_, ctx, acc);
     out.panel(std::move(p));
 }
 

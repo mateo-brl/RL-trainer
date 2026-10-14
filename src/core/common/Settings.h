@@ -35,6 +35,11 @@ struct GeneralConfig {
     bool chatFeedback = true;         // global switch for chat messages
     bool toastFeedback = true;        // global switch for toasts
     bool checkUpdates = true;         // ask GitHub for a newer release at startup
+    bool hudCompact = true;           // panels keep their essential lines (PanelLine::detail lines hidden)
+    bool hudFocus = true;             // one module's panels at a time: the running exercise, else the latest result
+    float hudTextSize = 1.3f;         // panel text size, on top of hudScale
+    float hudOpacity = 0.85f;         // panel background opacity (0..1)
+    std::string menuKey = "F3";       // key bound to rlt_menu when it is free; empty = no key
 };
 
 struct Settings {

@@ -920,3 +920,26 @@ TEST(ov_module_never_takes_world_control) {
     CHECK(!w.draw(makeView(kAirBall)).lines3D.empty());
     CHECK_EQ(w.host.requests, 0);
 }
+
+// ---- Compact HUD ------------------------------------------------------------------------------------------------------
+// The overlay draws plain texts (no panel, so nothing for the compact HUD to filter) and the same thing with the
+// compact HUD on or off.
+TEST(ov_module_no_panel_and_same_drawing_in_compact_hud) {
+    Harness h;
+    for (const char* cvar : {"rlt_ov_speed_enabled", "rlt_ov_timer_enabled", "rlt_ov_zone_enabled",
+                             "rlt_ov_sphere_enabled", "rlt_ov_speed_last_touch"})
+        h.set(cvar, "1");
+    setSpeeds(h, {1400.f, 0.f, 0.f}, {1000.f, 0.f, 0.f});
+    h.tick();
+    const ViewContext view = makeView(kAirBall);
+    const DrawList full = h.draw(view);
+    DrawContext compact = h.dc();
+    compact.compactHud = true;
+    DrawList small;
+    h.mod.draw(view, compact, small);
+    CHECK(full.panels.empty());
+    CHECK(small.panels.empty());
+    CHECK(!full.texts2D.empty());
+    CHECK_EQ(small.texts2D.size(), full.texts2D.size());
+    CHECK_EQ(small.lines3D.size(), full.lines3D.size());
+}

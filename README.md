@@ -9,17 +9,19 @@ Il te faut BakkesMod, installé et lancé au moins une fois.
 
 1. Ferme Rocket League.
 2. Télécharge **[RLTrainer-Setup.exe](https://github.com/mateo-brl/RL-trainer/releases/latest/download/RLTrainer-Setup.exe)** et double-clique dessus.
-3. Lance Rocket League avec BakkesMod, puis appuie sur **F2 > Plugins > RL Trainer**.
+3. Lance Rocket League avec BakkesMod, puis appuie sur **F3** pour ouvrir le menu RL Trainer.
 
 L'installeur n'est pas signé. Si Windows affiche « Windows a protégé votre ordinateur », clique sur
 « Informations complémentaires » puis « Exécuter quand même ».
 
-Les mises à jour se font depuis l'onglet **Accueil** du plugin, en un clic. Pour désinstaller :
+Les mises à jour se font depuis la page **Accueil** du plugin, en un clic. Pour désinstaller :
 Paramètres Windows > Applications > « RL Trainer (plugin BakkesMod) ». Ta progression est gardée.
 
 ## Utilisation
 
-- **F2 > Plugins > RL Trainer** ouvre tous les onglets et réglages.
+- Appuie sur **F3** pour ouvrir le menu (touche modifiable dans la page **HUD**, jamais assignée si elle sert déjà).
+  La page **HUD** règle la taille, la position et le nombre de panneaux.
+- **F2 > Plugins > RL Trainer** ouvre aussi toutes les pages et réglages.
 - `rlt_menu` dans la console (F6) ouvre la même chose dans une fenêtre à part.
 - Le plugin ne fait rien en ligne. Il marche en freeplay, en entraînement personnalisé, sur les maps workshop
   et dans les replays.
@@ -40,7 +42,8 @@ Paramètres Windows > Applications > « RL Trainer (plugin BakkesMod) ». Ta pro
   en freeplay. Codes de parcours à partager.
 - **Tirs & flicks** : balle posée sur le toit pour flicker, cibles dans le but (lucarnes, poteaux, centre),
   record de puissance.
-- **Prédiction** : trajectoire de la balle avec rebonds, point d'atterrissage, meilleur point pour l'intercepter.
+- **Prédiction** : trajectoire de la balle avec rebonds, point d'atterrissage, premier point où ta voiture
+  peut l'atteindre.
 - **Maps** : tes maps workshop installées, lancement en un clic, chronos sur les maps connues, stats par map.
 - **Progression** : records, historique, erreurs qui reviennent, objectifs de session, jours d'affilée,
   exercice conseillé.

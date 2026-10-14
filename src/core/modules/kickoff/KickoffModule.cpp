@@ -121,9 +121,11 @@ void KickoffModule::describeSettings(SettingsSchema& schema) {
               "Hauteur de la balle posée au centre. Ne change que si la balle saute au départ.", 2);
 
     auto gh = schema.section(&Settings::kickoff, "kickoff", "Fantôme");
-    gh.choice("rlt_ko_ghost", &KickoffConfig::ghostLevel, 3, ghosts, "Adversaire fantôme",
-              "Une voiture fantôme part de la position miroir. Mon record : ton meilleur essai sur cette position. "
-              "Adaptatif : le fantôme accélère quand tu gagnes et ralentit quand tu perds.");
+    gh.choice("rlt_ko_ghost", &KickoffConfig::ghostLevel, static_cast<int>(KickoffGhostMode::Adaptive), ghosts,
+              "Adversaire fantôme",
+              "Une voiture fantôme part de la position miroir. Adaptatif (conseillé) : il part au niveau Débutant, "
+              "accélère quand tu gagnes et ralentit quand tu perds. Mon record : ton meilleur essai sur cette "
+              "position.");
     gh.toggle("rlt_ko_ghost_hits_ball", &KickoffConfig::ghostHitsBall, true, "Le fantôme frappe la balle",
               "Quand le fantôme gagne ou fait match nul, la balle part comme s'il l'avait vraiment touchée.");
     gh.color("rlt_ko_ghost_color", &KickoffConfig::ghostColor, Color(120, 200, 255, 230), "Couleur du fantôme",
@@ -141,8 +143,10 @@ void KickoffModule::describeSettings(SettingsSchema& schema) {
               "Proportion de kickoffs gagnés vers laquelle le fantôme adaptatif se règle.", 2);
 
     auto n = schema.section(&Settings::kickoff, "kickoff", "Notation et retours");
-    n.choice("rlt_ko_grade_target", &KickoffConfig::gradeTarget, 2, levels, "Niveau de référence",
-             "Le temps et la vitesse sont notés par rapport à ce niveau (Pro = speedflip).");
+    n.choice("rlt_ko_grade_target", &KickoffConfig::gradeTarget, static_cast<int>(KickoffLevel::Standard), levels,
+             "Niveau de référence",
+             "Le temps et la vitesse sont notés par rapport à ce niveau. Standard : kickoff avec des flips. Pro et "
+             "Élite : speedflip (avancé).");
     n.toggle("rlt_ko_chat", &KickoffConfig::chatFeedback, true, "Résultat dans le chat",
              "Une ligne par essai : temps, note et le conseil principal.");
     n.toggle("rlt_ko_record_toasts", &KickoffConfig::recordToasts, true, "Notifications des records",
@@ -157,6 +161,8 @@ void KickoffModule::describeSettings(SettingsSchema& schema) {
              "Fraction de la largeur de l'écran (0 = bord gauche).", 2);
     h.number("rlt_ko_hud_y", &KickoffConfig::hudY, 0.12f, 0.f, 1.f, "Position Y du panneau",
              "Fraction de la hauteur de l'écran (0 = haut).", 2);
+    h.number("rlt_ko_hud_scale", &KickoffConfig::hudScale, 1.f, 0.5f, 2.f, "Taille du panneau",
+             "Multiplie la taille du panneau, en plus de la taille générale du HUD.", 2);
     h.toggle("rlt_ko_big_countdown", &KickoffConfig::bigCountdown, true, "Grand décompte",
              "Affiche 3, 2, 1, GO en grand au milieu de l'écran.");
     h.toggle("rlt_ko_show_path", &KickoffConfig::showPath, true, "Ligne vers la balle",
@@ -209,6 +215,25 @@ void KickoffModule::notify(Actions& out, const std::string& text, ToastKind kind
     out.toasts.push_back(std::move(t));
 }
 
+// The previous version defaulted to the Pro ghost and Pro grading, saved in config.cfg by BakkesMod. A player who
+// still has exactly that pair never chose it: move them once to the beginner-friendly defaults.
+void KickoffModule::migrateDefaults(Actions& out) {
+    defaultsV2_ = true;
+    out.requestSave = true;
+    if (cfg_.ghostLevel != static_cast<int>(KickoffGhostMode::Pro) ||
+        cfg_.gradeTarget != static_cast<int>(KickoffLevel::Pro))
+        return;
+    out.setCvars.emplace_back("rlt_ko_ghost", std::to_string(static_cast<int>(KickoffGhostMode::Adaptive)));
+    out.setCvars.emplace_back("rlt_ko_grade_target", std::to_string(static_cast<int>(KickoffLevel::Standard)));
+    ToastMessage t;
+    t.title = "Kickoff";
+    t.text = "Fantôme Adaptatif et notation Standard, plus adaptés pour progresser. Tu peux les changer dans la "
+             "page Kickoff.";
+    t.kind = ToastKind::Info;
+    t.seconds = 8.f;
+    out.toasts.push_back(std::move(t));
+}
+
 // ---- Tick ----------------------------------------------------------------------------------------------------
 void KickoffModule::onTick(const TickContext& ctx, Actions& out) {
     if (contextKnown_ && (ctx.game.mode != lastMode_ || ctx.game.mapName != lastMap_)) resetTransient();
@@ -216,6 +241,7 @@ void KickoffModule::onTick(const TickContext& ctx, Actions& out) {
     lastMap_ = ctx.game.mapName;
     contextKnown_ = true;
     if (!ctx.hasSnapshot) return;
+    if (!defaultsV2_) migrateDefaults(out);  // ticks only come from a running game: config.cfg is loaded
     const Snapshot& sn = ctx.snap;
     if (sn.frame == lastTickFrame_) return;
     if (sn.frame < lastTickFrame_) resetTransient();  // physics frame counter restarted (new map)
@@ -341,7 +367,8 @@ void KickoffModule::setupGhost(KickoffGhostMode mode) {
     switch (mode) {
     case KickoffGhostMode::PersonalBest:
         if (!stats_.personalBestProfile(spawn_, prof)) {
-            prof = KickoffGhostProfile::fromBenchmark(kickoffBenchmark(spawn_, KickoffLevel::Pro));
+            // No record on this spawn yet: the reference level stands in (Standard by default).
+            prof = KickoffGhostProfile::fromBenchmark(kickoffBenchmark(spawn_, target));
             ghostFallback_ = true;
         }
         break;
@@ -786,7 +813,7 @@ void KickoffModule::onCommand(const Command& cmd, const TickContext& ctx, Action
                ToastKind::Info);
     } else if (name == "reset_stats") {
         stats_.reset();
-        staircase_ = Staircase(cfg_.adaptiveTarget, 0.04f, 0.5f);
+        staircase_ = Staircase(cfg_.adaptiveTarget, kKoAdaptiveStep, kKoAdaptiveStart);
         last_ = KickoffResultView{};
         sessionAttempts_ = 0;
         sessionScoreSum_ = 0;
@@ -909,11 +936,15 @@ std::array<KickoffSpawnStats, kKoSpawnCount> KickoffModule::spawnStats() const {
 void KickoffModule::save(Store& store) const {
     stats_.save(store);
     staircase_.save(store, "kickoff.adaptive");
+    store.setInt("kickoff.defaults_v2", defaultsV2_ ? 1 : 0);
 }
 
 void KickoffModule::load(const Store& store) {
     stats_.load(store);
-    if (store.has("kickoff.adaptive.level")) staircase_.load(store, "kickoff.adaptive");
+    // The level is saved even when the adaptive ghost was never raced: only a played level is kept, so a player
+    // who never used it starts at the beginner time.
+    if (store.getInt("kickoff.adaptive.attempts", 0) > 0) staircase_.load(store, "kickoff.adaptive");
+    defaultsV2_ = store.getInt("kickoff.defaults_v2", 0) != 0;
 }
 
 } // namespace rlt

@@ -304,7 +304,7 @@ TEST(shooting_grade_flick_weak_late_and_off_centre) {
     CHECK(!a.success);
     CHECK(!a.tips.empty());
     CHECK(a.tips.front().code == "shooting.flick_late");
-    CHECK(a.tips.front().text == "Lance le dodge plus tôt pour plus de puissance.");
+    CHECK(a.tips.front().text == "Lance le flip plus tôt pour plus de puissance.");
 
     FlickReport side = goodReport();
     side.power = 1000.f;
@@ -438,7 +438,7 @@ TEST(shooting_grade_flick_delayed_title_and_uncertain) {
 }
 
 TEST(shooting_flick_min_power_by_level) {
-    CHECK_NEAR(flickMinPower(0.f), 1300.f, 1e-3f);
+    CHECK_NEAR(flickMinPower(0.f), 1000.f, 1e-3f); // niveau 1: a slow flick from a stopped car
     CHECK_NEAR(flickMinPower(1.f), 2400.f, 1e-3f);
     CHECK(flickMinPower(0.5f) > flickMinPower(0.2f));
 }
@@ -496,7 +496,7 @@ TEST(shooting_howto_uses_player_buttons) {
     CHECK(flickCue(FlickType::Breezi, pad, xb, 0.6f).find(airRollPrompt(pad, xb)) != std::string::npos);
     for (int i = 0; i < kFlickTypeCount; ++i) CHECK(flickCue(static_cast<FlickType>(i), pad, xb, 0.6f).size() < 80);
     const PlayerProfile none;
-    CHECK(flickCue(FlickType::Front, none, xb, 0.6f) == "Saut, puis dodge avant");
+    CHECK(flickCue(FlickType::Front, none, xb, 0.6f) == "Saut, puis flip avant");
     const std::string n = flickHowTo(FlickType::Musty, none, xb, 0.6f);
     CHECK(n.find("Saute,") != std::string::npos);
     CHECK(n.find("()") == std::string::npos);
@@ -504,8 +504,11 @@ TEST(shooting_howto_uses_player_buttons) {
         const std::string t = flickHowTo(static_cast<FlickType>(i), pad, xb, 0.6f);
         CHECK(!t.empty());
         CHECK(t.find("\xE2\x80\x94") == std::string::npos); // no em dash
-        // With the ball on the roof the dodge direction decides where the ball goes: never "vers la balle".
+        // With the ball on the roof the flip direction decides where the ball goes: never "vers la balle".
         CHECK_MSG(t.find("vers la balle") == std::string::npos, t);
+        // "flip" everywhere in the player's text, like the rest of the plugin.
+        CHECK_MSG(t.find("dodge") == std::string::npos, t);
+        CHECK_MSG(flickCue(static_cast<FlickType>(i), pad, xb, 0.6f).find("dodge") == std::string::npos, t);
     }
     // The delayed threshold is quoted from the setting.
     CHECK(flickCue(FlickType::Delayed, pad, xb, 0.8f).find("garde la balle 0,8 s") != std::string::npos);

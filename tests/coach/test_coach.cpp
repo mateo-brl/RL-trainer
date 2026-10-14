@@ -285,6 +285,99 @@ TEST(coach_card_long_tip_is_wrapped_and_bounded) {
     CHECK(tipLines >= 2);
 }
 
+// Compact HUD: the card does not repeat the module panel (verdict, score, metrics, tip). It shows a new record
+// and a goal reached, else the recurring mistake, in at most 2 lines, and nothing at all otherwise.
+namespace {
+
+DrawList drawCompact(CoachModule& m, const Env& env) {
+    DrawContext dc{env.settings, env.game, env.profile, env.snap, env.hasSnapshot, false, 1.f, true};
+    DrawList dl;
+    m.draw(env.view(), dc, dl);
+    return dl;
+}
+
+} // namespace
+
+TEST(coach_card_compact_hides_what_the_module_panel_says) {
+    Env env;
+    env.settings.coach.feedbackFading = false;
+    CoachModule m;
+    setup(m, env);
+    send(m, env,
+         R("mech.speedflip", 62.f, true)
+             .title("Speedflip")
+             .metric("angle", "Angle du flip", 2.f, "°", 30.f)
+             .tip("sf.angle", "Flip plus en diagonale."));
+    CHECK(m.card().active);
+    DrawList full;
+    m.draw(env.view(), env.drawCtx(), full);
+    CHECK_EQ(full.panels.size(), static_cast<size_t>(1));
+    CHECK(drawCompact(m, env).empty());  // same verdict and tip as the module panel: no card
+}
+
+TEST(coach_card_compact_record_and_goal) {
+    Env env;
+    env.settings.coach.feedbackFading = false;
+    CoachModule m;
+    setup(m, env);
+    command(m, env, "goal_add", {"custom", "attempts", "any", "2"});
+    send(m, env, R("mech.speedflip", 80.f, true).title("Speedflip").record(2.05f, true));  // first record: silent
+    send(m, env, R("mech.speedflip", 92.f, true).title("Speedflip").record(1.92f, true));  // record and goal 2/2
+    CHECK(m.card().newRecord);
+    CHECK(m.card().goalReached);
+    DrawList dl = drawCompact(m, env);
+    CHECK_EQ(dl.panels.size(), static_cast<size_t>(1));
+    if (dl.panels.empty()) return;
+    const DrawPanel& p = dl.panels[0];
+    CHECK_EQ(p.title, std::string("Speedflip"));
+    CHECK_EQ(p.lines.size(), static_cast<size_t>(2));
+    CHECK(p.lines[0].text.find("Nouveau record ! 1.92 s") == 0);
+    CHECK(p.lines[1].text.find("Objectif atteint") == 0);
+    for (const auto& l : p.lines) CHECK(l.text.find("/100") == std::string::npos);
+    // A record in milliseconds keeps its number in the full card only.
+    send(m, env, R("mech.flipcancel", 70.f, true).metric("cancel", "Annulation", 60.f, "ms", 0.f).record(60.f, true));
+    send(m, env, R("mech.flipcancel", 75.f, true).metric("cancel", "Annulation", 45.f, "ms", 0.f).record(45.f, true));
+    CHECK(m.card().newRecord);
+    dl = drawCompact(m, env);
+    CHECK_EQ(dl.panels.size(), static_cast<size_t>(1));
+    if (dl.panels.empty()) return;
+    CHECK_EQ(dl.panels[0].lines.size(), static_cast<size_t>(1));
+    CHECK_EQ(dl.panels[0].lines[0].text, std::string("Nouveau record !"));
+    CHECK(m.card().recordLine.find(" ms") != std::string::npos);
+}
+
+TEST(coach_card_compact_recurring_mistake_gives_the_count_not_the_tip) {
+    Env env;
+    env.settings.coach.feedbackFading = false;
+    CoachModule m;
+    setup(m, env);
+    const std::string tip = "Garde ta voiture sous la balle et dose le boost pour rester collé à elle pendant tout le dribble.";
+    send(m, env, R("first_touch.ground", 40.f, false).tip("ft.too_fast", "Laisse la balle venir."));
+    CHECK(drawCompact(m, env).empty());
+    send(m, env, R("first_touch.ground", 40.f, false).tip("ft.too_fast", "Laisse la balle venir."));
+    send(m, env, R("first_touch.ground", 40.f, false).tip("ft.too_fast", "Laisse la balle venir."));
+    CHECK(m.card().tipRecurring);
+    DrawList dl = drawCompact(m, env);
+    CHECK_EQ(dl.panels.size(), static_cast<size_t>(1));
+    if (dl.panels.empty()) return;
+    // The module panel already shows the tip: the card only says how often it came back.
+    CHECK_EQ(dl.panels[0].lines.size(), static_cast<size_t>(1));
+    CHECK_EQ(dl.panels[0].lines[0].text, std::string("Erreur fréquente : 3 des 5 derniers essais"));
+    CHECK(dl.panels[0].lines[0].color == colors::Orange);
+    // A long tip is never repeated either: still one short line.
+    for (int i = 0; i < 3; ++i) send(m, env, R("x.y", 40.f, false).tip("c", tip));
+    dl = drawCompact(m, env);
+    CHECK_EQ(dl.panels.size(), static_cast<size_t>(1));
+    if (dl.panels.empty()) return;
+    CHECK_EQ(dl.panels[0].lines.size(), static_cast<size_t>(1));
+    for (const auto& l : dl.panels[0].lines) CHECK(l.text.find("dribble") == std::string::npos);
+    // The preview shows the compact card too (placement from the settings).
+    command(m, env, "preview");
+    dl = drawCompact(m, env);
+    CHECK_EQ(dl.panels.size(), static_cast<size_t>(1));
+    if (!dl.panels.empty()) CHECK(dl.panels[0].lines.size() == 1);
+}
+
 TEST(coach_feedback_fading_in_module) {
     Env env;
     CoachModule m;

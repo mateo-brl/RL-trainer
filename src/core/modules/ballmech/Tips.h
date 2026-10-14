@@ -28,4 +28,8 @@ std::string airRollPrompt(const PlayerProfile& profile, KeyStyle style);
 // Tips for a list of error codes, sorted by weight (stable for equal weights), duplicates removed.
 std::vector<Tip> buildTips(const std::vector<std::string>& errors, const PlayerProfile& profile, KeyStyle style);
 
+// The same advice in one short HUD line without button names ("Pose les 4 roues sur la balle en même temps"),
+// looked up by the tip code ("bm.fr_no_reset"). Falls back to the tip's own text for a code of another module.
+std::string hudTipText(const Tip& tip);
+
 } // namespace rlt::bm

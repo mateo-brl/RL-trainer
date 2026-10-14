@@ -2,6 +2,7 @@
 // arbitration, flip reset counting and event emission, HUD output, robustness, persistence.
 #include <set>
 
+#include "core/modules/ballmech/Tips.h"
 #include "tests/TestFramework.h"
 #include "tests/ballmech/Sim.h"
 
@@ -27,11 +28,36 @@ ViewContext view1080() {
     return v;
 }
 
-DrawList drawNow(Harness& h) {
+DrawList drawNow(Harness& h, bool compact = false) {
     DrawList dl;
-    DrawContext dc{h.settings, h.game, h.profile, h.latest, h.hasSnap, h.host.ownsActivity(&h.mod), 1.f};
+    DrawContext dc{h.settings, h.game, h.profile, h.latest, h.hasSnap, h.host.ownsActivity(&h.mod), 1.f, compact};
     h.mod.draw(view1080(), dc, dl);
     return dl;
+}
+
+// Lines the player sees with the compact HUD (the default): detail lines are dropped by the engine.
+std::vector<PanelLine> mainLines(const DrawPanel& p) {
+    std::vector<PanelLine> v;
+    for (const auto& l : p.lines)
+        if (!l.detail) v.push_back(l);
+    return v;
+}
+
+// No measures in milliseconds, degrees or game units in the lines the compact HUD shows.
+bool technical(const std::string& s) {
+    return s.find("°") != std::string::npos || s.find(" ms") != std::string::npos || s.find(" uu") != std::string::npos ||
+           s.find("km/h") != std::string::npos || s.find("idéal") != std::string::npos;
+}
+
+// Renumbers a scenario so it continues right after the harness' latest snapshot.
+std::vector<SimTick> continueFrom(const Harness& h, std::vector<SimTick> ticks) {
+    if (ticks.empty()) return ticks;
+    const int64_t offset = h.latest.frame + 1 - ticks.front().s.frame;
+    for (auto& t : ticks) {
+        t.s.frame += offset;
+        t.s.time = static_cast<float>(t.s.frame) / kTickRate;
+    }
+    return ticks;
 }
 } // namespace
 
@@ -427,11 +453,15 @@ TEST(bm_module_hud_panel) {
         const DrawPanel& p = dl.panels[0];
         CHECK_NEAR(p.pos.x, 0.01f * 1920.f, 0.5f);
         CHECK_NEAR(p.pos.y, 0.60f * 1080.f, 0.5f);
-        CHECK(p.title == "Mécas balle");
+        CHECK(p.title == "Frappe en flip");  // the detected mechanic names the panel
         CHECK(p.lines.size() >= 3 && p.lines.size() <= 12);
-        CHECK(p.lines[0].text == "Frappe en flip");
-        CHECK(p.lines[1].bar > 0.5f);
+        CHECK(p.lines[0].text.find("/100") != std::string::npos);
+        CHECK(p.lines[0].bar > 0.5f);
+        CHECK(!p.lines[0].detail);
         for (const auto& l : p.lines) CHECK(!hasEmDash(l.text));
+        bool measures = false;  // the key measures are still there, as detail lines
+        for (const auto& l : p.lines) measures = measures || (l.detail && l.text.find("Vitesse de sortie") != std::string::npos);
+        CHECK(measures);
     }
     CHECK(!dl.lines3D.empty() && dl.lines3D.size() <= 100);  // projected path of the shot
     // HUD position follows the settings.
@@ -446,6 +476,82 @@ TEST(bm_module_hud_panel) {
     h.set("rlt_bm_hud", "0");
     h.set("rlt_bm_hud_seconds", "0");
     CHECK(drawNow(h).panels.empty());
+}
+
+TEST(bm_module_hud_compact_budget) {
+    // Compact HUD: result, one tip in words, nothing technical; at most 3 visible lines.
+    Harness h;
+    h.run(aerialScenario(AE::OffCenter));
+    h.idle(10);
+    CHECK_EQ(h.results.size(), 1u);
+    if (!h.results.empty()) CHECK(!h.results[0].tips.empty());
+    const DrawList dl = drawNow(h, true);
+    CHECK_EQ(dl.panels.size(), 1u);
+    if (!dl.panels.empty()) {
+        const auto lines = mainLines(dl.panels[0]);
+        CHECK(!lines.empty() && lines.size() <= 3);
+        if (!lines.empty()) CHECK(lines[0].text.find("/100") != std::string::npos);
+        if (lines.size() >= 2 && !h.results.empty() && !h.results[0].tips.empty()) {
+            CHECK(lines[1].text == bm::hudTipText(h.results[0].tips.front()));
+            CHECK(lines[1].text.size() <= 60);
+        }
+        for (const auto& l : lines) CHECK_MSG(!technical(l.text), l.text);
+    }
+    // Only a counter left (detail): the compact HUD draws no empty panel.
+    Harness r;
+    r.run(flipResetScenario(FR::Good, true));
+    r.idle(static_cast<int>(10.f * kTickRate));
+    CHECK(r.mod.sessionResets() > 0);
+    CHECK(drawNow(r, true).panels.empty());
+    CHECK_EQ(drawNow(r, false).panels.size(), 1u);  // the full HUD still shows the session counter
+}
+
+TEST(bm_module_hud_drill_single_panel) {
+    // During a drill one panel carries everything: last result, its tip, then the action and the time left.
+    Harness h;
+    Sim warm;
+    orient(warm.s.car, PI / 2, 0, 0);
+    warm.s.ball.pos = {0, 1000, 93};
+    warm.step(10);
+    h.run(warm.out);
+    h.command("drill", {"powershot"});
+    h.idle(static_cast<int>(h.settings.ballmech.drillReady * kTickRate) + 2);
+    DrawList dl = drawNow(h, true);
+    CHECK_EQ(dl.panels.size(), 1u);
+    if (!dl.panels.empty()) {
+        const DrawPanel& p = dl.panels[0];
+        CHECK(p.title == "Exercice : Frappe puissante (niveau 1/10)");
+        const auto lines = mainLines(p);
+        CHECK_EQ(lines.size(), 1u);  // no attempt yet: only what to do, with the seconds left
+        if (!lines.empty()) {
+            CHECK(lines[0].text.rfind("1. Arrive vite", 0) == 0);
+            CHECK(lines[0].text.find(" s") != std::string::npos);
+            CHECK(lines[0].bar > 0.9f);
+        }
+        bool stopHelp = false;
+        for (const auto& l : p.lines) stopHelp = stopHelp || (l.detail && l.text.find("rlt ballmech stop") != std::string::npos);
+        CHECK(stopHelp);
+    }
+    h.run(continueFrom(h, powerShotScenario(PS::FlipShot)));
+    h.idle(5);
+    CHECK_EQ(h.results.size(), 1u);
+    dl = drawNow(h, true);
+    CHECK_EQ(dl.panels.size(), 1u);  // the main result panel is not drawn during the drill
+    if (!dl.panels.empty()) {
+        const auto lines = mainLines(dl.panels[0]);
+        CHECK(lines.size() >= 2 && lines.size() <= 3);
+        if (lines.size() >= 2) {
+            CHECK(lines[0].text.rfind("Réussi ! ", 0) == 0);
+            CHECK(lines[0].text.find("/100") != std::string::npos);
+            CHECK(lines[0].text.find("(1/1 réussis)") != std::string::npos);
+            CHECK(lines.back().text.rfind("1. Arrive vite", 0) == 0);
+        }
+        for (const auto& l : lines) CHECK_MSG(!technical(l.text) && !hasEmDash(l.text), l.text);
+    }
+    // The full HUD adds the details to the same panel.
+    dl = drawNow(h, false);
+    CHECK_EQ(dl.panels.size(), 1u);
+    if (!dl.panels.empty()) CHECK(dl.panels[0].lines.size() > mainLines(dl.panels[0]).size());
 }
 
 // ---- Persistence -------------------------------------------------------------------------------------------------

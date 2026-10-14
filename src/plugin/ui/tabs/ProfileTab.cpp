@@ -463,7 +463,7 @@ void renderCommands(UiContext& ctx) {
     wrapped("Ces commandes marchent aussi dans la console BakkesMod (F6) :");
     ImGui::BulletText("rlt profile resume : résumé de ta config et de ses principaux conseils");
     ImGui::BulletText("rlt profile hotkeys : liste des raccourcis proposés dans le chat");
-    ImGui::BulletText("rlt profile refresh : demande une relecture de ta config (faite dès que cet onglet est ouvert)");
+    ImGui::BulletText("rlt profile refresh : demande une relecture de ta config (faite dès que cette page est ouverte)");
     ImGui::BulletText("rlt profile forget : vide la liste des raccourcis à annuler");
     ImGui::BulletText("rlt profile resettoast : réaffiche la notification \"Config détectée\"");
     ImGui::BulletText("rlt_menu : ouvre ou ferme la fenêtre RL Trainer");
@@ -496,23 +496,14 @@ void renderProfileTab(UiContext& ctx) {
     if (!enabled) ui::textColored(colors::Orange, "Module désactivé : l'analyse reste visible, sans notification ni hitbox.");
 
     if (ctx.profileService) {
-        // A "refresh" typed in the console is served here while the window is open (rate limited).
-        if (r.refreshPending) {
-            ImGuiStorage* storage = ImGui::GetStateStorage();
-            const ImGuiID id = ImGui::GetID("pf_pending_refresh");
-            const float now = static_cast<float>(ImGui::GetTime());
-            if (now - storage->GetFloat(id, -1000.f) > 3.f) {
-                storage->SetFloat(id, now);
-                refreshNow(ctx);
-            }
-        }
+        // A "refresh" typed in the console is served by the plugin's periodic tick as soon as a local game runs.
         if (ImGui::Button("Relire ma config")) refreshNow(ctx);
         hoverText("Relit tout de suite tes touches, ta caméra, tes deadzones et ta voiture. Sinon, la lecture est "
                   "automatique dès qu'un changement est détecté (toutes les 3 s).");
         ImGui::SameLine();
     }
-    if (!r.valid) ImGui::TextDisabled("Config pas encore lue.");
-    else if (r.refreshPending) ImGui::TextDisabled("Relecture demandée...");
+    if (!r.valid) ImGui::TextDisabled("Config pas encore lue : elle sera lue dès que tu seras en freeplay.");
+    else if (r.refreshPending) ImGui::TextDisabled("Relecture demandée (faite à ta prochaine partie hors ligne)...");
     else ImGui::TextDisabled("Lue %d fois%s.", r.reads, r.forcedReads > 0 ? " (dont à la demande)" : "");
     if (r.valid) {
         ImGui::Text("Détecté : %s", r.summary.c_str());
@@ -525,7 +516,10 @@ void renderProfileTab(UiContext& ctx) {
 
     if (ImGui::BeginTabBar("##pf_tabs")) {
         if (ImGui::BeginTabItem("Ma config")) {
-            renderSummary(r);
+            // Before the first read the profile only holds code defaults: never present them as detected.
+            if (r.valid) renderSummary(r);
+            else ImGui::TextWrapped("Rien à afficher pour l'instant : lance le freeplay, un entraînement ou un match "
+                                    "hors ligne, ta config est lue au bout de quelques secondes.");
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Touches")) {

@@ -83,6 +83,7 @@ void Engine::setContext(const GameContext& ctx, Actions& out) {
     const bool mapChanged = ctx.mode != context_.mode || ctx.mapName != context_.mapName;
     context_ = ctx;
     if (mapChanged) {
+        hudFocus_.clear();
         history_.clear();
         hasSnapshot_ = false;
         pendingTouches_.clear();
@@ -226,10 +227,32 @@ void Engine::kismet(const std::vector<KismetVar>& vars, Actions& out) {
 
 void Engine::draw(const ViewContext& view, DrawList& out) {
     auto lk = lock();
-    if (!settings_.general.enabled) return;
+    const GeneralConfig& g = settings_.general;
+    if (!g.enabled) return;
     if (context_.mode == GameMode::Online || context_.mode == GameMode::Menu) return;
-    if (context_.mode == GameMode::Replay && !settings_.general.showInReplays) return;
-    for (auto& m : modules_) m->draw(view, makeDrawContext(m.get(), view), out);
+    if (context_.mode == GameMode::Replay && !g.showInReplays) return;
+    // Focused HUD: only the running exercise, else the module of the latest result, keeps its 2D panels and
+    // texts. The speed overlay and the map timer are always shown; 3D drawings (zones, markers) always pass.
+    const std::string& focus = activityOwner_.empty() ? hudFocus_.module : activityOwner_;
+    for (auto& m : modules_) {
+        const std::string id = m->id();
+        DrawList part;
+        m->draw(view, makeDrawContext(m.get(), view), part);
+        const bool always = id == "overlay" || (id == "maps" && activityOwner_.empty());
+        const bool show2D = !g.hudFocus || always || id == focus;
+        out.lines3D.insert(out.lines3D.end(), part.lines3D.begin(), part.lines3D.end());
+        out.texts3D.insert(out.texts3D.end(), part.texts3D.begin(), part.texts3D.end());
+        if (!show2D) continue;
+        for (auto& p : part.panels) {
+            styleHudPanel(p, g.hudCompact, g.hudTextSize, g.hudOpacity);
+            // Compact: a panel left with only its title once the detail lines are dropped would be an empty box.
+            if (!p.lines.empty() || (!g.hudCompact && !p.title.empty())) out.panels.push_back(std::move(p));
+        }
+        out.texts2D.insert(out.texts2D.end(), part.texts2D.begin(), part.texts2D.end());
+        out.rects2D.insert(out.rects2D.end(), part.rects2D.begin(), part.rects2D.end());
+        out.lines2D.insert(out.lines2D.end(), part.lines2D.begin(), part.lines2D.end());
+        out.triangles2D.insert(out.triangles2D.end(), part.triangles2D.begin(), part.triangles2D.end());
+    }
 }
 
 // ---- Commands ------------------------------------------------------------------------------------------
@@ -345,8 +368,9 @@ TickContext Engine::makeTickContext(const Module* m) const {
 
 DrawContext Engine::makeDrawContext(const Module* m, const ViewContext& view) const {
     const float screenFactor = view.screenH > 0.f ? view.screenH / 1080.f : 1.f;
-    return DrawContext{settings_, context_, profile_, latest_, hasSnapshot_, ownsActivity(m),
-                       settings_.general.hudScale * screenFactor};
+    return DrawContext{settings_,     context_,      profile_,
+                       latest_,       hasSnapshot_,  ownsActivity(m),
+                       settings_.general.hudScale * screenFactor, settings_.general.hudCompact};
 }
 
 template <class Fn>
@@ -417,6 +441,7 @@ void Engine::route(Module* source, Actions&& a, Actions& out, int depth) {
 
     if (depth >= kMaxRouteDepth) return;
     for (const auto& r : results) {
+        hudFocus_.note(r.module, hasSnapshot_ ? latest_.time : 0.f);
         for (auto& m : modules_) {
             Actions b;
             m->onResult(r, makeTickContext(m.get()), b);

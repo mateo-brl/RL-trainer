@@ -1,5 +1,7 @@
 // Drawing of the first-touch module: session panel (zone "firsttouch", right bottom), contact heatmap,
 // drill panel (zone "exercice en cours", top left) and the 3D marker of the last contact point.
+// Compact HUD: each panel keeps at most 3 main lines (result, one tip, current action or time left); the rest is
+// flagged `detail` and only shows with the compact HUD off, like the heatmap.
 
 #include <cmath>
 
@@ -10,7 +12,7 @@ namespace rlt {
 
 namespace {
 constexpr Color kTextColor{235, 235, 235, 255};
-constexpr Color kDimColor{170, 170, 170, 255};
+constexpr Color kDimColor{205, 205, 205, 255};
 constexpr Color kAccent{0, 200, 255, 255};
 
 PanelLine makeLine(std::string text, Color c, float scale = 1.f, float bar = -1.f, Color barColor = colors::Green) {
@@ -23,7 +25,16 @@ PanelLine makeLine(std::string text, Color c, float scale = 1.f, float bar = -1.
     return l;
 }
 
+PanelLine detailLine(std::string text, Color c, float scale = 0.9f, float bar = -1.f, Color barColor = colors::Green) {
+    PanelLine l = makeLine(std::move(text), c, scale, bar, barColor);
+    l.detail = true;
+    return l;
+}
+
 std::string pct(float ratio) { return std::to_string(static_cast<int>(std::lround(clamp01(ratio) * 100.f))) + " %"; }
+
+// Whole seconds left, rounded up ("3 s" until the last second is over).
+std::string secondsText(float s) { return std::to_string(static_cast<int>(std::ceil(std::max(0.f, s) - 1e-3f))) + " s"; }
 } // namespace
 
 Color FirstTouchModule::scoreColor(float score) const {
@@ -43,7 +54,8 @@ Color FirstTouchModule::zoneColor(ft::SpeedZone z) const {
 
 void FirstTouchModule::draw(const ViewContext& view, const DrawContext& ctx, DrawList& out) {
     if (!cfg_.enabled) return;
-    if (cfg_.hudEnabled) drawStatsPanel(view, ctx, out);
+    // During a drill the compact HUD keeps the drill panel only: it already carries the verdict and the tip.
+    if (cfg_.hudEnabled && !(ctx.compactHud && drill_.active)) drawStatsPanel(view, ctx, out);
     if (drill_.active) drawDrillPanel(view, ctx, out);
     if (cfg_.showContactMarker) drawContactMarker(view, ctx, out);
 }
@@ -63,52 +75,54 @@ void FirstTouchModule::drawStatsPanel(const ViewContext& view, const DrawContext
     p.scale = scale;
     p.minWidth = 190.f * scale;
 
-    auto dribbleLines = [&]() {
+    // Main lines: the dribble count on dribble maps, the last touch (score and verdict), its one tip in words.
+    auto dribbleLines = [&](bool main) {
         if (dv.contacts >= 1) {
             std::string t = "Dribble : " + std::to_string(dv.contacts) + (dv.contacts > 1 ? " touches" : " touche");
-            if (dv.cadence > 0.f) t += ", " + formatNumber(dv.cadence, 1) + " /s";
             t += " (" + formatNumber(dv.seconds, 1) + " s)";
-            p.lines.push_back(makeLine(t, dv.active ? kAccent : kTextColor));
+            p.lines.push_back(main ? makeLine(t, dv.active ? kAccent : kTextColor) : detailLine(t, kDimColor));
+            if (dv.cadence > 0.f)
+                p.lines.push_back(detailLine("Rythme : " + formatNumber(dv.cadence, 1) + " touches /s", kDimColor));
         }
         if (session_.bestChainContacts > 0)
-            p.lines.push_back(makeLine("Record dribble : " + std::to_string(session_.bestChainContacts) + " touches, " +
-                                           formatNumber(session_.bestChainSeconds, 1) + " s",
-                                       kDimColor, 0.9f));
+            p.lines.push_back(detailLine("Record dribble : " + std::to_string(session_.bestChainContacts) + " touches, " +
+                                             formatNumber(session_.bestChainSeconds, 1) + " s",
+                                         kDimColor));
     };
-    if (dribbleMap) dribbleLines();
+    if (dribbleMap) dribbleLines(true);
 
     if (last_.valid) {
-        const std::string head = std::string(ft::touchTypeTitle(last_.type)) + " : " + std::to_string(static_cast<int>(last_.score)) +
-                                 "/100  " + last_.headline;
+        const std::string head = std::string(ft::touchTypeTitle(last_.type)) + " : " +
+                                 std::to_string(static_cast<int>(last_.score)) + "/100  " + last_.headline;
         p.lines.push_back(makeLine(head, scoreColor(last_.score)));
-        p.lines.push_back(makeLine("Écart " + ft::formatSpeedValue(last_.speedDiff, unit) + "  |  contact " +
-                                       ft::contactHeightLabel(last_.height) + ", " + ft::carPartLabel(last_.part),
-                                   zoneColor(last_.zone)));
-        p.lines.push_back(makeLine("Contrôle " + pct(last_.controlFraction), kTextColor, 1.f, last_.controlFraction,
-                                   last_.controlled ? cfg_.goodColor : cfg_.badColor));
         if (cfg_.showTips && !last_.tips.empty() && last_.score < 85.f)
-            p.lines.push_back(makeLine(last_.tips.front().text, cfg_.okColor, 0.9f));
+            p.lines.push_back(makeLine(last_.tips.front().text, cfg_.okColor));
+        p.lines.push_back(detailLine("Écart " + ft::formatSpeedValue(last_.speedDiff, unit) + "  |  contact " +
+                                         ft::contactHeightLabel(last_.height) + ", " + ft::carPartLabel(last_.part),
+                                     zoneColor(last_.zone)));
+        p.lines.push_back(detailLine("Contrôle " + pct(last_.controlFraction), kTextColor, 0.9f, last_.controlFraction,
+                                     last_.controlled ? cfg_.goodColor : cfg_.badColor));
     }
     if (session_.graded > 0) {
-        p.lines.push_back(makeLine("Session : " + std::to_string(session_.graded) + " touches, moyenne " +
-                                       formatNumber(session_.averageScore(), 0),
-                                   kTextColor));
-        p.lines.push_back(makeLine("Zone verte " + pct(session_.goodZoneRate()) + ", réussite " + pct(session_.successRate()),
-                                   kDimColor, 0.9f));
-        p.lines.push_back(makeLine("Série " + std::to_string(session_.streak) + " (record " +
-                                       std::to_string(session_.bestStreak) + ")",
-                                   kDimColor, 0.9f));
+        p.lines.push_back(detailLine("Session : " + std::to_string(session_.graded) + " touches, moyenne " +
+                                         formatNumber(session_.averageScore(), 0),
+                                     kTextColor));
+        p.lines.push_back(detailLine("Zone verte " + pct(session_.goodZoneRate()) + ", réussite " + pct(session_.successRate()),
+                                     kDimColor));
+        p.lines.push_back(detailLine("Série " + std::to_string(session_.streak) + " (record " +
+                                         std::to_string(session_.bestStreak) + ")",
+                                     kDimColor));
         if (cfg_.showTrend) {
             const std::string t = ft::trendText(session_, unit, cfg_.goodZone * 0.66f);
-            if (!t.empty()) p.lines.push_back(makeLine(t, kAccent, 0.9f));
+            if (!t.empty()) p.lines.push_back(detailLine(t, kAccent));
         }
         const std::string code = persistentTipCode();
         if (!code.empty() && ft::tipShortLabel(code)[0] != '\0')
-            p.lines.push_back(makeLine(std::string("À travailler : ") + ft::tipShortLabel(code), cfg_.okColor, 0.9f));
+            p.lines.push_back(detailLine(std::string("À travailler : ") + ft::tipShortLabel(code), cfg_.okColor));
     }
-    if (!dribbleMap && (dv.active || session_.bestChainContacts > 0)) dribbleLines();
+    if (!dribbleMap && (dv.active || session_.bestChainContacts > 0)) dribbleLines(false);
     out.panel(std::move(p));
-    if (cfg_.showHeatmap && !heat_.empty())
+    if (cfg_.showHeatmap && !heat_.empty() && !ctx.compactHud)
         drawHeatmap(cfg_.hudX * view.screenW, cfg_.hudY * view.screenH, right, scale, out);
 }
 
@@ -161,45 +175,52 @@ void FirstTouchModule::drawDrillPanel(const ViewContext& view, const DrawContext
     p.anchorX = cfg_.drillHudX > 0.5f ? Align::Right : Align::Left;
     p.scale = scale;
     p.minWidth = 220.f * scale;
-    p.title = std::string("Exercice : ") + ft::drillName(drill_.type);
-    if (drill_.type == ft::DrillType::Mix) p.title += std::string(" (") + ft::drillName(drill_.current) + ")";
 
     const auto i = static_cast<size_t>(drill_.current);
     const float level = drill_.phase == DrillPhase::Place ? stairs_[i].level() : drill_.repLevel;
-    p.lines.push_back(makeLine("Niveau " + std::to_string(static_cast<int>(std::lround(level * 100.f))) + "/100", kTextColor,
-                               1.f, level, kAccent));
-    std::string reps = "Essais réussis : " + std::to_string(drill_.successes) + "/" + std::to_string(drill_.reps);
-    if (drill_.reps > 0) reps += " (" + pct(static_cast<float>(drill_.successes) / static_cast<float>(drill_.reps)) + ")";
-    p.lines.push_back(makeLine(reps, kDimColor, 0.9f));
+    // Title: the drill and its level (1..10); a Mix names the drill of the current ball.
+    p.title = drill_.type == ft::DrillType::Mix ? std::string("Mix : ") + ft::drillName(drill_.current)
+                                                : std::string(ft::drillName(drill_.type));
+    p.title += ", niveau " + std::to_string(ft::playerLevel(level)) + "/10";
+
+    // At most 3 main lines: what to do now, the time left (or the verdict of the last ball), the one tip.
     switch (drill_.phase) {
-    case DrillPhase::Place: p.lines.push_back(makeLine("Placement de la balle...", kDimColor)); break;
+    case DrillPhase::Place: p.lines.push_back(makeLine("Placement de la balle...", kTextColor)); break;
     case DrillPhase::WaitTouch: {
         const float left = std::max(0.f, drill_.deadline - drill_.now);
+        const float total = drill_.repCriteria.timeout;
         p.lines.push_back(makeLine(
             ft::drillInstruction(drill_.current, ctx.profile, keyStyleFromIndex(ctx.settings.profile.buttonStyle)),
-            kTextColor));
-        p.lines.push_back(makeLine("Temps : " + formatNumber(left, 1) + " s", kDimColor, 0.9f,
-                                   cfg_.drillTimeout > 0.f ? left / cfg_.drillTimeout : 0.f,
+            colors::White));
+        std::string timer = "Temps : " + secondsText(left);
+        if (drill_.reps > 0) timer += "   Réussis : " + std::to_string(drill_.successes) + "/" + std::to_string(drill_.reps);
+        p.lines.push_back(makeLine(timer, kTextColor, 1.f, total > 0.f ? left / total : 0.f,
                                    left < 2.f ? cfg_.badColor : cfg_.okColor));
+        // After a miss the tip stays as a reminder; otherwise the goal of the level.
+        if (!drill_.lastSuccess && !drill_.lastTip.empty()) p.lines.push_back(makeLine(drill_.lastTip, cfg_.okColor));
+        else p.lines.push_back(makeLine(ft::drillGoal(level), kAccent));
         break;
     }
     case DrillPhase::Evaluate: {
         const float frac = pending_.window.windowTicks() > 0
                                ? static_cast<float>(pending_.window.elapsedTicks()) / static_cast<float>(pending_.window.windowTicks())
                                : 0.f;
-        p.lines.push_back(makeLine("Garde le contrôle de la balle !", cfg_.goodColor, 1.f, frac, cfg_.goodColor));
+        p.lines.push_back(makeLine("Garde la balle près de toi !", cfg_.goodColor, 1.f, frac, cfg_.goodColor));
         break;
     }
     case DrillPhase::Pause: {
         if (!drill_.lastOutcome.empty())
             p.lines.push_back(makeLine(drill_.lastOutcome, drill_.lastSuccess ? cfg_.goodColor : cfg_.badColor));
-        p.lines.push_back(makeLine("Balle suivante dans " + formatNumber(std::max(0.f, drill_.deadline - drill_.now), 1) + " s",
-                                   kDimColor, 0.9f));
+        if (!drill_.lastSuccess && !drill_.lastTip.empty()) p.lines.push_back(makeLine(drill_.lastTip, cfg_.okColor));
+        p.lines.push_back(makeLine("Balle suivante dans " + secondsText(drill_.deadline - drill_.now), kTextColor));
         break;
     }
     case DrillPhase::Idle: break;
     }
-    p.lines.push_back(makeLine("Arrêter : rlt firsttouch stop", kDimColor, 0.8f));
+    if (drill_.reps > 0 && drill_.phase != DrillPhase::WaitTouch)
+        p.lines.push_back(detailLine("Réussis : " + std::to_string(drill_.successes) + "/" + std::to_string(drill_.reps),
+                                     kDimColor));
+    p.lines.push_back(detailLine("Arrêter : rlt firsttouch stop", kDimColor, 0.8f));
     out.panel(std::move(p));
 }
 

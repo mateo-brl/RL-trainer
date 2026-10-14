@@ -71,7 +71,8 @@ void ProfileModule::describeSettings(SettingsSchema& schema) {
     h.toggle("rlt_pf_hk_stop", &ProfileConfig::hotkeyStop, true, "Raccourci : arrêter l'exercice",
              "Propose une touche libre pour arrêter l'exercice en cours (commande rlt engine stop).");
     h.toggle("rlt_pf_hk_firsttouch", &ProfileConfig::hotkeyFirstTouch, false, "Raccourci : premières touches",
-             "Propose une touche libre pour lancer l'exercice de premières touches en mode mix.");
+             "Propose une touche libre pour lancer l'exercice de premières touches avec une balle qui roule vers "
+             "toi.");
     h.toggle("rlt_pf_hk_kickoff", &ProfileConfig::hotkeyKickoff, false, "Raccourci : kickoff aléatoire",
              "Propose une touche libre pour lancer un kickoff aléatoire.");
     h.advanced();
@@ -309,7 +310,7 @@ void ProfileModule::onCommand(const Command& cmd, const TickContext& ctx, Action
             }
         } else {
             refreshPending_ = true;
-            chat(out, "Relecture de ta config demandée. Si rien ne s'affiche, ouvre l'onglet Ma config de RL Trainer "
+            chat(out, "Relecture de ta config demandée. Si rien ne s'affiche, ouvre la page Ma config de RL Trainer "
                       "(rlt_menu) ou clique sur Relire ma config.");
         }
         report_.refreshPending = refreshPending_;
@@ -345,10 +346,10 @@ void ProfileModule::onCommand(const Command& cmd, const TickContext& ctx, Action
             else line += h.keyText + (h.state == pf::HotkeyState::Applied ? " (en place)" : " (proposée)");
             chat(out, line);
         }
-        if (report_.pendingProposals > 0) chat(out, "Applique-les depuis l'onglet Ma config de RL Trainer.");
+        if (report_.pendingProposals > 0) chat(out, "Applique-les depuis la page Ma config de RL Trainer.");
         if (report_.hotkeyConflicts > 0)
             chat(out, "Attention : un ancien raccourci RL Trainer est sur une touche que le jeu utilise maintenant. "
-                      "Retire-le depuis l'onglet Ma config (Retirer les conflits).");
+                      "Retire-le depuis la page Ma config (Retirer les conflits).");
     } else if (cmd.name == "bmbinds") {
         const std::vector<std::string> candidates = pf::hotkeyCandidates(true);
         for (size_t i = 0; i + 1 < args.size(); i += 2) {

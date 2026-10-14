@@ -67,8 +67,12 @@ TEST(coach_catalog_families_and_titles) {
 }
 
 TEST(coach_catalog_launch_table) {
-    CHECK(argsAre(launchForSkill("first_touch.ground"), "firsttouch", "drill", "mix"));
-    CHECK(argsAre(launchForSkill("first_touch.air"), "firsttouch", "drill", "mix"));
+    CHECK(argsAre(launchForSkill("first_touch.ground"), "firsttouch", "drill", "roll_in"));
+    CHECK(argsAre(launchForSkill("first_touch.dribble"), "firsttouch", "drill", "roll_in"));
+    CHECK(argsAre(launchForSkill("first_touch.bounce"), "firsttouch", "drill", "lob"));
+    CHECK(argsAre(launchForSkill("first_touch.air"), "firsttouch", "drill", "high"));
+    CHECK(argsAre(launchForSkill("first_touch.wall"), "firsttouch", "drill", "wall"));
+    CHECK(argsAre(launchForSkill("first_touch.whatever"), "firsttouch", "drill", "roll_in"));  // never the Mix
     CHECK(argsAre(launchForSkill("mech.speedflip"), "mechanics", "drill", "speedflip"));
     CHECK(argsAre(launchForSkill("mech.wavedash"), "mechanics", "drill", "wavedash"));
     CHECK(argsAre(launchForSkill("ball.flipreset"), "ballmech", "drill", "flipreset"));
@@ -117,7 +121,7 @@ TEST(coach_plan_starter_for_new_player) {
     CHECK_EQ(plan.size(), static_cast<size_t>(3));
     CHECK(argsAre(plan[0].launch, "firsttouch", "drill", "roll_in"));
     CHECK(argsAre(plan[1].launch, "kickoff", "start", "random"));
-    CHECK(argsAre(plan[2].launch, "mechanics", "drill", "speedflip"));
+    CHECK(argsAre(plan[2].launch, "mechanics", "drill", "recovery"));  // a Débutant drill, not the speedflip
     for (const auto& it : plan) {
         CHECK(it.starter);
         CHECK(!it.reason.empty());
@@ -215,12 +219,12 @@ TEST(coach_plan_variety_across_families) {
 }
 
 TEST(coach_plan_never_same_exercise_twice_and_fills_with_starter) {
-    // Every first touch type launches the same "firsttouch drill mix": only one of them.
-    std::vector<PlanCandidate> c = {cand("first_touch.air", 20.f), cand("first_touch.ground", 25.f),
-                                    cand("first_touch.bounce", 30.f), cand("map.999", 5.f)};
+    // Sol and dribble both launch "firsttouch drill roll_in" (also the starter's first touch): only one of them.
+    std::vector<PlanCandidate> c = {cand("first_touch.ground", 20.f), cand("first_touch.dribble", 25.f),
+                                    cand("map.999", 5.f)};
     const auto plan = buildPlan(c, 3, PlanWeights{});
     CHECK_EQ(plan.size(), static_cast<size_t>(3));
-    CHECK_EQ(plan[0].skill, std::string("first_touch.air"));
+    CHECK_EQ(plan[0].skill, std::string("first_touch.ground"));
     std::vector<std::string> keys;
     for (const auto& it : plan) {
         CHECK(it.skill != "map.999");  // not launchable

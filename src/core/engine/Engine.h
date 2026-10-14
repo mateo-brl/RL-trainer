@@ -12,6 +12,7 @@
 #include "core/common/Context.h"
 #include "core/common/DrawList.h"
 #include "core/common/History.h"
+#include "core/common/HudLayout.h"
 #include "core/common/Module.h"
 #include "core/common/Settings.h"
 #include "core/common/Store.h"
@@ -64,6 +65,8 @@ public:
     bool ownsActivity(const Module* m) const override;
     std::string activityOwner() const { return activityOwner_; }
     std::string activityName() const { return activityName_; }
+    // Module whose panels the focused HUD shows when no activity runs ("" before the first result).
+    std::string hudFocusModule() const { return hudFocus_.module; }
     void stopActivity();  // stops whatever runs (UI "Stop" button, context change)
 
     // ---- Persistence -----------------------------------------------------------------------------------
@@ -113,6 +116,7 @@ private:
 
     std::string activityOwner_;
     std::string activityName_;
+    HudFocus hudFocus_;
 
     struct PendingTouch {
         int64_t frame;

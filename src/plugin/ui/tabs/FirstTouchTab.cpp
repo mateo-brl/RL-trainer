@@ -1,8 +1,10 @@
-// "Première touche" tab: card of the last graded touch, session statistics with a sparkline of the last 50 scores,
-// contact heatmap (same drawing as the HUD) with its explanation, drill launcher with the adaptive level of each
-// drill, console commands and the module settings. Render thread: module state is copied under the engine lock,
-// gameplay changes go through commands (ctx.post), settings through cvars.
+// "Première touche" tab: card of the last graded touch (verdict and one tip first, measures under "Détails
+// techniques"), session statistics with a sparkline of the last 50 scores, contact heatmap (same drawing as the HUD)
+// with its explanation, drill launcher (basics first, difficulty tag, step list, adaptive level, criteria per level
+// under "Détails techniques"), console commands and the module settings. Render thread: module state is copied
+// under the engine lock, gameplay changes go through commands (ctx.post), settings through cvars.
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -20,7 +22,6 @@ namespace {
 
 constexpr const char* kModule = "firsttouch";
 const Color kAccent{0, 200, 255, 255};
-const Color kDim{170, 170, 170, 255};
 
 // Everything the tab shows, copied under the engine lock.
 struct FtUiData {
@@ -109,7 +110,7 @@ std::string percentText(float ratio) { return ui::percent(ratio); }
 void subScoreBar(const char* label, float value01) {
     char overlay[64];
     std::snprintf(overlay, sizeof(overlay), "%s %d %%", label, static_cast<int>(std::lround(value01 * 100.f)));
-    ImGui::ProgressBar(value01, ImVec2(ImGui::GetFontSize() * 11.f, 0.f), overlay);
+    ui::progressBar(value01, overlay, ImGui::GetFontSize() * 7.f);  // three on one line, each value beside its bar
 }
 
 // ---- Last touch -------------------------------------------------------------------------------------------
@@ -128,14 +129,24 @@ void renderLastTouch(const FtUiData& d) {
     }
     ImGui::SameLine();
     ui::textColored(l.success ? d.cfg.goodColor : d.cfg.badColor, l.success ? "Réussie" : "Pas réussie");
-    hoverTip("Réussie = note au moins égale au seuil ET balle contrôlée pendant la fenêtre de contrôle.");
+    hoverTip("Réussie = note au moins égale au seuil ET balle gardée près de toi juste après. En exercice, ce qui est "
+             "demandé dépend du niveau (onglet Exercices).");
 
+    // Plain part: the one thing to fix, then the three parts of the score.
+    if (l.tips.empty()) {
+        ui::textColored(d.cfg.goodColor, "Rien à corriger sur cette touche.");
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, toVec4(d.cfg.okColor));
+        ImGui::TextWrapped("À corriger : %s", l.tips.front().text.c_str());
+        ImGui::PopStyleColor();
+    }
     subScoreBar("Vitesse", l.sSpeed);
     ImGui::SameLine();
     subScoreBar("Contact", l.sContact);
     ImGui::SameLine();
     subScoreBar("Contrôle", l.sControl);
 
+    if (!ImGui::CollapsingHeader("Détails techniques##ft_last")) return;
     ImGui::Columns(2, "##ft_last_cols", false);
     ImGui::SetColumnWidth(0, ImGui::GetFontSize() * 14.f);
     const Color zc = zoneColor(d.cfg, l.zone);
@@ -163,18 +174,12 @@ void renderLastTouch(const FtUiData& d) {
     const Color cc = l.controlled ? d.cfg.goodColor : d.cfg.badColor;
     row("Contrôle après la touche", percentText(l.controlFraction) + (l.controlled ? "  (gardée)" : "  (perdue)"), &cc);
     ImGui::Columns(1);
-
-    if (l.tips.empty()) {
-        ui::textColored(d.cfg.goodColor, "Rien à corriger sur cette touche.");
-    } else {
-        ui::separatorText("Conseils");
-        for (size_t i = 0; i < l.tips.size(); ++i) {
-            const Color c = i == 0 ? d.cfg.okColor : kDim;
+    if (l.tips.size() > 1) {
+        ImGui::TextUnformatted("Autres points, du plus important au moins important :");
+        for (size_t i = 1; i < l.tips.size(); ++i) {
             ImGui::Bullet();
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, toVec4(c));
             ImGui::TextWrapped("%s", l.tips[i].text.c_str());
-            ImGui::PopStyleColor();
         }
     }
 }
@@ -301,17 +306,70 @@ const char* phaseLabel(FirstTouchModule::DrillPhase p) {
     return "";
 }
 
+Color tierColor(const FirstTouchConfig& cfg, ft::Tier t) {
+    switch (t) {
+    case ft::Tier::Beginner: return cfg.goodColor;
+    case ft::Tier::Intermediate: return cfg.okColor;
+    case ft::Tier::Advanced: return cfg.badColor;
+    }
+    return colors::White;
+}
+
+// Technical details of the drills: how the level moves and what a rep must reach at each level.
+void renderDrillDetails(const FtUiData& d) {
+    if (!ImGui::CollapsingHeader("Détails techniques##ft_drills")) return;
+    const float target = d.cfg.drillTarget;
+    const float up = d.cfg.drillStep;
+    const float down = up * target / std::max(0.05f, 1.f - target);
+    ImGui::TextWrapped("Le niveau interne va de 0 à 1 (niveau 1 à 10 à l'écran). Il monte de %.2f après une réussite et "
+                       "baisse de %.2f après un échec : il se stabilise là où tu réussis %d %% des essais.",
+                       static_cast<double>(up), static_cast<double>(down), static_cast<int>(std::lround(target * 100.f)));
+    ImGui::TextWrapped("Niveaux 1 à %d : note de la touche seule (parts vitesse et contact de la note, sans la part "
+                       "contrôle). Ensuite : note complète et part de la fenêtre de contrôle (%.1f s) avec la balle à "
+                       "moins de %.0f uu de ta voiture.",
+                       ft::kControlLevel - 1, static_cast<double>(d.cfg.controlWindow), static_cast<double>(d.cfg.controlRadius));
+    ImGui::Columns(4, "##ft_criteria", true);
+    ImGui::TextDisabled("Niveau");
+    ImGui::NextColumn();
+    ImGui::TextDisabled("Note minimale");
+    ImGui::NextColumn();
+    ImGui::TextDisabled("Balle gardée");
+    ImGui::NextColumn();
+    ImGui::TextDisabled("Temps par balle");
+    ImGui::NextColumn();
+    for (int n = 1; n <= 10; ++n) {
+        const ft::DrillCriteria c =
+            ft::drillCriteria(ft::levelOfPlayer(n), d.cfg.successScore, d.cfg.controlFraction, d.cfg.drillTimeout);
+        ImGui::Text("%d", n);
+        ImGui::NextColumn();
+        ImGui::Text("%d/100%s", static_cast<int>(std::lround(c.minScore)), c.firstStep ? " (touche seule)" : "");
+        ImGui::NextColumn();
+        if (c.minControl > 0.f) ImGui::Text("%d %%", static_cast<int>(std::lround(c.minControl * 100.f)));
+        else ImGui::TextDisabled("non jugé");
+        ImGui::NextColumn();
+        ImGui::Text("%.1f s", static_cast<double>(c.timeout));
+        ImGui::NextColumn();
+    }
+    ImGui::Columns(1);
+    ImGui::TextWrapped("Ces seuils suivent tes réglages : note pour réussir (%.0f), part de contrôle exigée (%d %%) et "
+                       "délai pour toucher (%.1f s).",
+                       static_cast<double>(d.cfg.successScore), static_cast<int>(std::lround(d.cfg.controlFraction * 100.f)),
+                       static_cast<double>(d.cfg.drillTimeout));
+}
+
 void renderDrills(const UiContext& ctx, const FtUiData& d) {
     const bool available = d.cfg.enabled && d.game.mode == GameMode::Freeplay && d.worldControl;
     if (d.drill.active) {
         std::string title = std::string("En cours : ") + ft::drillName(d.drill.type);
         if (d.drill.type == ft::DrillType::Mix) title += std::string(" (") + ft::drillName(d.drill.current) + ")";
         ui::textColored(kAccent, title);
-        ImGui::Text("Niveau %d/100, %d/%d réussis, %s.", static_cast<int>(std::lround(d.drill.level * 100.f)), d.drill.successes,
-                    d.drill.reps, phaseLabel(d.drill.phase));
-        if (!d.drill.instruction.empty()) ImGui::TextWrapped("Consigne : %s", d.drill.instruction.c_str());
+        ImGui::Text("Niveau %d/10, %d/%d réussis, %s.", d.drill.playerLevel, d.drill.successes, d.drill.reps,
+                    phaseLabel(d.drill.phase));
+        if (!d.drill.instruction.empty()) ImGui::TextWrapped("À faire : %s", d.drill.instruction.c_str());
+        ImGui::TextWrapped("%s", ft::drillGoal(d.drill.level));
         if (!d.drill.lastOutcome.empty())
             ui::textColored(d.drill.lastSuccess ? d.cfg.goodColor : d.cfg.badColor, "Dernier essai : " + d.drill.lastOutcome);
+        if (!d.drill.lastTip.empty()) ui::textColored(d.cfg.okColor, "À corriger : " + d.drill.lastTip);
         if (ImGui::Button("Arrêter l'exercice")) ctx.post(kModule, "stop");
         ImGui::SameLine();
         if (ImGui::Button("Balle suivante")) ctx.post(kModule, "skip");
@@ -322,12 +380,16 @@ void renderDrills(const UiContext& ctx, const FtUiData& d) {
     } else if (!available) {
         ui::textColored(colors::Orange, "Les exercices se lancent en freeplay. Ici, seule l'analyse des touches est active.");
     }
-    ImGui::TextWrapped("Chaque exercice place la balle par rapport à ta voiture. Le niveau monte quand tu réussis et baisse "
-                       "quand tu rates, pour viser environ %d %% de réussite : le bon niveau de défi pour progresser.",
-                       static_cast<int>(std::lround(d.cfg.drillTarget * 100.f)));
+    ImGui::TextWrapped("Chaque exercice place la balle par rapport à ta voiture. Tu commences au niveau 1, où seule ta "
+                       "touche compte : douce et bien placée. À partir du niveau %d, il faut aussi garder la balle près "
+                       "de toi. Le niveau monte quand tu réussis et baisse quand tu rates : les balles vont alors plus "
+                       "vite, arrivent de plus loin ou plus de travers.",
+                       ft::kControlLevel);
+    ui::textColored(kAccent, ft::drillAdvice());
     ImGui::TextWrapped("Sans aucune action pendant 3 balles de suite, l'exercice s'arrête : relance-le quand tu veux.");
     ImGui::Spacing();
 
+    // The catalogue order is the difficulty order: basics first.
     for (int i = 0; i <= static_cast<int>(ft::DrillType::Mix); ++i) {
         const auto t = static_cast<ft::DrillType>(i);
         ImGui::PushID(i);
@@ -338,22 +400,30 @@ void renderDrills(const UiContext& ctx, const FtUiData& d) {
         ImGui::SameLine();
         ui::textColored(kAccent, ft::drillName(t));
         ImGui::SameLine();
-        ImGui::TextDisabled("(rlt %s drill %s)", kModule, ft::drillId(t));
+        ui::textColored(tierColor(d.cfg, ft::drillTier(t)), ft::tierLabel(ft::drillTier(t)));
         ImGui::TextWrapped("%s", ft::drillDescription(t));
+        ImGui::Indent();
+        const auto steps = ft::drillSteps(t);
+        for (size_t k = 0; k < steps.size(); ++k) ImGui::TextWrapped("%d. %s", static_cast<int>(k + 1), steps[k].c_str());
+        ImGui::Unindent();
         if (t != ft::DrillType::Mix) {
             const auto& lv = d.levels[static_cast<size_t>(i)];
             char overlay[48];
-            std::snprintf(overlay, sizeof(overlay), "Niveau %d/100", static_cast<int>(std::lround(lv.level * 100.f)));
-            ImGui::ProgressBar(lv.level, ImVec2(ImGui::GetFontSize() * 12.f, 0.f), overlay);
+            std::snprintf(overlay, sizeof(overlay), "Niveau %d/10", ft::playerLevel(lv.level));
+            ui::progressBar(lv.level, overlay, ImGui::GetFontSize() * 12.f);
             ImGui::SameLine();
-            ImGui::TextDisabled("record %d, %d essais, %d/%d cette session", static_cast<int>(std::lround(lv.best * 100.f)),
-                                lv.attempts, lv.sessionSuccesses, lv.sessionReps);
+            ImGui::TextDisabled("meilleur niveau %d, %d essais, %d/%d cette session", ft::playerLevel(lv.best), lv.attempts,
+                                lv.sessionSuccesses, lv.sessionReps);
+        } else {
+            ImGui::TextDisabled("Chaque balle utilise le niveau de son exercice.");
         }
         ImGui::PopID();
         ImGui::Spacing();
     }
     if (ImGui::SmallButton("Remettre les niveaux à zéro")) ctx.post(kModule, "reset_levels");
-    hoverTip("Tous les exercices repartent du niveau 20/100.");
+    hoverTip("Tous les exercices repartent du niveau 1.");
+    ImGui::Spacing();
+    renderDrillDetails(d);
 }
 
 // ---- Commands ---------------------------------------------------------------------------------------------
@@ -363,7 +433,7 @@ void renderCommands() {
     ImGui::BulletText("rlt firsttouch stop : arrête l'exercice en cours.");
     ImGui::BulletText("rlt firsttouch skip : balle suivante sans compter l'essai.");
     ImGui::BulletText("rlt firsttouch reset_stats : remet la session à zéro.");
-    ImGui::BulletText("rlt firsttouch reset_levels : remet les niveaux des exercices à zéro.");
+    ImGui::BulletText("rlt firsttouch reset_levels : remet tous les exercices au niveau 1.");
     ImGui::BulletText("rlt firsttouch reset_all : efface toutes les stats de première touche.");
     ImGui::Spacing();
     ImGui::TextWrapped("Le log dans le chat (réglages, section Chat) écrit après chaque touche une ligne comme "

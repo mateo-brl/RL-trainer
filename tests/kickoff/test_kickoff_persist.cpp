@@ -179,6 +179,44 @@ TEST(ko_save_load_roundtrip_with_pbs) {
     CHECK_EQ(empty.stats().totalAttempts(), 0);
 }
 
+// A player of the previous version has the old defaults (Pro ghost, Pro grading) saved in config.cfg: the first
+// tick moves them once to Adaptive / Standard. A deliberate other choice is kept, and it never runs twice.
+TEST(ko_old_defaults_migrated_once) {
+    Harness h;
+    h.mod.load(Store{});  // save of the previous version: no flag
+    h.set("rlt_ko_ghost", "3");
+    h.set("rlt_ko_grade_target", "2");
+    int64_t f = 0;
+    Actions first = h.tick(makeSnap(++f));
+    CHECK_EQ(first.setCvars.size(), size_t(2));
+    bool ghost = false, grade = false;
+    for (const auto& c : first.setCvars) {
+        ghost = ghost || (c.first == "rlt_ko_ghost" && c.second == "6");
+        grade = grade || (c.first == "rlt_ko_grade_target" && c.second == "1");
+    }
+    CHECK(ghost && grade);
+    CHECK(first.requestSave);
+    CHECK_EQ(first.toasts.size(), size_t(1));
+    CHECK(!first.toasts.empty() && !hasEmDash(first.toasts[0].text));
+    Actions second = h.tick(makeSnap(++f));
+    CHECK(second.setCvars.empty() && second.toasts.empty());
+    // The flag is saved: a reload does not migrate again, even with the old pair.
+    Store st;
+    h.mod.save(st);
+    CHECK_EQ(st.getInt("kickoff.defaults_v2", 0), 1);
+    Harness again;
+    again.mod.load(st);
+    again.set("rlt_ko_ghost", "3");
+    again.set("rlt_ko_grade_target", "2");
+    CHECK(again.tick(makeSnap(1)).setCvars.empty());
+    // A player who chose something else (Pro ghost, Standard grading) keeps it; only the flag is set.
+    Harness chosen;
+    chosen.mod.load(Store{});
+    chosen.set("rlt_ko_ghost", "3");
+    Actions kept = chosen.tick(makeSnap(1));
+    CHECK(kept.setCvars.empty() && kept.toasts.empty() && kept.requestSave);
+}
+
 TEST(ko_draw_output_sanity) {
     Harness h;
     ViewContext view;
@@ -282,7 +320,7 @@ TEST(ko_draw_output_sanity) {
 TEST(ko_status_view) {
     Harness h;
     KickoffStatusView v = h.mod.status();
-    CHECK(!v.running && v.phase == KickoffPhase::Idle && v.ghost == KickoffGhostMode::Pro);
+    CHECK(!v.running && v.phase == KickoffPhase::Idle && v.ghost == KickoffGhostMode::Adaptive);
     int64_t f = 0;
     h.tick(makeSnap(++f));
     h.command("start", {"sequence"});
@@ -293,7 +331,7 @@ TEST(ko_status_view) {
     CHECK_EQ(v.countdown, 2);
     CHECK(v.mode == KickoffMode::Sequence && v.sequenceTotal == 5 && v.sequenceIndex == 0);
     CHECK(v.spawn == KickoffSpawn::DiagonalLeft);
-    CHECK_NEAR(v.ghostArrive, 1.95f, 1e-4);
+    CHECK_NEAR(v.ghostArrive, 2.40f, 1e-4);  // adaptive ghost of a new player: the beginner time
     const auto rows = h.mod.spawnStats();
     CHECK_EQ(rows.size(), size_t(kKoSpawnCount));
 }

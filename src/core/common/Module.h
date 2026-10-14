@@ -52,6 +52,7 @@ struct DrawContext {
     bool hasSnapshot = false;
     bool ownsActivity = false;
     float hudScale = 1.f;            // general.hudScale * screen-height factor (1 at 1080p)
+    bool compactHud = false;         // general.hudCompact: skip secondary 2D extras (heatmaps, help lines)
 };
 
 class Module {

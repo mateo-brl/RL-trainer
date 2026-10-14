@@ -57,9 +57,12 @@ void FirstTouchModule::describeSettings(SettingsSchema& schema) {
     a.number("rlt_ft_control_speed", &C::controlRelSpeed, 450.f, 200.f, 900.f, "Vitesse relative max (uu/s)",
              "Au-delà, la balle s'échappe : elle ne compte plus comme contrôlée.", 0);
     a.number("rlt_ft_control_fraction", &C::controlFraction, 0.6f, 0.3f, 1.0f, "Part de contrôle exigée",
-             "Part de la fenêtre où la balle doit rester contrôlée pour réussir la touche.", 2);
+             "Part de la fenêtre où la balle doit rester contrôlée pour réussir la touche. Dans les exercices, "
+             "le contrôle compte à partir du niveau 4 et la part exigée monte avec le niveau.", 2);
     a.number("rlt_ft_success_score", &C::successScore, 60.f, 30.f, 95.f, "Note pour réussir",
-             "Note minimale (sur 100) d'une touche réussie, en plus du contrôle.", 0);
+             "Note minimale (sur 100) d'une touche réussie, en plus du contrôle. Dans les exercices, le seuil part "
+             "de 10 points plus bas au niveau 1 (la touche seule compte) et finit 15 points plus haut au niveau 10.",
+             0);
     a.number("rlt_ft_good_zone", &C::goodZone, 150.f, 50.f, 400.f, "Zone verte (uu/s)",
              "Écart de vitesse jugé bon ([BON] dans le chat). 150 uu/s = 5,4 km/h.", 0);
     a.number("rlt_ft_ok_zone", &C::okZone, 300.f, 100.f, 800.f, "Zone jaune (uu/s)",
@@ -67,16 +70,19 @@ void FirstTouchModule::describeSettings(SettingsSchema& schema) {
     a.choice("rlt_ft_unit", &C::unit, 0, {"Auto (réglage du jeu)", "km/h", "mph", "uu/s"}, "Unité",
              "Unité des vitesses dans le panneau et le chat. Auto suit le réglage métrique du jeu.");
     a.toggle("rlt_ft_send_results", &C::sendResults, true, "Envoyer au coach",
-             "Chaque touche notée alimente l'onglet Progression (historique, points faibles).");
+             "Chaque touche notée alimente la page Progression (historique, points faibles).");
 
     auto h = schema.section(&Settings::firstTouch, "firsttouch", "Affichage");
     h.toggle("rlt_ft_hud", &C::hudEnabled, true, "Panneau des touches",
-             "Affiche la dernière touche, les stats de session et la carte des contacts en bas à droite.");
+             "Affiche la note de la dernière touche et le conseil principal en bas à droite. Avec le HUD compact "
+             "désactivé, ajoute les stats de session et la carte des contacts.");
     h.number("rlt_ft_hud_x", &C::hudX, 0.99f, 0.f, 1.f, "Position X", "Position horizontale du panneau (fraction de l'écran).", 2);
     h.number("rlt_ft_hud_y", &C::hudY, 0.70f, 0.f, 1.f, "Position Y", "Position verticale du panneau (fraction de l'écran).", 2);
     h.number("rlt_ft_hud_size", &C::hudSize, 1.f, 0.5f, 2.f, "Taille du panneau", "Multiplie la taille du panneau.", 2);
     h.toggle("rlt_ft_heatmap", &C::showHeatmap, true, "Carte des points de contact",
-             "Petit schéma de la balle avec tes 40 derniers points de contact, colorés selon la note.");
+             "Petit schéma de la balle avec tes 40 derniers points de contact, colorés selon la note. En jeu, "
+             "seulement quand le HUD compact est désactivé. Toujours visible dans la page Première touche (onglet "
+             "Carte des contacts).");
     h.toggle("rlt_ft_tips", &C::showTips, true, "Conseil après chaque touche", "Affiche le conseil principal de la dernière touche.");
     h.toggle("rlt_ft_trend", &C::showTrend, true, "Tendance de vitesse",
              "Indique si tu arrives en moyenne trop vite ou trop lentement sur la balle.");
@@ -97,7 +103,8 @@ void FirstTouchModule::describeSettings(SettingsSchema& schema) {
 
     auto d = schema.section(&Settings::firstTouch, "firsttouch", "Exercices");
     d.number("rlt_ft_drill_timeout", &C::drillTimeout, 6.f, 3.f, 15.f, "Délai pour toucher (s)",
-             "Sans touche dans ce délai, l'essai est raté et le niveau baisse.", 1);
+             "Sans touche dans ce délai, l'essai est raté et le niveau baisse. Au niveau 1, tu as 50 % de temps "
+             "en plus.", 1);
     d.number("rlt_ft_drill_pause", &C::drillPause, 1.5f, 0.5f, 5.f, "Pause entre deux essais (s)",
              "Temps de pause avant le placement suivant.", 1);
     d.toggle("rlt_ft_drill_reset_car", &C::drillResetCar, true, "Replacer la voiture à chaque essai",
@@ -143,7 +150,9 @@ void FirstTouchModule::describeSettings(SettingsSchema& schema) {
               "0 = nouvelle série à chaque lancement. Une autre valeur rejoue toujours la même série.");
 }
 
-FirstTouchModule::FirstTouchModule() { rebuildStaircases(); }
+FirstTouchModule::FirstTouchModule() {
+    for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
+}
 
 void FirstTouchModule::onSettingsChanged(const Settings& settings) {
     const bool stairsChanged = settings.firstTouch.drillTarget != cfg_.drillTarget || settings.firstTouch.drillStep != cfg_.drillStep;
@@ -185,6 +194,10 @@ ft::ScoreParams FirstTouchModule::scoreParams() const {
     p.wContact = cfg_.weightContact;
     p.wControl = cfg_.weightControl;
     return p;
+}
+
+ft::DrillCriteria FirstTouchModule::criteriaFor(float level) const {
+    return ft::drillCriteria(level, cfg_.successScore, cfg_.controlFraction, cfg_.drillTimeout);
 }
 
 ft::DiagnosisParams FirstTouchModule::diagnosisParams() const {
@@ -292,8 +305,18 @@ void FirstTouchModule::finalizePending(const TickContext& ctx, Actions& out) {
     const ft::ScoreParams sp = scoreParams();
     const ft::TouchScore sc = ft::scoreTouch(m, c, sp);
     const KeyStyle style = keyStyleFromIndex(ctx.settings.profile.buttonStyle);
-    std::vector<Tip> tips = ft::diagnose(pending_.type, m, c, sc, sp, diagnosisParams(), ctx.profile, style, unit);
-    const bool success = sc.score >= cfg_.successScore && c.controlled;
+    std::vector<Tip> tips = ft::diagnose(pending_.type, m, c, sc, sp, diagnosisParams(), ctx.profile, style);
+    // A drill rep is judged at its level (the touch alone at the first levels), everything else with the player's
+    // thresholds.
+    bool success = sc.score >= cfg_.successScore && c.controlled;
+    float repScore = sc.score;
+    std::string repTip;
+    if (pending_.inDrill) {
+        const ft::DrillCriteria dc = criteriaFor(pending_.drillLevel);
+        repScore = ft::drillRepScore(dc, sc, sp);
+        success = ft::drillRepSuccess(dc, repScore, c.fraction);
+        repTip = ft::drillRepTip(dc, tips);
+    }
     const ft::SpeedZone zone = ft::speedZone(m.speedDiff, cfg_.goodZone, cfg_.okZone);
 
     session_.addGraded(pending_.type, sc.score, success, m.speedDiff, zone == ft::SpeedZone::Good);
@@ -358,7 +381,9 @@ void FirstTouchModule::finalizePending(const TickContext& ctx, Actions& out) {
         addMetric(r, "score_speed", "Note vitesse", sc.sSpeed * 100.f, "%", 100.f, true);
         addMetric(r, "score_contact", "Note contact", sc.sContact * 100.f, "%", 100.f, true);
         addMetric(r, "score_control", "Note contrôle", sc.sControl * 100.f, "%", 100.f, true);
-        if (pending_.inDrill) addMetric(r, "drill_level", "Niveau de l'exercice", pending_.drillLevel * 100.f, "%");
+        if (pending_.inDrill)
+            addMetric(r, "drill_level", "Niveau de l'exercice", static_cast<float>(ft::playerLevel(pending_.drillLevel)),
+                      "");
         r.tips = tips;
         r.time = pending_.time;
         r.valueForRecord = sc.score;
@@ -372,7 +397,7 @@ void FirstTouchModule::finalizePending(const TickContext& ctx, Actions& out) {
         out.chat.push_back(std::move(msg));
     }
     if (pending_.inDrill && drill_.active && drill_.phase == DrillPhase::Evaluate)
-        drillRepDone(success, sc.score, tips, out);
+        drillRepDone(success, repScore, repTip, out);
     if (++gradedSinceSave_ >= 10) {
         gradedSinceSave_ = 0;
         out.requestSave = true;
@@ -445,6 +470,7 @@ void FirstTouchModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, 
             drill_.deadline = drill_.now + cfg_.drillPause;
             drill_.lastSuccess = false;
             drill_.lastOutcome = "But : essai non compté.";
+            drill_.lastTip.clear();
         }
         break;
     case GameEventKind::FlipReset: {
@@ -498,10 +524,10 @@ void FirstTouchModule::onCommand(const Command& cmd, const TickContext& ctx, Act
         drillSessionSuccesses_.fill(0);
         toast(out, "Stats de session remises à zéro.", ToastKind::Info);
     } else if (cmd.name == "reset_levels") {
-        for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, 0.2f);
+        for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
         drillBest_.fill(0.f);
         out.requestSave = true;
-        toast(out, "Niveaux des exercices remis à zéro.", ToastKind::Info);
+        toast(out, "Niveaux des exercices remis au niveau 1.", ToastKind::Info);
     } else if (cmd.name == "reset_all") {
         session_ = ft::TouchStats{};
         total_ = ft::TouchStats{};
@@ -509,7 +535,7 @@ void FirstTouchModule::onCommand(const Command& cmd, const TickContext& ctx, Act
         heat_.clear();
         recentTipCodes_.clear();
         last_ = LastTouchView{};
-        for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, 0.2f);
+        for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
         drillBest_.fill(0.f);
         drillSessionReps_.fill(0);
         drillSessionSuccesses_.fill(0);
@@ -554,7 +580,14 @@ void FirstTouchModule::startDrill(ft::DrillType type, const TickContext& ctx, Ac
     }
     drill_.now = ctx.snap.time;
     cancelPending();
-    toast(out, std::string("Exercice lancé : ") + ft::drillName(type) + ".", ToastKind::Ok);
+    std::string msg = std::string("Exercice lancé : ") + ft::drillName(type);
+    if (type != ft::DrillType::Mix) {
+        const float level = stairs_[static_cast<size_t>(type)].level();
+        msg += ", niveau " + std::to_string(ft::playerLevel(level)) + "/10. " + ft::drillGoal(level);
+    } else {
+        msg += ".";
+    }
+    toast(out, msg, ToastKind::Ok);
 }
 
 void FirstTouchModule::stopDrill(Actions* out, const std::string& message) {
@@ -584,15 +617,12 @@ void FirstTouchModule::recordDrillRep(bool success) {
     drill_.idleReps = 0;
 }
 
-void FirstTouchModule::drillRepDone(bool success, float score, const std::vector<Tip>& tips, Actions& out) {
+void FirstTouchModule::drillRepDone(bool success, float score, const std::string& tip, Actions& out) {
     recordDrillRep(success);
     drill_.lastSuccess = success;
-    if (success) {
-        drill_.lastOutcome = "Réussi ! Note " + intText(score) + ".";
-    } else {
-        drill_.lastOutcome = "Raté (note " + intText(score) + ")";
-        drill_.lastOutcome += tips.empty() ? std::string(".") : " : " + tips.front().text;
-    }
+    // Verdict and score on one line, the single most important tip on its own (kept for the next rep).
+    drill_.lastOutcome = (success ? "Réussi ! " : "Raté : ") + intText(score) + "/100";
+    drill_.lastTip = success ? std::string() : tip;
     drill_.phase = DrillPhase::Pause;
     drill_.deadline = drill_.now + cfg_.drillPause;
     out.requestSave = true;
@@ -621,13 +651,14 @@ void FirstTouchModule::tickDrill(const TickContext& ctx, Actions& out) {
         drill_.current = drill_.type == ft::DrillType::Mix ? ft::pickMixType(drill_.rng, drill_.current) : drill_.type;
         const auto i = static_cast<size_t>(drill_.current);
         drill_.repLevel = stairs_[i].level();
+        drill_.repCriteria = criteriaFor(drill_.repLevel);
         const ft::DrillSpawn spawn = ft::makeSpawn(drill_.current, drill_.pose, drill_.repLevel, drill_.rng);
         out.setBall = spawn.ball;
         if (cfg_.drillResetCar) out.setCar = ft::carPlacementFor(drill_.pose, cfg_.drillFullBoost);
         else if (cfg_.drillFullBoost) out.setBoost = 100.f;
         drill_.placeFrame = s.frame;
         ignoreTouchesUntil_ = s.frame;
-        drill_.deadline = s.time + cfg_.drillTimeout;
+        drill_.deadline = s.time + drill_.repCriteria.timeout;
         drill_.repInput = false;
         drill_.phase = DrillPhase::WaitTouch;
         cancelPending();
@@ -640,11 +671,13 @@ void FirstTouchModule::tickDrill(const TickContext& ctx, Actions& out) {
         if (s.time < drill_.deadline) break;
         if (drill_.repInput) {
             recordDrillRep(false);
-            drill_.lastOutcome = "Temps écoulé : va chercher la balle plus tôt.";
+            drill_.lastOutcome = "Temps écoulé.";
+            drill_.lastTip = "Va chercher la balle plus tôt.";
             out.requestSave = true;
         } else {
             ++drill_.idleReps;
             drill_.lastOutcome = "Aucune action : essai ignoré.";
+            drill_.lastTip.clear();
             if (drill_.idleReps >= 3) {
                 stopDrill(&out, "Exercice arrêté : aucune action détectée. Relance-le quand tu veux.");
                 return;
@@ -674,12 +707,15 @@ FirstTouchModule::DrillView FirstTouchModule::drillStatus() const {
     v.current = drill_.current;
     v.phase = drill_.phase;
     v.level = drill_.phase == DrillPhase::Place ? stairs_[static_cast<size_t>(drill_.current)].level() : drill_.repLevel;
+    v.playerLevel = ft::playerLevel(v.level);
+    v.criteria = drill_.phase == DrillPhase::Place ? criteriaFor(v.level) : drill_.repCriteria;
     v.reps = drill_.reps;
     v.successes = drill_.successes;
     if (drill_.phase == DrillPhase::WaitTouch || drill_.phase == DrillPhase::Pause)
         v.timeLeft = std::max(0.f, drill_.deadline - drill_.now);
     v.instruction = ft::drillInstruction(drill_.current, profile_, keyStyle_);
     v.lastOutcome = drill_.lastOutcome;
+    v.lastTip = drill_.lastTip;
     v.lastSuccess = drill_.lastSuccess;
     return v;
 }
@@ -775,7 +811,8 @@ void FirstTouchModule::load(const Store& store) {
     for (int i = 0; i < ft::kDrillKinds; ++i) {
         const std::string key = std::string("firsttouch.drill.") + ft::drillId(static_cast<ft::DrillType>(i));
         auto& s = stairs_[static_cast<size_t>(i)];
-        if (store.has(key + ".level")) s.load(store, key);
+        // Only a played level is kept: the previous version saved untried drills at its old start value.
+        if (store.getInt(key + ".attempts", 0) > 0) s.load(store, key);
         drillBest_[static_cast<size_t>(i)] = clampf(store.getFloat(key + ".best", s.level()), 0.f, 1.f);
     }
 }

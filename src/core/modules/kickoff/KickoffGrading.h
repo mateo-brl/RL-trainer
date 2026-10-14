@@ -2,6 +2,8 @@
 // Kickoff grade 0..100 (kickoff.md 4.2): 40 % time to the ball, 15 % contact speed, 15 % centred contact,
 // 15 % outcome (duel against the ghost, or ball exit direction), 15 % execution (reaction, boost held, path,
 // flip timings). Every criterion's point loss is attributed to a French tip; the top 3 are reported.
+// The speedflip timings (jump, flip angle, cancel, landing) are only judged when the reference level asks for a
+// speedflip (Pro and up) or when the kickoff was a real speedflip: below, a diagonal flip is a normal flip.
 
 #include <string>
 #include <vector>
@@ -36,7 +38,8 @@ enum class KickoffTip : int {
     GreatKickoff,
     Count
 };
-const char* kickoffTipText(KickoffTip t);  // French, imperative
+const char* kickoffTipText(KickoffTip t);    // French, imperative, plain words (HUD, chat, coach)
+const char* kickoffTipDetail(KickoffTip t);  // the same advice with the measured thresholds (tab, detail lines)
 const char* kickoffTipCode(KickoffTip t);  // stable "kickoff.<error>"
 
 struct KickoffTipLoss {

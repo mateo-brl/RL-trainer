@@ -119,6 +119,7 @@ struct Harness {
     FakeHost host;
     Snapshot latest;
     bool hasSnap = false;
+    bool compact = false;  // DrawContext::compactHud of draw() (general.hudCompact, on by default in the game)
     Actions all;  // everything emitted since construction
 
     Harness() {
@@ -202,7 +203,7 @@ struct Harness {
         v.ballVisualPos = latest.ball.pos;
         v.carValid = latest.car.valid;
         v.carVisualPos = latest.car.pos;
-        DrawContext dc{settings, game, profile, latest, hasSnap, host.ownsActivity(&mod), h / 1080.f};
+        DrawContext dc{settings, game, profile, latest, hasSnap, host.ownsActivity(&mod), h / 1080.f, compact};
         DrawList out;
         mod.draw(v, dc, out);
         return out;
@@ -287,5 +288,21 @@ inline bool hasTip(const std::vector<Tip>& tips, const std::string& code) {
 }
 
 inline bool noEmDash(const std::string& s) { return s.find("\xE2\x80\x94") == std::string::npos; }
+
+// Puts the adaptive level of one drill (0..1) through the save format, like a returning player.
+inline void setDrillLevel(FirstTouchModule& m, ft::DrillType t, float level) {
+    Store st;
+    st.setFloat(std::string("firsttouch.drill.") + ft::drillId(t) + ".level", level);
+    st.setInt(std::string("firsttouch.drill.") + ft::drillId(t) + ".attempts", 1);  // a played level
+    m.load(st);
+}
+
+// Main lines of a panel: what the compact HUD shows (detail lines are hidden).
+inline std::vector<std::string> mainLines(const DrawPanel& p) {
+    std::vector<std::string> v;
+    for (const auto& l : p.lines)
+        if (!l.detail) v.push_back(l.text);
+    return v;
+}
 
 } // namespace fttest

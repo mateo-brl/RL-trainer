@@ -10,6 +10,7 @@
 #include "core/common/Controls.h"
 #include "core/common/Grade.h"
 #include "core/common/Units.h"
+#include "core/modules/mechanics/Drills.h"
 #include "core/modules/mechanics/MechCommon.h"
 
 namespace rlt::mech {
@@ -59,6 +60,9 @@ AttemptResult buildResult(const MechGrade& g, const PlayerProfile& profile, cons
 std::vector<MetricLine> metricLines(const MechGrade& g, const DetectConfig& cfg, SpeedUnit unit, size_t max);
 // "Angle du flip : 30° +/-8" style targets of a family (focus mode HUD).
 std::vector<std::string> targetLines(Focus f, const DetectConfig& cfg, SpeedUnit unit, size_t max);
+// Pass conditions of a drill level with their numbers ("Annulation : <= 167 ms", "Score minimum : 40/100"), for the
+// technical details of the tab.
+std::vector<std::string> drillCheckLines(const DrillSetup& d, const DetectConfig& cfg, SpeedUnit unit);
 // Value of a record formatted with its unit ("2,41 s", "512 uu/s" in the player's unit).
 std::string formatRecord(Mech m, float value, SpeedUnit unit);
 

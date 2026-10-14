@@ -733,7 +733,7 @@ TEST(shooting_chat_and_save_load_roundtrip) {
 
     other.command("reset_stats");
     CHECK_EQ(other.mod.stats().zoneAll[0].attempts, 0);
-    CHECK_NEAR(other.mod.targetStaircase(TargetSetup::Rolling).level(), Staircase().level(), 1e-6f);
+    CHECK_NEAR(other.mod.targetStaircase(TargetSetup::Rolling).level(), kShootStartLevel, 1e-6f);
 }
 
 TEST(shooting_fixed_level_when_not_adaptive) {

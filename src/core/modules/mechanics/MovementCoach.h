@@ -35,6 +35,7 @@ public:
     KickoffTracker& kickoff() { return ko_; }
     const KickoffTracker& kickoff() const { return ko_; }
     const MotionTracker& motion() const { return mt_; }
+    const DodgeTracker& dodges() const { return dt_; }
     int chainCount() const { return chain_.count(); }
     float chainMaxSpeed() const { return chain_.maxSpeed(); }
     int spinTicks() const { return spin_.activeTicks(); }

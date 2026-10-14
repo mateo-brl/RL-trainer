@@ -30,9 +30,9 @@ std::string signedSeconds(float v) {
 }
 
 const char* medalFor(double ratio) {
-    if (ratio <= 1.0) return "Or";
-    if (ratio <= 1.25) return "Argent";
-    if (ratio <= 1.5) return "Bronze";
+    if (ratio <= 1.0) return "médaille d'or";
+    if (ratio <= 1.25) return "médaille d'argent";
+    if (ratio <= 1.5) return "médaille de bronze";
     return "";
 }
 
@@ -477,8 +477,8 @@ void CoursesModule::finishRings(const TickContext& ctx, Actions& out) {
     else if (hadBest) headline += " (record " + formatTime(oldBest) + ", " + signedSeconds(time - oldBest) + ")";
     if (teleported) headline += " - téléportation détectée, pas de record";
     else if (!fairTime && faster) headline += " - pénalité sous 1 s avec des ratés, pas de record";
-    if (medal[0]) resultHint_ = std::string("Médaille ") + medal;
-    else resultHint_ = r.tips.empty() ? std::string() : r.tips.front().text;
+    resultMedal_ = medal;
+    resultHint_ = r.tips.empty() ? std::string() : r.tips.front().text;
 
     if (isPb && hadBest) {
         out.toasts.push_back({"Nouveau record !", std::string(kindTitle(kind_)) + " : " + formatTime(time) + " (" +

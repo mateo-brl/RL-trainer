@@ -74,7 +74,7 @@ private:
     void refreshDerived();
     SkillView makeView(const std::string& id, const SkillTracker& t) const;
     void buildCard(const AttemptResult& r, const SkillTracker& t, const SkillTracker::RecordUpdate& rec, float now,
-                   const std::string& goalLine);
+                   const std::string& goalLine, bool goalReached);
     void addGoal(const Goal& g, Actions& out);
     Goal focusGoal() const;
     // French label of a goal from its definition (preset label, else built from the stable skill names).

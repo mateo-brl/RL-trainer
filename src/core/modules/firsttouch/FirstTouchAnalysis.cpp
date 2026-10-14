@@ -362,6 +362,13 @@ TouchScore scoreTouch(const TouchMetrics& m, const ControlSummary& c, const Scor
     return s;
 }
 
+float touchOnlyScore(const TouchScore& s, const ScoreParams& p) {
+    const Weights w = normalisedWeights(p);
+    const float sum = w.s + w.c;
+    if (sum <= 1e-6f) return 0.f;
+    return std::round(clampf(100.f * (w.s * s.sSpeed + w.c * s.sContact) / sum, 0.f, 100.f));
+}
+
 const char* scoreHeadline(float score) {
     if (score >= 90.f) return "Touche parfaite !";
     if (score >= 85.f) return "Belle touche !";
@@ -373,7 +380,7 @@ const char* scoreHeadline(float score) {
 // ---- Diagnosis ------------------------------------------------------------------------------------------
 std::vector<Tip> diagnose(TouchType type, const TouchMetrics& m, const ControlSummary& c, const TouchScore& s,
                           const ScoreParams& sp, const DiagnosisParams& dp, const PlayerProfile& profile,
-                          KeyStyle style, SpeedUnit unit) {
+                          KeyStyle style) {
     std::vector<Tip> tips;
     if (!m.valid || type == TouchType::Dribble) return tips;
     const Weights w = normalisedWeights(sp);
@@ -395,25 +402,21 @@ std::vector<Tip> diagnose(TouchType type, const TouchMetrics& m, const ControlSu
 
     // Speed along the ball travel. `along` < 0 alone does not mean "too slow": a ball coming at the car gives a
     // large negative value too (head-on), and a crossing ball gives -|v_ball| whatever the car speed.
+    // Twice the threshold reads as "much too fast": the size of the mistake in words, without a number.
     const bool crossingFaster = !m.ballComing && !m.ballAway && m.speedDiff < -dp.tooFast;
     if (groundLike && m.along > dp.tooFast) {
         add("ft.too_fast",
-            "Ralentis avant le contact (" + formatSpeedValue(m.along, unit) + ") : relâche " + boostKey +
-                " plus tôt et laisse venir la balle.",
+            std::string(m.along > 2.f * dp.tooFast ? "Tu arrives beaucoup trop vite" : "Tu arrives trop vite") +
+                " : relâche " + boostKey + " plus tôt.",
             lossSpeed * shareAlong + 1.f);
     } else if (groundLike && m.along < -dp.tooFast && m.ballComing) {
-        add("ft.head_on",
-            "Amortis la balle qui arrive de face (" + formatSpeedValue(-m.along, unit) +
-                ") : freine ou recule au moment du contact.",
+        add("ft.head_on", "La balle arrive de face : freine ou recule au moment du contact.",
             lossSpeed * shareAlong + 1.f);
     } else if (groundLike && m.along < -dp.tooFast && (m.ballAway || crossingFaster)) {
-        add("ft.too_slow",
-            "Accélère avant le contact : la balle va plus vite que toi (" + formatSpeedValue(m.along, unit) + ").",
+        add("ft.too_slow", "Accélère avant le contact : la balle va plus vite que toi.",
             lossSpeed * shareAlong + 1.f);
     } else if (air && m.relSpeed > sp.speedGood && m.closingSpeed > dp.tooFast) {
-        add("ft.too_fast",
-            "Arrive plus doucement sous la balle (" + formatSpeedValue(m.closingSpeed, unit) + ") : dose " + boostKey + ".",
-            lossSpeed + 1.f);
+        add("ft.too_fast", "Arrive plus doucement sous la balle : dose " + boostKey + ".", lossSpeed + 1.f);
     }
     if (groundLike && m.cross > dp.angle)
         add("ft.angle", "Aligne ta trajectoire sur celle de la balle avant de la toucher.", lossSpeed * shareCross + 1.f);
@@ -448,8 +451,14 @@ std::vector<Tip> diagnose(TouchType type, const TouchMetrics& m, const ControlSu
     if (groundLike && c.lost && c.maxSteerAfter > 0.7f)
         add("ft.oversteer", "Braque moins après la touche : fais de petites corrections.", 0.6f * lossControl + 1.f);
     if (!c.controlled) {
-        if (air) add("ft.lost_control", "Après la touche, reste sous la balle pour la reprendre.", lossControl);
-        else add("ft.lost_control", "Reste collé à la balle après la touche : suis-la sans la repousser.", lossControl);
+        // A ball lost after a speed or contact mistake is its consequence: the cause comes first (the HUD shows
+        // one tip only).
+        bool causeFound = false;
+        for (const auto& t : tips)
+            if (t.code != "ft.side" && t.code != "ft.boost" && t.code != "ft.oversteer") causeFound = true;
+        const float w = causeFound ? 0.5f * lossControl : lossControl;
+        if (air) add("ft.lost_control", "Après la touche, reste sous la balle pour la reprendre.", w);
+        else add("ft.lost_control", "Reste collé à la balle après la touche : suis-la sans la repousser.", w);
     }
     std::stable_sort(tips.begin(), tips.end(), [](const Tip& a, const Tip& b) { return a.weight > b.weight; });
     return tips;

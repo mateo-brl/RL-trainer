@@ -54,10 +54,15 @@ public:
     // ---- Read accessors for the UI (call under the engine lock, then copy) --------------------------------------
     struct MechView {
         std::string id, title, what, key, drillHint;  // key / hint keep the {jump}-style placeholders
+        std::vector<std::string> steps;               // what to do, in order (placeholders kept)
+        std::string difficulty;                       // "Débutant", "Intermédiaire", "Avancé"
+        int order = 0;                                // position in bm::learningOrder (easiest first)
+        std::string progression;                      // how the drill gets harder, plain words
         int attempts = 0, successes = 0;
         int sessionAttempts = 0, sessionSuccesses = 0;
         float average = 0.f, best = 0.f;              // 0..100
         float drillLevel = 0.f;                       // 0..1
+        int levelNumber = 1;                          // the same level as the player sees it, 1..10
         int drillAttempts = 0;
         std::vector<float> recent;                    // last scores, oldest first
         bool detectionEnabled = true;
@@ -65,7 +70,10 @@ public:
     struct DrillView {
         bool active = false;
         std::string mechId, title, phase, label, hint;
+        std::string action;                           // short step list of the current level (the HUD line)
+        std::string tip;                              // main advice after the last attempt ("" = none)
         float level = 0.f;
+        int levelNumber = 1;
         int attempts = 0, successes = 0;              // this drill session
         float timeLeft = 0.f;
         std::string lastVerdict;
@@ -83,6 +91,9 @@ public:
         DrillView drill;
         std::string flickVariant;
         KeyStyle keyStyle = KeyStyle::Auto;
+        int successScore = 50;                        // settings used by the drill criteria (tab details)
+        float pinchSpeed = 4000.f;
+        float timeoutScale = 1.f;
     };
     UiState uiState() const;
 
@@ -109,6 +120,8 @@ private:
         int attempts = 0, successes = 0;
         std::string lastVerdict;
         bool lastSuccess = false;
+        bool hasResult = false;       // `result` holds the last attempt of this drill
+        AttemptResult result;
         bool resolved = false;
     };
 
@@ -130,6 +143,8 @@ private:
     void failDrill(const char* code, const TickContext& ctx, Actions& out);
     void applySetup(const TickContext& ctx, Actions& out, bool launch);
     float drillTimeout() const;
+    const Tip* drillTip() const;      // main advice after the last drill attempt (nullptr = none)
+    std::string drillActionNow() const;
 
     struct Impl;  // detection pipeline, statistics, current drill setup, scratch buffers (BallMechModule.cpp)
 
@@ -137,6 +152,7 @@ private:
     KeyStyle keyStyle_ = KeyStyle::Auto;  // player's button style (Settings::profile.buttonStyle)
     std::unique_ptr<Impl> impl_;
     std::array<Staircase, 11> stairs_;   // one adaptive level per mechanic (bm::kMechCount)
+    std::array<bool, 11> levelChosen_{};  // level set with the - / + buttons ("level" command): kept even unplayed
     Drill drill_;
     std::string flickVariant_;
     Rng rng_;

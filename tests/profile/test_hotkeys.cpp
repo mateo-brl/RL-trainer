@@ -34,7 +34,7 @@ TEST(hotkeys_commands_from_settings) {
     cfg.hotkeyMenu = false;
     cmds = hotkeyCommands(cfg);
     CHECK_EQ(cmds.size(), static_cast<size_t>(3));
-    CHECK_EQ(cmds[1].command, "rlt firsttouch drill mix");
+    CHECK_EQ(cmds[1].command, "rlt firsttouch drill roll_in");
     CHECK_EQ(cmds[2].command, "rlt kickoff start random");
     CHECK(isKnownHotkeyCommand("rlt_menu"));
     CHECK(!isKnownHotkeyCommand("unbind all"));

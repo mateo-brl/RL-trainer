@@ -20,6 +20,7 @@ struct BallMechConfig {
     bool hudEnabled = true;
     float hudX = 0.01f;             // screen fractions (left zone, below the movement panel)
     float hudY = 0.60f;
+    float hudScale = 1.f;           // size of the panel and of the drill panel, multiplies the general HUD size
     float hudSeconds = 8.f;         // how long the last result stays on screen (0 = always)
     int hudMetrics = 3;             // metric lines in the panel
     bool hudTip = true;

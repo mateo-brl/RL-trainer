@@ -251,7 +251,8 @@ TEST(courses_save_load_roundtrip) {
     }
     CHECK_NEAR(m2.dribbleBest(), h.mod.dribbleBest(), 1e-3);
     CHECK_EQ(m2.attemptsOf(CoursesKind::RingsAir), 1);  // played from a code: counted, not adapted
-    CHECK_EQ(m2.levels()[0].level, 25);
+    CHECK_EQ(m2.levels()[0].level, 0);  // never adapted: a new player's niveau 1
+    CHECK_EQ(m2.levels()[0].levelNumber, 1);
     CHECK_EQ(m2.attemptsOf(CoursesKind::Dribble), 1);
     const auto la = h.mod.levels(), lb = m2.levels();
     CHECK_EQ(la.size(), lb.size());
@@ -294,11 +295,13 @@ TEST(courses_personal_bests_bounded_and_validated) {
     junk.setString("courses.pb.count", "99999999");
     junk.setString("courses.dribble.best", "-5");
     junk.setString("courses.stair.air.level", "7");
+    junk.setString("courses.stair.air.attempts", "3");
     CoursesModule j;
     j.load(junk);
     CHECK(j.personalBests().empty());
     CHECK_NEAR(j.dribbleBest(), 0.f, 1e-6);
     CHECK(j.levels()[0].level <= 100);
+    CHECK(j.levels()[0].levelNumber <= 10);
 }
 
 TEST(courses_draw_sanity) {

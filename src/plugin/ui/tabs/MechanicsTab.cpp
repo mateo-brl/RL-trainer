@@ -1,5 +1,6 @@
 #include "plugin/ui/Ui.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -38,7 +39,31 @@ std::string pct(float ratio) {
     return buf;
 }
 
-void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, bool worldControl) {
+const Color kTitle(0, 220, 255, 255), kTip(255, 210, 60, 255), kGood(80, 230, 80, 255), kHeading(255, 220, 120, 255);
+
+// Families from the simplest to the hardest (stable inside a tier).
+std::vector<const MechanicsModule::StatRow*> byTier(const std::vector<MechanicsModule::StatRow>& rows) {
+    std::vector<const MechanicsModule::StatRow*> v;
+    for (const auto& r : rows) v.push_back(&r);
+    std::stable_sort(v.begin(), v.end(), [](const auto* a, const auto* b) { return a->tier < b->tier; });
+    return v;
+}
+
+void numberedSteps(const std::vector<std::string>& steps, int current) {
+    for (size_t k = 0; k < steps.size(); ++k) {
+        const std::string text = std::to_string(k + 1) + ". " + steps[k];
+        if (static_cast<int>(k) == current) {
+            ImGui::PushStyleColor(ImGuiCol_Text, toImVec(kTip));
+            ImGui::TextWrapped("%s  <- maintenant", text.c_str());
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::TextWrapped("%s", text.c_str());
+        }
+    }
+}
+
+void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, const std::vector<MechanicsModule::StatRow>& rows,
+                  bool worldControl) {
     ui::separatorText("Statut");
     if (!st.enabled) {
         ui::textColored(colors::Orange, "Module désactivé : active-le dans les réglages plus bas.");
@@ -47,22 +72,34 @@ void renderStatus(UiContext& ctx, const MechanicsModule::Status& st, bool worldC
     if (st.focus == mech::Focus::None) {
         ImGui::TextUnformatted("Mode libre : toutes les mécas activées sont détectées et notées.");
     } else {
-        ui::textColored(Color(0, 220, 255, 255), std::string(st.drillActive ? "Exercice : " : "Focus : ") +
-                                                     mech::focusInfo(st.focus).title);
+        ui::textColored(kTitle, std::string(st.drillActive ? "Exercice : " : "Focus : ") + mech::focusInfo(st.focus).title);
         ImGui::SameLine();
         ImGui::TextDisabled("(seule cette méca est notée)");
     }
     if (st.drillActive) {
-        ImGui::Text("Étape : %s", st.phase.c_str());
-        if (!st.variant.empty()) {
+        ImGui::Text("Niveau %d/10  |  essais réussis : %d/%d", st.levelNumber, st.drillSuccesses, st.drillAttempts);
+        if (!st.goal.empty()) ImGui::TextWrapped("%s", st.goal.c_str());
+        ui::textColored(kHeading, "À faire, dans l'ordre :");
+        numberedSteps(st.steps, st.currentStep);
+        if (!st.message.empty()) ui::textColored(kTip, st.message);
+        ImGui::Text("Essai : %s", st.phase.c_str());
+        if (st.timeLeft > 0.f) {
             ImGui::SameLine();
-            ImGui::TextDisabled("| %s", st.variant.c_str());
+            ImGui::Text("|  temps restant : %s s", frNum(st.timeLeft, 1).c_str());
         }
-        ImGui::Text("Niveau %d/10  |  essais réussis : %d/%d", static_cast<int>(st.level * 10.f + 0.5f), st.drillSuccesses,
-                    st.drillAttempts);
-        if (st.timeLeft > 0.f) ImGui::Text("Temps restant : %s s", frNum(st.timeLeft, 1).c_str());
-        if (!st.goal.empty()) ImGui::TextWrapped("Objectif : %s", st.goal.c_str());
-        if (!st.message.empty()) ui::textColored(Color(255, 210, 60, 255), st.message);
+        if (ImGui::CollapsingHeader("Détails techniques##mech_status")) {
+            ImGui::Indent();
+            ImGui::TextUnformatted("Pour réussir à ce niveau :");
+            for (const auto& c : st.checks) ImGui::BulletText("%s", c.c_str());
+            if (!st.variant.empty()) ImGui::Text("Variante : %s", st.variant.c_str());
+            ImGui::Unindent();
+        }
+    } else if (st.focus != mech::Focus::None) {
+        for (const auto& r : rows) {
+            if (r.focus != st.focus) continue;
+            ui::textColored(kHeading, "À faire, dans l'ordre :");
+            numberedSteps(r.steps, -1);
+        }
     }
     if (st.gameSpeed < 0.999f) ImGui::Text("Ralenti : x%s", frNum(st.gameSpeed, 2).c_str());
     if (st.speedWaiting)
@@ -91,14 +128,28 @@ void renderLastAttempt(const MechanicsModule::LastAttempt& last) {
     const AttemptResult& r = last.result;
     std::string head = r.title;
     if (!last.variant.empty()) head += " (" + last.variant + ")";
-    head += std::string(" : ") + verdictLabel(r.verdict);
-    if (last.drillAttempt) head += r.success ? "  [exercice réussi]" : "  [exercice raté]";
-    ui::textColored(mech::verdictColor(r.verdict), head);
+    if (last.drillAttempt) head += r.success ? " : exercice réussi" : " : exercice raté";
+    else head += std::string(" : ") + verdictLabel(r.verdict);
+    ui::textColored(last.drillAttempt ? (r.success ? kGood : Color(255, 80, 60, 255)) : mech::verdictColor(r.verdict), head);
     char overlay[32];
     std::snprintf(overlay, sizeof(overlay), "%.0f / 100", static_cast<double>(r.score));
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, toImVec(mech::verdictColor(r.verdict)));
-    ImGui::ProgressBar(clamp01(r.score / 100.f), ImVec2(-1.f, 0.f), overlay);
+    ui::progressBar(clamp01(r.score / 100.f), overlay);
     ImGui::PopStyleColor();
+    // The one thing to work on, in words.
+    ImGui::PushStyleColor(ImGuiCol_Text, toImVec(r.tips.empty() ? kGood : kTip));
+    ImGui::TextWrapped("%s", last.headline.c_str());
+    ImGui::PopStyleColor();
+    if (!ImGui::CollapsingHeader("Détails techniques##mech_last")) return;
+    ImGui::Indent();
+    if (r.tips.size() > 1) {
+        ImGui::TextUnformatted("Autres points :");
+        for (size_t i = 1; i < r.tips.size(); ++i) {
+            ImGui::Bullet();
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", r.tips[i].text.c_str());
+        }
+    }
     if (!last.lines.empty()) {
         ImGui::Columns(3, "##mech_last_metrics", false);
         ImGui::TextDisabled("Mesure");
@@ -117,26 +168,13 @@ void renderLastAttempt(const MechanicsModule::LastAttempt& last) {
         }
         ImGui::Columns(1);
     }
-    if (r.tips.empty()) {
-        ui::textColored(Color(80, 230, 80, 255), last.headline);
-    } else {
-        for (size_t i = 0; i < r.tips.size(); ++i) {
-            ImGui::Bullet();
-            ImGui::SameLine();
-            if (i == 0) {
-                ImGui::PushStyleColor(ImGuiCol_Text, toImVec(Color(255, 210, 60, 255)));
-                ImGui::TextWrapped("%s", r.tips[i].text.c_str());
-                ImGui::PopStyleColor();
-            } else {
-                ImGui::TextWrapped("%s", r.tips[i].text.c_str());
-            }
-        }
-    }
+    ImGui::Unindent();
 }
 
 void renderGrid(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& rows, const MechanicsModule::Status& st,
                 bool worldControl) {
     ui::separatorText("Mécaniques");
+    ui::textColored(kGood, mech::tierAdvice());
     ImGui::TextDisabled("Survole un nom pour l'explication. Focus : seule cette méca est notée. Exercice : placement automatique.");
     ImGui::Columns(7, "##mech_grid", true);
     const char* headers[7] = {"Méca", "Essais", "Réussite", "Moyenne", "Record", "Niveau", "Entraîner"};
@@ -145,18 +183,19 @@ void renderGrid(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& row
         ImGui::NextColumn();
     }
     ImGui::Separator();
-    const char* group = "";
-    for (const auto& r : rows) {
-        if (r.group != group) {
-            group = r.group.c_str();
-            ui::textColored(Color(255, 200, 60, 255), r.group);
+    int tier = -1;
+    for (const auto* rp : byTier(rows)) {
+        const auto& r = *rp;
+        if (static_cast<int>(r.tier) != tier) {
+            tier = static_cast<int>(r.tier);
+            ui::textColored(Color(255, 200, 60, 255), mech::tierLabel(r.tier));
             for (int i = 0; i < 7; ++i) ImGui::NextColumn();
         }
         ImGui::PushID(r.id.c_str());
         if (r.enabled) ImGui::TextUnformatted(r.title.c_str());
         else ImGui::TextDisabled("%s (désactivé)", r.title.c_str());
         const char* offNote = "\n\nNon notée en mode libre (réglage désactivé). Le focus et l'exercice la notent quand même.";
-        tooltipText(r.what + "\n" + r.key + (r.enabled ? "" : offNote) +
+        tooltipText(r.title + " (" + mech::tierLabel(r.tier) + ")\n" + r.what + "\n" + r.key + (r.enabled ? "" : offNote) +
                     (r.topErrorTip.empty() ? "" : "\n\nTon erreur la plus fréquente : " + r.topErrorTip));
         ImGui::NextColumn();
         ImGui::Text("%d", r.attempts);
@@ -176,7 +215,8 @@ void renderGrid(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& row
             ImGui::TextDisabled("-");
         }
         ImGui::NextColumn();
-        ImGui::Text("%d/10", static_cast<int>(r.level * 10.f + 0.5f));
+        ImGui::Text("%d/10", r.levelNumber);
+        tooltipText("Niveau de l'exercice : il monte quand tu réussis, baisse quand tu rates.");
         ImGui::NextColumn();
         const bool focused = st.focus == r.focus;
         if (focused && !st.drillActive) {
@@ -184,7 +224,7 @@ void renderGrid(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& row
         } else if (ImGui::SmallButton("Focus")) {
             ctx.post("mechanics", "focus", {r.id});
         }
-        tooltipText("Seule cette méca est notée, objectifs affichés en jeu.");
+        tooltipText("Seule cette méca est notée, l'action à faire reste affichée en jeu.");
         ImGui::SameLine();
         if (worldControl) {
             if (ImGui::SmallButton("Exercice")) ctx.post("mechanics", "drill", {r.id});
@@ -199,23 +239,46 @@ void renderGrid(UiContext& ctx, const std::vector<MechanicsModule::StatRow>& row
     ImGui::Columns(1);
 }
 
-void renderExplanations(const std::vector<MechanicsModule::StatRow>& rows) {
-    if (!ImGui::CollapsingHeader("Explications et progression")) return;
-    ImGui::Indent();
-    for (const auto& r : rows) {
+void renderGuides(const std::vector<MechanicsModule::StatRow>& rows) {
+    ui::separatorText("Guides");
+    ImGui::TextWrapped("Ouvre une méca pour savoir quoi faire, dans l'ordre. Elles sont rangées de la plus simple à la "
+                       "plus dure.");
+    for (const auto* rp : byTier(rows)) {
+        const auto& r = *rp;
+        const std::string header = r.title + " (" + mech::tierLabel(r.tier) + ")##mech_guide_" + r.id;
+        if (!ImGui::CollapsingHeader(header.c_str())) continue;
         ImGui::PushID(r.id.c_str());
-        ui::textColored(Color(0, 220, 255, 255), r.title);
+        ImGui::Indent();
         ImGui::TextWrapped("%s", r.what.c_str());
+        ui::textColored(kHeading, "Ce qu'il faut faire :");
+        numberedSteps(r.steps, -1);
+        ui::textColored(kHeading, "La clé pour réussir :");
         ImGui::TextWrapped("%s", r.key.c_str());
-        if (!r.topErrorTip.empty()) ui::textColored(Color(255, 210, 60, 255), "Erreur la plus fréquente : " + r.topErrorTip);
+        ui::textColored(kHeading, "L'exercice :");
+        ImGui::TextWrapped("Ton niveau : %d/10. Il monte quand tu réussis et baisse quand tu rates. %s", r.levelNumber,
+                           r.progression.c_str());
+        if (!r.topErrorTip.empty()) ui::textColored(kTip, "Ton erreur la plus fréquente : " + r.topErrorTip);
         if (r.recent.size() >= 2) {
             ImGui::PlotLines("##recent", r.recent.data(), static_cast<int>(r.recent.size()), 0, "Derniers scores", 0.f, 100.f,
                              ImVec2(0.f, 40.f));
         }
-        ImGui::Spacing();
+        // Numbers for those who want them: the ideal values, then what a drill success needs per level.
+        if (ImGui::CollapsingHeader("Détails techniques")) {
+            ImGui::Indent();
+            ImGui::TextWrapped("%s", r.tech.c_str());
+            auto list = [](const char* title, const std::vector<std::string>& checks) {
+                ImGui::TextUnformatted(title);
+                for (const auto& c : checks) ImGui::BulletText("%s", c.c_str());
+            };
+            list("Exercice, niveau 1 :", r.checksFirst);
+            const std::string now = "Exercice, ton niveau (" + std::to_string(r.levelNumber) + "/10) :";
+            if (r.levelNumber > 1 && r.levelNumber < 10) list(now.c_str(), r.checksNow);
+            list("Exercice, niveau 10 :", r.checksLast);
+            ImGui::Unindent();
+        }
+        ImGui::Unindent();
         ImGui::PopID();
     }
-    ImGui::Unindent();
 }
 
 void renderCommands(UiContext& ctx) {
@@ -267,13 +330,13 @@ void renderMechanicsTab(UiContext& ctx) {
         ImGui::TextDisabled("Module Mécas mouvement indisponible.");
         return;
     }
-    ImGui::TextWrapped("Joue normalement : speedflips, wavedashes, half-flips, fast aerials, réceptions... sont détectés et "
-                       "notés automatiquement, avec tes vrais boutons dans les conseils. Choisis une méca pour le focus ou "
-                       "lance un exercice pour t'entraîner à fond.");
-    renderStatus(ctx, st, worldControl);
+    ImGui::TextWrapped("Joue normalement : tes mécas de déplacement (réceptions, powerslides, wavedashes, speedflips...) "
+                       "sont détectées et notées toutes seules, avec un conseil à chaque fois. Pour t'entraîner sur une "
+                       "méca, lance son exercice : la voiture est placée pour toi et le niveau s'adapte à tes essais.");
+    renderStatus(ctx, st, rows, worldControl);
     renderLastAttempt(last);
     renderGrid(ctx, rows, st, worldControl);
-    renderExplanations(rows);
+    renderGuides(rows);
     renderCommands(ctx);
     ui::separatorText("Réglages");
     ui::moduleSettings(ctx, "mechanics");

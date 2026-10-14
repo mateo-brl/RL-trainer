@@ -172,6 +172,7 @@ TEST(ft_rammed_touch_is_graded_bad_with_tips) {
     CHECK(r.verdict == Verdict::Fail);
     CHECK(hasTip(r.tips, "ft.too_fast"));
     CHECK(hasTip(r.tips, "ft.lost_control"));
+    CHECK(r.tips.front().code == "ft.too_fast");  // the cause before its consequence
     const auto& last = h.mod.lastTouch();
     CHECK(last.zone == SpeedZone::Bad);
     CHECK(!last.controlled);
@@ -532,21 +533,25 @@ TEST(ft_reset_commands) {
     CHECK(!a.toasts.empty());
 
     h.set("rlt_ft_drill_seed", "5");
+    setDrillLevel(h.mod, DrillType::Pass, 0.5f);  // 7.5 s per ball at this level
     h.tick(makeSnap(5000, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{})));
     h.command("drill", {"pass"});
     Snapshot s = makeSnap(5001, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{}));
     h.tick(s);
-    for (int i = 0; i < 730; ++i) {
+    for (int i = 0; i < 910; ++i) {
         s.frame += 1;
         s.time = static_cast<float>(s.frame) / kTickRate;
         s.in.throttle = 1.f;
         h.tick(s);
     }
-    CHECK(h.mod.drillLevel(DrillType::Pass).level < 0.2f);
+    CHECK(h.mod.drillLevel(DrillType::Pass).level < 0.5f);
     a = h.command("reset_levels");
-    CHECK_NEAR(h.mod.drillLevel(DrillType::Pass).level, 0.2f, 1e-6f);
+    CHECK_NEAR(h.mod.drillLevel(DrillType::Pass).level, kDrillStartLevel, 1e-6f);
     CHECK(h.mod.drillLevel(DrillType::Pass).attempts == 0);
     CHECK(a.requestSave);
+    h.command("stop");
+    runScenario(h, groundPickup(1000.f, 950.f, 1000.f, 1040.f, 7000));
+    CHECK(h.mod.totalStats().graded >= 1);
     h.command("reset_all");
     CHECK(h.mod.totalStats().graded == 0);
     CHECK(hasTip(std::vector<Tip>{}, "x") == false);
@@ -566,7 +571,7 @@ TEST(ft_save_load_roundtrip) {
     h.command("drill", {"lob"});
     h.tick(makeSnap(2501, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{})));
     runScenario(h, groundPickup(1000.f, 950.f, 1000.f, 1040.f, 2600));
-    CHECK_NEAR(h.mod.drillLevel(DrillType::Lob).level, 0.24f, 1e-4f);
+    CHECK_NEAR(h.mod.drillLevel(DrillType::Lob).level, 0.04f, 1e-4f);
 
     Store st;
     h.mod.save(st);
@@ -598,10 +603,10 @@ TEST(ft_save_load_roundtrip) {
         CHECK_NEAR(ha[i].z, hb[i].z, 1e-3f);
         CHECK(ha[i].type == hb[i].type);
     }
-    CHECK_NEAR(h2.mod.drillLevel(DrillType::Lob).level, 0.24f, 1e-4f);
+    CHECK_NEAR(h2.mod.drillLevel(DrillType::Lob).level, 0.04f, 1e-4f);
     CHECK(h2.mod.drillLevel(DrillType::Lob).attempts == 1);
-    CHECK_NEAR(h2.mod.drillLevel(DrillType::Lob).best, 0.24f, 1e-4f);
-    CHECK_NEAR(h2.mod.drillLevel(DrillType::Pass).level, 0.2f, 1e-6f);
+    CHECK_NEAR(h2.mod.drillLevel(DrillType::Lob).best, 0.04f, 1e-4f);
+    CHECK_NEAR(h2.mod.drillLevel(DrillType::Pass).level, kDrillStartLevel, 1e-6f);
 }
 
 TEST(ft_load_tolerates_garbage) {
@@ -611,6 +616,7 @@ TEST(ft_load_tolerates_garbage) {
     st.setList("firsttouch.scores", {"abc", "150", "42"});
     st.setList("firsttouch.heat", {"1;2;3;4;5", "bad", "0.5;0;-0.5;80;9", "0.1;0.2"});
     st.setString("firsttouch.drill.roll_in.level", "7");
+    st.setInt("firsttouch.drill.roll_in.attempts", 3);
     FirstTouchModule m;
     m.load(st);
     CHECK(m.totalStats().graded == 0);
@@ -628,7 +634,7 @@ TEST(ft_load_tolerates_garbage) {
     // Empty store: defaults.
     FirstTouchModule e;
     e.load(Store{});
-    CHECK_NEAR(e.drillLevel(DrillType::High).level, 0.2f, 1e-6f);
+    CHECK_NEAR(e.drillLevel(DrillType::High).level, kDrillStartLevel, 1e-6f);
     CHECK(e.recentScores().empty());
 }
 
@@ -738,15 +744,18 @@ TEST(ft_draw_drill_panel) {
     CHECK(dl.panels.size() == 1);  // no stats yet: drill panel only
     if (dl.panels.empty()) return;
     const DrawPanel& p = dl.panels.front();
-    CHECK(p.title == "Exercice : Roulante vers toi");
+    CHECK(p.title == "Roulante vers toi, niveau 1/10");
     CHECK(p.anchorX == Align::Left);
     CHECK_NEAR(p.pos.x, 0.01f * 1920.f, 0.01f);
     CHECK_NEAR(p.pos.y, 0.12f * 1080.f, 0.01f);
-    CHECK(!p.lines.empty() && p.lines.front().text == "Niveau 20/100");
-    bool instruction = false;
-    for (const auto& l : p.lines)
-        if (contains(l.text, "Boost (B)")) instruction = true;
-    CHECK(instruction);
+    // What to do first, then the time left (9 s at niveau 1), then the goal of the level.
+    const auto main = mainLines(p);
+    CHECK(main.size() == 3);
+    if (main.size() == 3) {
+        CHECK(contains(main[0], "Boost (B)"));
+        CHECK(main[1] == "Temps : 9 s");
+        CHECK(main[2] == "Objectif : une touche douce.");
+    }
     const auto view = h.mod.drillStatus();
     CHECK(view.active && view.phase == FirstTouchModule::DrillPhase::WaitTouch);
     CHECK(contains(view.instruction, "Boost (B)"));

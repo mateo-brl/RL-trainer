@@ -27,47 +27,79 @@ float outcomeScore(KickoffDuel d) {
 
 const char* kickoffTipText(KickoffTip t) {
     switch (t) {
-    case KickoffTip::NoTouch: return "Tu n'as pas touché la balle : fonce au centre dès le GO, boost enfoncé.";
+    case KickoffTip::NoTouch: return "Tu n'as pas touché la balle : fonce au centre dès le GO.";
+    case KickoffTip::LateArrival: return "Tu arrives trop tard : garde le boost enfoncé jusqu'à la balle.";
+    case KickoffTip::NoBoostAtGo: return "Appuie sur boost et accélérateur pendant le décompte.";
+    case KickoffTip::SlowReaction: return "Tu pars en retard : appuie avant la fin du décompte.";
+    case KickoffTip::BoostReleased: return "Tu lâches le boost en route : garde-le enfoncé.";
+    case KickoffTip::EarlyFirstJump: return "Tu sautes trop tôt : prends un peu de vitesse avant.";
+    case KickoffTip::LateFirstJump: return "Tu sautes trop tard : saute un peu plus tôt.";
+    case KickoffTip::SlowDodge: return "Tu flippes trop tard : flippe juste après le saut.";
+    case KickoffTip::NoCancel: return "Annule ton flip : tire le stick vers toi juste après.";
+    case KickoffTip::LateCancel: return "Annule plus vite : tire le stick vers toi dès le flip.";
+    case KickoffTip::DodgeTooStraight: return "Flippe plus en diagonale vers l'avant.";
+    case KickoffTip::DodgeTooWide: return "Flippe moins sur le côté : stick plus vers l'avant.";
+    case KickoffTip::LateLanding: return "Retombe vite sur tes roues : finis la vrille à l'air roll.";
+    case KickoffTip::PathDeviation: return "Va droit sur la balle : corrige ta direction avant de sauter.";
+    case KickoffTip::OffCenterContact: return "Frappe la balle bien au centre avec l'avant de ta voiture.";
+    case KickoffTip::LowContactSpeed: return "Arrive plus fort sur la balle : ne lâche pas le boost.";
+    case KickoffTip::BallToOwnHalf: return "La balle repart chez toi : arrive plus vite, frappe au centre.";
+    case KickoffTip::FlipIntoBall: return "Flippe dans la balle juste avant le contact pour la pousser.";
+    case KickoffTip::MissedPad: return "Passe sur le petit boost de ta route : il te recharge.";
+    case KickoffTip::TrySpeedflip: return "Apprends le speedflip : page Mécas mouvement, exercice Speedflip.";
+    case KickoffTip::GreatKickoff: return "Excellent kickoff ! Garde ce rythme et change de position.";
+    default: return "";
+    }
+}
+
+const char* kickoffTipDetail(KickoffTip t) {
+    switch (t) {
+    case KickoffTip::NoTouch:
+        return "Aucune touche avant la fin du temps : la note dépend seulement de la distance parcourue (20 au plus).";
     case KickoffTip::LateArrival:
-        return "Tu arrives trop tard sur la balle : garde le boost du GO jusqu'à la panne et enchaîne un speedflip "
-               "tôt.";
+        return "Temps jusqu'à la balle au-dessus de la référence : garde le boost du GO jusqu'à la panne (33 de "
+               "boost, environ 1 s) et flippe tôt.";
     case KickoffTip::NoBoostAtGo:
-        return "Appuie sur boost ET accélérateur pendant le décompte : tout est pris en compte à l'instant du GO.";
-    case KickoffTip::SlowReaction: return "Réaction lente au GO : pré-appuie boost + accélérateur avant la fin du 1.";
+        return "Ni boost ni accélérateur au GO : ce qui est tenu pendant le décompte part à l'instant du GO.";
+    case KickoffTip::SlowReaction:
+        return "Réaction au GO notée de 1 image (100) à 0,20 s (0) : pré-appuie boost + accélérateur avant la fin "
+               "du 1.";
     case KickoffTip::BoostReleased:
-        return "Tu relâches le boost pendant l'approche : avec un speedflip, garde-le enfoncé tout du long.";
+        return "Boost tenu moins de 97 % du temps de l'approche (0 point sous 60 %).";
     case KickoffTip::EarlyFirstJump:
-        return "Premier saut trop tôt : attends ~0,45 s (vers 1000-1100 uu/s) avant de sauter.";
+        return "Premier saut avant 0,38 s : attends environ 0,45 s (vers 1000-1100 uu/s) avant de sauter.";
     case KickoffTip::LateFirstJump:
-        return "Premier saut trop tard : saute vers 0,45-0,55 s après le GO pour profiter du boost en l'air.";
+        return "Premier saut après 0,60 s : saute vers 0,45-0,55 s après le GO pour profiter du boost en l'air.";
     case KickoffTip::SlowDodge:
-        return "Le flip arrive trop longtemps après le saut : enchaîne le 2e appui en moins de 0,15 s.";
+        return "Flip plus de 0,15 s après le saut (0 point à 0,35 s) : enchaîne le 2e appui plus vite.";
     case KickoffTip::NoCancel:
-        return "Flip non annulé : tire le stick vers l'arrière juste après le flip pour garder le nez droit.";
+        return "Aucune annulation dans les 0,25 s après le flip : stick à fond en arrière juste après le flip.";
     case KickoffTip::LateCancel:
-        return "Annulation trop tardive : tire le stick en arrière en moins de 0,1 s après le flip.";
+        return "Annulation plus de 0,10 s après le flip (0 point à 0,25 s) : vise moins de 0,1 s.";
     case KickoffTip::DodgeTooStraight:
-        return "Flip trop droit : vise un angle d'environ 30° (entre 20° et 45°) en diagonale avant.";
+        return "Angle du flip sous 20° : vise environ 30° (entre 20° et 45°) en diagonale avant.";
     case KickoffTip::DodgeTooWide:
-        return "Flip trop latéral : rapproche le stick de l'avant (angle 20-45°) pour ne pas perdre de vitesse.";
+        return "Angle du flip au-delà de 45° (0 point à 75°) : rapproche le stick de l'avant.";
     case KickoffTip::LateLanding:
-        return "Atterrissage lent : utilise l'air roll pendant l'annulation pour reposer les roues plus vite.";
+        return "Retour au sol plus de 0,85 s après le flip (0 point à 1,3 s) : air roll pendant l'annulation.";
     case KickoffTip::PathDeviation:
-        return "Ta trajectoire dévie de la ligne vers la balle : corrige l'angle avant de sauter, pas pendant le flip.";
+        return "Écart moyen à la ligne droite au-delà de 35 uu (100 uu en décalé, où le détour par le boost est "
+               "permis) : corrige l'angle avant de sauter, pas pendant le flip.";
     case KickoffTip::OffCenterContact:
-        return "Contact décalé : frappe le centre de la balle (côté de ton propre but) pour gagner le 50/50.";
+        return "Décalage du contact au-delà de 15 uu (0 point à 75 uu) : frappe le centre de la balle, côté de ton "
+               "propre but.";
     case KickoffTip::LowContactSpeed:
-        return "Vitesse au contact trop faible : boost plus longtemps ou flippe dans la balle au dernier moment.";
+        return "Vitesse vers la balle au contact sous la référence du niveau choisi (0 point à 1300 uu/s).";
     case KickoffTip::BallToOwnHalf:
-        return "La balle repart vers ton camp : arrive plus vite ou dévie légèrement pour frapper le centre côté but.";
+        return "Direction de la balle notée de 30° (100) à 150° (0) ; ici elle repart vers ton camp.";
     case KickoffTip::FlipIntoBall:
-        return "Pense à flipper dans la balle ~0,25 s avant le contact pour ajouter de la puissance au 50/50.";
+        return "Un flip lancé moins de 0,35 s avant le contact compte comme flip dans la balle (idéal vers 0,25 s).";
     case KickoffTip::MissedPad:
-        return "Tu as raté le petit boost sur ta route : passe dessus, c'est +12 de boost gratuit.";
+        return "Petit boost de ta ligne raté : +12 de boost, environ 0,04 à 0,06 s de gagné.";
     case KickoffTip::TrySpeedflip:
-        return "Ton approche (front flip / sans flip) coûte ~0,1-0,2 s : passe au speedflip (flip diagonal annulé, "
-               "boost maintenu).";
-    case KickoffTip::GreatKickoff: return "Excellent kickoff ! Garde ce timing et varie les positions.";
+        return "Front flip ou sans flip : dans les références du plugin, un speedflip arrive 0,10 à 0,15 s plus tôt "
+               "(diagonale : 1,95 s contre 2,07 s).";
+    case KickoffTip::GreatKickoff: return "Aucune erreur ne coûte plus de 2,5 points.";
     default: return "";
     }
 }
@@ -157,8 +189,11 @@ KickoffGrade kickoffGrade(const KickoffMetrics& m, KickoffLevel target, const Ki
     g.speedflipAttempt = m.type == KickoffType::Speedflip ||
                          (m.firstJump >= 0.f && m.dodge >= 0.f && m.dodge <= 1.1f && std::fabs(m.dodgeSide) >= 0.15f);
     const bool wantSpeedflip = static_cast<int>(target) >= static_cast<int>(KickoffLevel::Pro);
+    // Below Pro the reference kickoff uses plain flips: an early diagonal flip is only judged as a speedflip when it
+    // really was one (cancelled), so a beginner is not told to cancel a flip they never meant as a speedflip.
+    const bool judgeSpeedflip = g.speedflipAttempt && (wantSpeedflip || m.type == KickoffType::Speedflip);
     const float e = w.exec;
-    if (g.speedflipAttempt) {
+    if (judgeSpeedflip) {
         const float sJump = m.firstJump < 0.38f ? lin(m.firstJump, 0.38f, 0.20f) : lin(m.firstJump, 0.60f, 0.85f);
         const float sGap = lin(m.dodge - m.firstJump, 0.15f, 0.35f);
         const float sCancel = m.cancel < 0.f ? 0.f : lin(m.cancel - m.dodge, 0.10f, 0.25f);

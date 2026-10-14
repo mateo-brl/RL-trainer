@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/common/HudLayout.h"
 #include "core/common/Text.h"
 
 namespace rlt {
@@ -92,71 +93,92 @@ void Renderer::text(CanvasWrapper& canvas, Vec2 pos, const std::string& s, const
     canvas.DrawString(t, scale, scale, shadow);
 }
 
-void Renderer::panel(CanvasWrapper& canvas, const DrawPanel& p, bool hudAccents) {
-    const float s = std::max(0.3f, p.scale);
-    const float pad = p.padding * s;
-    const float barH = 5.f * s;
-    // Measure.
+Renderer::PanelMetrics Renderer::measurePanel(CanvasWrapper& canvas, const DrawPanel& p, bool hudAccents) const {
+    PanelMetrics m;
+    m.scale = std::max(0.3f, p.scale);
+    const float s = m.scale;
+    m.pad = p.padding * s;
+    m.barH = 5.f * s;
     float width = p.minWidth;
-    float height = pad;
-    const std::string title = hudText(p.title, hudAccents);
-    float titleH = 0.f;
-    if (!title.empty()) {
-        const Vector2F ts = canvas.GetStringSize(title, s * 1.1f, s * 1.1f);
+    float height = m.pad;
+    m.title = hudText(p.title, hudAccents);
+    if (!m.title.empty()) {
+        const Vector2F ts = canvas.GetStringSize(m.title, s * 1.1f, s * 1.1f);
         width = std::max(width, ts.X);
-        titleH = ts.Y + 2.f * s;
-        height += titleH;
+        m.titleH = ts.Y + 2.f * s;
+        height += m.titleH;
     }
-    std::vector<std::string> lines;
-    std::vector<float> lineH;
     for (const auto& l : p.lines) {
-        lines.push_back(hudText(l.text, hudAccents));
+        m.lines.push_back(hudText(l.text, hudAccents));
         const float ls = s * l.scale;
-        const Vector2F ts = canvas.GetStringSize(lines.back().empty() ? " " : lines.back(), ls, ls);
+        const Vector2F ts = canvas.GetStringSize(m.lines.back().empty() ? " " : m.lines.back(), ls, ls);
         width = std::max(width, ts.X);
         float h = ts.Y + 1.f * s;
-        if (l.bar >= 0.f) h += barH + 2.f * s;
-        lineH.push_back(h);
+        if (l.bar >= 0.f) h += m.barH + 2.f * s;
+        m.lineH.push_back(h);
         height += h;
     }
-    width += 2.f * pad;
-    height += pad;
-    float x = p.pos.x;
-    if (p.anchorX == Align::Center) x -= width * 0.5f;
-    else if (p.anchorX == Align::Right) x -= width;
-    float y = p.anchorBottom ? p.pos.y - height : p.pos.y;
+    m.width = width + 2.f * m.pad;
+    m.height = height + m.pad;
+    return m;
+}
 
-    // Background.
+void Renderer::drawPanel(CanvasWrapper& canvas, const DrawPanel& p, const PanelMetrics& m, float x, float y) const {
+    const float s = m.scale;
     if (p.background.a > 0.f) {
         canvas.SetColor(toLinear(p.background));
         canvas.SetPosition(Vector2F{x, y});
-        canvas.FillBox(Vector2F{width, height});
+        canvas.FillBox(Vector2F{m.width, m.height});
     }
-    float cy = y + pad;
-    if (!title.empty()) {
+    float cy = y + m.pad;
+    if (!m.title.empty()) {
         canvas.SetColor(toLinear(p.titleColor));
-        canvas.SetPosition(Vector2F{x + pad, cy});
-        canvas.DrawString(title, s * 1.1f, s * 1.1f, true);
-        cy += titleH;
+        canvas.SetPosition(Vector2F{x + m.pad, cy});
+        canvas.DrawString(m.title, s * 1.1f, s * 1.1f, true);
+        cy += m.titleH;
     }
     for (size_t i = 0; i < p.lines.size(); ++i) {
         const PanelLine& l = p.lines[i];
         const float ls = s * l.scale;
         canvas.SetColor(toLinear(l.color));
-        canvas.SetPosition(Vector2F{x + pad, cy});
-        canvas.DrawString(lines[i], ls, ls, true);
+        canvas.SetPosition(Vector2F{x + m.pad, cy});
+        canvas.DrawString(m.lines[i], ls, ls, true);
         if (l.bar >= 0.f) {
-            const float by = cy + lineH[i] - barH - 1.f * s;
-            const float bw = width - 2.f * pad;
+            const float by = cy + m.lineH[i] - m.barH - 1.f * s;
+            const float bw = m.width - 2.f * m.pad;
             canvas.SetColor(LinearColor{60.f, 60.f, 60.f, 200.f});
-            canvas.SetPosition(Vector2F{x + pad, by});
-            canvas.FillBox(Vector2F{bw, barH});
+            canvas.SetPosition(Vector2F{x + m.pad, by});
+            canvas.FillBox(Vector2F{bw, m.barH});
             canvas.SetColor(toLinear(l.barColor));
-            canvas.SetPosition(Vector2F{x + pad, by});
-            canvas.FillBox(Vector2F{bw * std::clamp(l.bar, 0.f, 1.f), barH});
+            canvas.SetPosition(Vector2F{x + m.pad, by});
+            canvas.FillBox(Vector2F{bw * std::clamp(l.bar, 0.f, 1.f), m.barH});
         }
-        cy += lineH[i];
+        cy += m.lineH[i];
     }
+}
+
+void Renderer::panels(CanvasWrapper& canvas, const std::vector<DrawPanel>& list, const ViewContext& view,
+                      bool hudAccents) const {
+    if (list.empty()) return;
+    // Measure everything first, then let the shared layout stack the panels and keep them off the boost gauge.
+    std::vector<PanelMetrics> metrics;
+    std::vector<HudRect> rects;
+    metrics.reserve(list.size());
+    rects.reserve(list.size());
+    for (const auto& p : list) {
+        metrics.push_back(measurePanel(canvas, p, hudAccents));
+        const PanelMetrics& m = metrics.back();
+        HudRect r;
+        r.w = m.width;
+        r.h = m.height;
+        r.x = p.pos.x;
+        if (p.anchorX == Align::Center) r.x -= m.width * 0.5f;
+        else if (p.anchorX == Align::Right) r.x -= m.width;
+        r.y = p.anchorBottom ? p.pos.y - m.height : p.pos.y;
+        rects.push_back(r);
+    }
+    layoutHudPanels(rects, view.screenW, view.screenH);
+    for (size_t i = 0; i < list.size(); ++i) drawPanel(canvas, list[i], metrics[i], rects[i].x, rects[i].y);
 }
 
 void Renderer::render(CanvasWrapper& canvas, const DrawList& list, const ViewContext& view, bool hudAccents) {
@@ -180,7 +202,7 @@ void Renderer::render(CanvasWrapper& canvas, const DrawList& list, const ViewCon
         canvas.DrawLine(toV2(l.a), toV2(l.b), l.width);
     }
     for (const auto& t : list.texts2D) text(canvas, t.pos, t.text, t.color, t.scale, t.shadow, t.align, hudAccents);
-    for (const auto& p : list.panels) panel(canvas, p, hudAccents);
+    panels(canvas, list.panels, view, hudAccents);
 }
 
 } // namespace rlt

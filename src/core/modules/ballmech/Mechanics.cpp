@@ -11,62 +11,105 @@ const std::array<MechInfo, kMechCount> kMechs = {{
      "Présente tout le dessous de la voiture face au centre de la balle, arrive doucement (lâche le boost juste "
      "avant), puis flippe dans la balle avec {jump}.",
      "Pose les 4 roues sur la balle, puis flippe dedans avec {jump}.", Family::FlipReset, 7.f, true,
-     {"alignment_deg", "rel_speed", "ball_speed_after", "time_to_use"}},
+     {"alignment_deg", "rel_speed", "ball_speed_after", "time_to_use"}, Difficulty::Advanced,
+     {"Monte vers la balle en l'air, le dessous de la voiture tourné vers elle.",
+      "Lâche le boost juste avant le contact pour arriver doucement.",
+      "Pose les 4 roues sur la balle : ton flip revient (cercle vert autour de la voiture).",
+      "Flippe dans la balle avec {jump} avant de retomber."}},
     {Mech::Ceiling, "ceiling", "ball.ceiling", "Ceiling shot",
      "Monte au plafond puis laisse-toi tomber sans sauter : tu gardes ton flip pour frapper.",
      "Ne saute pas en quittant le plafond, tombe juste derrière la balle et flippe au dernier moment.",
      "Laisse-toi tomber du plafond sans sauter, puis flippe dans la balle.", Family::Ceiling, 6.f, true,
-     {"ball_speed_after", "drop_to_shot", "separation_at_touch", ""}},
+     {"ball_speed_after", "drop_to_shot", "separation_at_touch", ""}, Difficulty::Intermediate,
+     {"Monte par le mur jusqu'au plafond en suivant la balle.",
+      "Quitte le plafond sans sauter : tu gardes ton flip.", "Tombe juste derrière la balle.",
+      "Flippe dans la balle au dernier moment avec {jump}."}},
     {Mech::Flick, "flick", "ball.flick", "Flick",
      "Balle posée sur le toit, saut puis flip pour la projeter (avant, 45°, 90°, arrière, inversé).",
      "Stabilise la balle au centre du toit, saute avec {jump}, tourne d'environ 45° puis flippe stick à fond.",
      "Garde la balle sur le toit, saute avec {jump} puis flippe dans la balle.", Family::Flick, 8.f, false,
-     {"ball_dv", "delay", "yaw_deg", "dodge_to_touch"}},
+     {"ball_dv", "delay", "yaw_deg", "dodge_to_touch"}, Difficulty::Intermediate,
+     {"Pose la balle au centre du toit et roule doucement.", "Saute avec {jump} quand la balle ne bouge plus.",
+      "Tourne un peu la voiture (stick sur le côté).",
+      "Flippe vers la balle, stick à fond : elle part devant toi."}},
     {Mech::Musty, "musty", "ball.musty", "Musty flick",
      "Saut, nez vers le bas, puis flip arrière : le nez remonte dans la balle comme un uppercut.",
      "Pousse le stick vers l'avant juste après le saut pour baisser le nez, puis fais un flip arrière.",
      "Saute, bascule le nez vers le bas (stick avant) puis fais un flip arrière.", Family::Flick, 8.f, false,
-     {"ball_dv", "pitch_deg", "delay", ""}},
+     {"ball_dv", "pitch_deg", "delay", ""}, Difficulty::Advanced,
+     {"Balle sur le toit, saute avec {jump}.", "Pousse le stick vers l'avant : le nez descend.",
+      "Fais un flip arrière (stick vers toi et {jump}).", "Le nez remonte et frappe la balle par-dessous."}},
     {Mech::Breezi, "breezi", "ball.breezi", "Breezi flick",
      "Une tornade (air roll et stick opposé) enchaînée sur un musty flick.",
      "Garde {jump} enfoncé, fais tourner la voiture avec {airroll}, relâche quand le nez remonte puis flip "
      "arrière. Pas de supersonique.",
      "Saut maintenu, tornade avec {airroll}, puis flip arrière quand le nez remonte.", Family::Flick, 9.f, false,
-     {"ball_dv", "roll_deg", "delay", ""}},
+     {"ball_dv", "roll_deg", "delay", ""}, Difficulty::Advanced,
+     {"Balle sur le toit, pars sans être supersonique.", "Saute en gardant {jump} enfoncé.",
+      "Fais tourner la voiture avec {airroll}, stick à l'opposé (tornade).",
+      "Quand le nez remonte vers la balle, fais un flip arrière."}},
     {Mech::DoubleTap, "doubletap", "ball.doubletap", "Double tap",
      "Envoie la balle sur le mur du fond, suis-la et reprends le rebond avant de retomber.",
      "Vise haut sur le mur, reste à une longueur de voiture derrière la balle et frappe le rebond par l'arrière.",
      "Suis la balle vers le mur du fond et reprends le rebond avant de retomber.", Family::DoubleTap, 7.f, true,
-     {"backboard_height", "car_dist_at_bounce", "ball_speed_after", ""}},
+     {"backboard_height", "car_dist_at_bounce", "ball_speed_after", ""}, Difficulty::Advanced,
+     {"Envoie la balle haut sur le mur du fond adverse.", "Suis-la en l'air, une longueur de voiture derrière.",
+      "Attends le rebond sur le mur.", "Reprends la balle par l'arrière avant de retomber, vers le but."}},
     {Mech::AirDribble, "airdribble", "ball.airdribble", "Air dribble",
      "Emmène la balle en l'air (depuis le sol ou le mur) et touche-la plusieurs fois avec le nez ou le toit.",
      "Touches douces, boost dosé avec {boost} (feathering), nez toujours pointé vers la balle.",
      "Emmène la balle en l'air et touche-la plusieurs fois, boost dosé.", Family::AirDribble, 10.f, true,
-     {"duration", "touches", "avg_dist", "air_time"}},
+     {"duration", "touches", "avg_dist", "air_time"}, Difficulty::Intermediate,
+     {"Balle sur le toit (ou contre le mur), saute avec {jump}.",
+      "Boost doucement sous la balle avec {boost} : elle reste sur le nez.",
+      "Touche-la par petites touches, le nez toujours vers elle.", "Finis en poussant la balle vers le but."}},
     {Mech::AirRoll, "airroll", "ball.airroll", "Air roll shot",
      "Tir aérien où tu orientes la voiture avec l'air roll (directionnel de préférence) avant le contact.",
      "Utilise {airroll} pour aligner le nez sur la balle, garde un seul sens de rotation et frappe au centre.",
      "Oriente la voiture avec {airroll} et frappe la balle au centre, vers le but.", Family::Aerial, 6.f, true,
-     {"ball_speed_after", "off_axis", "air_roll_consistency", "impact_err_deg"}},
+     {"ball_speed_after", "off_axis", "air_roll_consistency", "impact_err_deg"}, Difficulty::Intermediate,
+     {"Décolle vers la balle.", "Tourne la voiture avec {airroll} pour aligner le nez sur la balle.",
+      "Garde un seul sens de rotation.", "Frappe la balle au centre, vers le but."}},
     {Mech::Aerial, "aerial", "ball.aerial", "Tir aérien",
      "Touche aérienne précise : frappe le centre de la balle et envoie-la dans le but.",
      "Place-toi dans l'axe balle-but avant de décoller et garde le boost jusqu'au contact.",
      "Décolle, vise le centre de la balle et cadre ton tir.", Family::Aerial, 6.f, true,
-     {"ball_speed_after", "off_axis", "angle_err_deg", "impact_err_deg"}},
+     {"ball_speed_after", "off_axis", "angle_err_deg", "impact_err_deg"}, Difficulty::Beginner,
+     {"Place-toi dans l'axe balle-but avant de décoller.", "Saute avec {jump}, lève le nez puis boost avec {boost}.",
+      "Vise le centre de la balle avec le nez.", "Garde le boost jusqu'au contact."}},
     {Mech::Pinch, "pinch", "ball.pinch", "Pinch",
      "Coince la balle contre le sol, le mur ou le plafond : elle part à plus de 144 km/h.",
      "Frappe la balle au moment où elle touche la surface, un peu à côté du centre (le mur sert de deuxième doigt).",
      "Frappe la balle quand elle touche le mur, un peu à côté du centre.", Family::Pinch, 7.f, false,
-     {"exit_speed", "surface_gap", "push_speed", ""}},
+     {"exit_speed", "surface_gap", "push_speed", ""}, Difficulty::Intermediate,
+     {"Roule vers la balle qui part vers le mur.", "Arrive au moment où elle touche le mur.",
+      "Frappe-la un peu à côté du centre : le mur la coince et elle part très vite.", ""}},
     {Mech::PowerShot, "powershot", "ball.powershot", "Frappe puissante",
      "Grosse frappe au sol : flip ou glissade (powerslide) au bon moment.",
      "Arrive vite, flippe environ 0,1 s avant le contact et frappe avec l'avant ; relâche {slide} avant l'impact.",
      "Arrive vite, flippe juste avant le contact et frappe avec l'avant.", Family::PowerShot, 6.f, false,
-     {"exit_speed", "car_speed", "dodge_to_contact", ""}},
+     {"exit_speed", "car_speed", "dodge_to_contact", ""}, Difficulty::Beginner,
+     {"Prends de la vitesse en ligne droite vers la balle.", "Aligne voiture, balle et but.",
+      "Flippe vers l'avant juste avant de toucher la balle.", "Frappe avec l'avant de la voiture, pas le côté."}},
 }};
+
+// Basics first: ground power, simple aerials, then roof and wall play, then the advanced aerial mechanics.
+const std::array<Mech, kMechCount> kLearningOrder = {
+    Mech::PowerShot, Mech::Aerial,     Mech::Flick, Mech::AirRoll,   Mech::Pinch, Mech::Ceiling,
+    Mech::AirDribble, Mech::DoubleTap, Mech::Musty, Mech::FlipReset, Mech::Breezi};
 
 std::string baseVariant(const std::string& v) { return v.substr(0, v.find("_delayed")); }
 } // namespace
+
+const char* difficultyLabel(Difficulty d) {
+    switch (d) {
+    case Difficulty::Beginner: return "Débutant";
+    case Difficulty::Intermediate: return "Intermédiaire";
+    default: return "Avancé";
+    }
+}
+
+const std::array<Mech, kMechCount>& learningOrder() { return kLearningOrder; }
 
 const MechInfo& mechInfo(Mech m) {
     const int i = static_cast<int>(m);
@@ -147,8 +190,8 @@ std::string gradeTitle(const MechGrade& g) {
         const std::string b = baseVariant(v);
         std::string t;
         if (b == "front") t = "Flick avant";
-        else if (b == "45") t = "Flick 45°";
-        else if (b == "90") t = "Flick 90°";
+        else if (b == "45") t = "Flick en diagonale";  // HUD title: no degrees (the 45 and 90 flicks)
+        else if (b == "90") t = "Flick sur le côté";
         else if (b == "backflip") t = "Flick arrière";
         else if (b == "side") t = "Flick latéral";
         else if (b == "reverse") t = "Flick inversé (Mawkzy)";

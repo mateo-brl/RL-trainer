@@ -77,10 +77,13 @@ public:
         ft::DrillType current = ft::DrillType::RollIn;  // concrete drill of the current rep
         DrillPhase phase = DrillPhase::Idle;
         float level = 0.f;           // level of the current rep
+        int playerLevel = 1;         // the same, as shown to the player (1..10)
+        ft::DrillCriteria criteria;  // what the current rep must reach
         int reps = 0, successes = 0;
         float timeLeft = 0.f;        // seconds before timeout (WaitTouch) or next rep (Pause)
         std::string instruction;
-        std::string lastOutcome;
+        std::string lastOutcome;     // verdict of the last rep ("Réussi ! 72/100", "Temps écoulé.")
+        std::string lastTip;         // the one tip of the last failed rep, in words ("" after a success)
         bool lastSuccess = false;
     };
 
@@ -147,9 +150,11 @@ private:
         float deadline = 0.f;
         float now = 0.f;
         float repLevel = 0.f;
+        ft::DrillCriteria repCriteria;
         bool repInput = false;
         int reps = 0, successes = 0, idleReps = 0;
         std::string lastOutcome;
+        std::string lastTip;
         bool lastSuccess = false;
     };
 
@@ -167,11 +172,14 @@ private:
     void startDrill(ft::DrillType type, const TickContext& ctx, Actions& out);
     void stopDrill(Actions* out, const std::string& message);
     void tickDrill(const TickContext& ctx, Actions& out);
-    void drillRepDone(bool success, float score, const std::vector<Tip>& tips, Actions& out);
+    void drillRepDone(bool success, float score, const std::string& tip, Actions& out);
+    ft::DrillCriteria criteriaFor(float level) const;
     void recordDrillRep(bool success);
     void rebuildStaircases();
 
     // Drawing.
+    // Compact HUD (ctx.compactHud): at most 3 main lines per panel, secondary lines flagged `detail`, no heatmap,
+    // and no stats panel while a drill runs (the drill panel already shows the verdict and the tip).
     void drawStatsPanel(const ViewContext& view, const DrawContext& ctx, DrawList& out) const;
     void drawHeatmap(float anchorX, float topY, bool anchorRight, float scale, DrawList& out) const;
     void drawDrillPanel(const ViewContext& view, const DrawContext& ctx, DrawList& out) const;

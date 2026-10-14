@@ -50,6 +50,7 @@ struct CoursesConfig {
     bool hud = true;
     float hudX = 0.01f;            // HUD panel anchor, screen fractions (top-left zone)
     float hudY = 0.12f;
+    float hudScale = 1.f;          // panel size, multiplies the general HUD size
 };
 
 } // namespace rlt

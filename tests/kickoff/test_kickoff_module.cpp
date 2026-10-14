@@ -190,7 +190,8 @@ TEST(ko_module_go_to_touch_timing_in_frames) {
 }
 
 TEST(ko_module_ghost_player_narrow_win_nudges_ball) {
-    Harness h;  // default ghost: Pro
+    Harness h;
+    h.set("rlt_ko_ghost", "3");  // Pro (the default is the adaptive ghost)
     int64_t f = 0;
     start(h, f, {"diagonal_left"});
     const int64_t go = h.runCountdown(f);
@@ -221,6 +222,7 @@ TEST(ko_module_ghost_player_narrow_win_nudges_ball) {
 
 TEST(ko_module_ghost_wins_clear_and_hits_ball) {
     Harness h;
+    h.set("rlt_ko_ghost", "3");  // Pro
     int64_t f = 0;
     start(h, f, {"diagonal_right"});
     const int64_t go = h.runCountdown(f);
@@ -270,6 +272,7 @@ TEST(ko_module_ghost_beginner_loses_clear_no_ball_change) {
 
 TEST(ko_module_ghost_hits_ball_setting_off) {
     Harness h;
+    h.set("rlt_ko_ghost", "3");  // Pro
     h.set("rlt_ko_ghost_hits_ball", "0");
     int64_t f = 0;
     start(h, f, {"diagonal_right"});
@@ -668,8 +671,8 @@ TEST(ko_module_pb_ghost_and_adaptive) {
     int64_t f = 0;
     start(h, f, {"diagonal_left"});
     h.tick(makeSnap(++f));
-    CHECK(h.mod.status().ghostFallback);  // no record yet: Pro ghost
-    CHECK_NEAR(h.mod.ghost().arrivalTime(), 1.95f, 1e-4);
+    CHECK(h.mod.status().ghostFallback);  // no record yet: ghost of the reference level (Standard by default)
+    CHECK_NEAR(h.mod.ghost().arrivalTime(), 2.07f, 1e-4);
     int64_t go = h.runCountdown(f);
     playAttempt(h, simulate(KickoffSpawn::DiagonalLeft, KickoffTeam::Blue, fastSpeedflip(), go, 4.f), f);
     const float pb = h.mod.stats().of(KickoffSpawn::DiagonalLeft).bestTime;
@@ -888,7 +891,9 @@ TEST(ko_module_feedback_toggles_and_pb_toast) {
 }
 
 TEST(ko_module_ghost_close_race_waits_for_touch) {
-    Harness h;  // Pro ghost: 1.95 s on the diagonal
+    Harness h;
+    h.set("rlt_ko_ghost", "3");         // Pro ghost: 1.95 s on the diagonal
+    h.set("rlt_ko_grade_target", "2");  // graded against Pro too (the late start costs time against it)
     int64_t f = 0;
     start(h, f, {"diagonal_left"});
     const int64_t go = h.runCountdown(f, false);
@@ -920,6 +925,7 @@ TEST(ko_module_ghost_close_race_waits_for_touch) {
 
 TEST(ko_module_chat_lines_content) {
     Harness h;
+    h.set("rlt_ko_ghost", "3");  // Pro: the boost-only run loses clearly
     int64_t f = 0;
     start(h, f, {"diagonal_right"});
     int64_t go = h.runCountdown(f);

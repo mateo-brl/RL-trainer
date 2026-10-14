@@ -362,6 +362,72 @@ std::vector<std::string> targetLines(Focus f, const DetectConfig& cfg, SpeedUnit
     return out;
 }
 
+namespace {
+
+// Pass condition that is an error the attempt must not have.
+const char* errorCheckLabel(const char* code) {
+    struct Label {
+        const char* code;
+        const char* fr;
+    };
+    static const Label labels[] = {
+        {"SF_BAD_LANDING", "Retomber sur les roues"},   {"HF_BAD_LANDING", "Retomber sur les roues"},
+        {"WD_CRASH_LANDING", "Retomber sur les roues"}, {"RC_CRASHED", "Retomber sur les roues"},
+        {"RC_ON_ROOF", "Pas d'atterrissage sur le toit"}, {"ZAP_NO_BOUNCE", "Flip après le rebond, pas avant"},
+        {"WD_LATE_JUMPED", "Flip avant que les roues touchent"}, {"WD_NO_STICK", "Stick incliné au moment du flip"},
+        {"WALL_FELL_OFF", "Rester collé au mur"},         {"FA_ACCIDENTAL_DODGE", "Pas de flip au double saut"},
+        {"FA_NO_DOUBLE_JUMP", "Double saut"},             {"ST_NO_FLIP", "Flip encore disponible"},
+        {"ST_YAW_ROLL_MISMATCH", "Stick et air roll opposés"}, {"ST_PITCH_LEAK", "Stick ni en haut ni en bas"},
+    };
+    for (const Label& l : labels)
+        if (std::strcmp(code, l.code) == 0) return l.fr;
+    return code;
+}
+
+} // namespace
+
+std::vector<std::string> drillCheckLines(const DrillSetup& d, const DetectConfig& cfg, SpeedUnit unit) {
+    std::vector<std::string> out;
+    if (d.focus == Focus::None) return out;
+    const Mech m = focusInfo(d.focus).primary;
+    if (d.needTouch || d.kickoff) out.push_back("Toucher la balle");
+    for (const DrillCheck& c : d.checks) {
+        if (!c.key) {
+            out.push_back(errorCheckLabel(c.lowCode));
+            continue;
+        }
+        if (std::strcmp(c.key, "angleErrorDeg") == 0) {
+            out.push_back("Angle du flip : " + num(cfg.speedflipTargetAngleDeg, 0) + "° +/-" + num(c.hi, 0) + "°");
+            continue;
+        }
+        // Label and unit of the metric: the family's own list first, then any mechanic that shows it.
+        const MetricSpec* sp = nullptr;
+        for (int i = -1; i < kMechCount && !sp; ++i)
+            for (const MetricSpec& x : metricSpecs(i < 0 ? m : static_cast<Mech>(i)))
+                if (!sp && std::strcmp(x.key, c.key) == 0) sp = &x;
+        const std::string label = sp ? sp->label : c.key;
+        if (sp && isYesNo(sp->unit)) {
+            out.push_back(label + " : oui");
+            continue;
+        }
+        const char* u = sp ? sp->unit : "";
+        const float scale = sp ? sp->scale : 1.f;
+        const int dec = sp ? sp->decimals : 1;
+        // A lower bound of 0 only says that the action happened (a cancel at all): the upper bound is what matters.
+        const bool hasLo = c.lo > -1e8f && c.lo != 0.f, hasHi = c.hi < 1e8f;
+        std::string t = label + " : ";
+        if (hasLo && hasHi) t += "entre " + num(c.lo * scale, dec) + " et " + formatValue(c.hi * scale, u, dec, unit);
+        else if (hasHi) t += "<= " + formatValue(c.hi * scale, u, dec, unit);
+        else if (hasLo) t += ">= " + formatValue(c.lo * scale, u, dec, unit);
+        else t += "oui";  // only asks that it happened
+        out.push_back(t);
+    }
+    if (d.passScore >= 0.5f) out.push_back("Score minimum : " + num(d.passScore, 0) + "/100");
+    if (d.requireDetector) out.push_back("Méca validée par la notation complète");
+    out.push_back("Temps par essai : " + num(d.timeLimit, 1) + " s");
+    return out;
+}
+
 std::string formatRecord(Mech m, float value, SpeedUnit unit) {
     const RecordDef& rd = recordDef(m);
     if (!rd.key) return formatNumber(value, 0) + "/100";

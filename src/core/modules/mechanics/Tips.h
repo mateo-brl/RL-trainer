@@ -1,6 +1,7 @@
 #pragma once
-// French coaching lines for the movement mechanics: one short imperative sentence per error code, written with
-// the player's real buttons (Controls.h actionPrompt) and flip deadzone where it matters.
+// French coaching lines for the movement mechanics: one short imperative sentence per error code, in plain words
+// (no milliseconds or degrees: the numbers are in the detail lines and the tab), written with the player's real
+// buttons (Controls.h actionPrompt) and flip deadzone where it matters.
 
 #include <string>
 #include <string_view>

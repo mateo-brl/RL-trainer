@@ -92,16 +92,110 @@ const char* drillDescription(DrillType t) {
 std::string drillInstruction(DrillType t, const PlayerProfile& profile, KeyStyle style) {
     switch (t) {
     case DrillType::RollIn:
-        return "Amortis la balle : freine avant le contact, sans " + actionPrompt(profile, GameAction::Boost, style) + ".";
-    case DrillType::RollAway: return "Rattrape la balle et cale ta vitesse sur la sienne avant de la toucher.";
-    case DrillType::Pass: return "Coupe la trajectoire et accompagne la balle dans sa direction.";
-    case DrillType::Lob: return "Place-toi sous la balle et amortis-la sur le capot.";
-    case DrillType::Wall: return "Lis la sortie du mur et récupère la balle au sol.";
+        return "Freine avant la balle, sans " + actionPrompt(profile, GameAction::Boost, style) + ", et laisse-la venir.";
+    case DrillType::RollAway: return "Rattrape la balle, puis roule à sa vitesse avant de la toucher.";
+    case DrillType::Pass: return "Tourne dans le sens de la passe et touche-la en roulant avec elle.";
+    case DrillType::Lob: return "Place-toi où la balle tombe et laisse-la tomber sur ton capot.";
+    case DrillType::Wall: return "Attends la balle où elle retombe et récupère-la au sol.";
     case DrillType::High:
-        return "Saute avec " + actionPrompt(profile, GameAction::Jump, style) + " et touche la balle par-dessous.";
-    case DrillType::Mix: return "Lis la balle et contrôle-la.";
+        return "Place-toi sous la balle, saute avec " + actionPrompt(profile, GameAction::Jump, style) +
+               " et touche-la par-dessous.";
+    case DrillType::Mix: return "Regarde d'où vient la balle, puis touche-la en douceur.";
     }
     return "";
+}
+
+Tier drillTier(DrillType t) {
+    switch (t) {
+    case DrillType::RollIn:
+    case DrillType::RollAway: return Tier::Beginner;
+    case DrillType::Pass:
+    case DrillType::Lob:
+    case DrillType::Wall: return Tier::Intermediate;
+    case DrillType::High:
+    case DrillType::Mix: return Tier::Advanced;
+    }
+    return Tier::Intermediate;
+}
+
+const char* tierLabel(Tier t) {
+    switch (t) {
+    case Tier::Beginner: return "Débutant";
+    case Tier::Intermediate: return "Intermédiaire";
+    case Tier::Advanced: return "Avancé";
+    }
+    return "";
+}
+
+const char* drillAdvice() {
+    return "Débutant : commence par Roulante vers toi, puis Roulante qui s'éloigne. Passe aux exercices "
+           "Intermédiaire quand tu tiens le niveau 5.";
+}
+
+std::vector<std::string> drillSteps(DrillType t) {
+    switch (t) {
+    case DrillType::RollIn:
+        return {"Avance vers la balle sans boost.", "Ralentis jusqu'à presque t'arrêter avant qu'elle arrive.",
+                "Laisse-la toucher ton nez : elle s'arrête au lieu de rebondir loin.",
+                "Repars doucement avec la balle devant toi."};
+    case DrillType::RollAway:
+        return {"Accélère pour rattraper la balle.", "Ralentis quand tu arrives juste derrière elle.",
+                "Touche-la avec le nez en roulant à sa vitesse : elle reste devant toi.",
+                "Garde la même vitesse qu'elle."};
+    case DrillType::Pass:
+        return {"Regarde d'où vient la passe et où elle va.", "Tourne pour rouler dans la même direction que la balle.",
+                "Touche-la quand toi et la balle allez dans le même sens : de travers, elle part sur le côté.",
+                "Continue avec elle devant toi."};
+    case DrillType::Lob:
+        return {"Regarde où la balle va tomber.", "Va à cet endroit et attends-la presque à l'arrêt.",
+                "Laisse-la tomber sur ton capot, ou touche-la juste après son rebond.", "Repars doucement avec elle."};
+    case DrillType::Wall:
+        return {"Regarde la balle quitter le mur.", "Place-toi où elle va retomber, sans foncer.",
+                "Touche-la doucement après son rebond au sol.", "Garde-la devant toi."};
+    case DrillType::High:
+        return {"Place-toi sous la balle, un peu en arrière.", "Saute quand elle arrive à ta portée.",
+                "Touche-la par-dessous avec le nez, en douceur.", "Retombe avec la balle devant toi."};
+    case DrillType::Mix:
+        return {"Regarde d'où vient la balle.", "Choisis : freiner, la rattraper ou te placer dessous.",
+                "Touche-la en douceur.", "Garde-la devant toi."};
+    }
+    return {};
+}
+
+// ---- Levels ---------------------------------------------------------------------------------------------
+int playerLevel(float level) { return 1 + static_cast<int>(clamp01(level) * 9.f + 0.5f); }
+
+float levelOfPlayer(int n) { return clamp01(static_cast<float>(n - 1) / 9.f); }
+
+DrillCriteria drillCriteria(float level, float successScore, float controlFraction, float timeout) {
+    const float l = clamp01(level);
+    DrillCriteria c;
+    c.firstStep = playerLevel(l) < kControlLevel;
+    c.minScore = clampf(successScore - 10.f + 25.f * l, 0.f, 100.f);
+    c.minControl = c.firstStep ? 0.f : clampf(controlFraction - 0.25f + 0.35f * l, 0.1f, 1.f);
+    c.timeout = timeout * (1.5f - 0.5f * l);
+    return c;
+}
+
+float drillRepScore(const DrillCriteria& c, const TouchScore& s, const ScoreParams& p) {
+    return c.firstStep ? touchOnlyScore(s, p) : s.score;
+}
+
+bool drillRepSuccess(const DrillCriteria& c, float repScore, float controlFraction) {
+    return repScore >= c.minScore && (c.minControl <= 0.f || controlFraction >= c.minControl);
+}
+
+std::string drillRepTip(const DrillCriteria& c, const std::vector<Tip>& tips) {
+    for (const auto& t : tips) {
+        if (c.firstStep && (t.code == "ft.lost_control" || t.code == "ft.oversteer")) continue;
+        return t.text;
+    }
+    return {};
+}
+
+const char* drillGoal(float level) {
+    return playerLevel(level) < kControlLevel ? "Objectif : une touche douce."
+                                              : "Objectif : touche douce, puis garde la balle.";
 }
 
 // ---- Poses ----------------------------------------------------------------------------------------------

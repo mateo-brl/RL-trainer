@@ -140,6 +140,20 @@ jobs:
             if [ -n "$prev" ]; then git log --no-merges --pretty='- %s' "$prev..$GITHUB_SHA"; else git log --no-merges --pretty='- %s' -n 30; fi
           } > notes.md
           cat notes.md
+      # The in-game updater downloads from raw.githubusercontent.com first: no redirect, unlike release assets
+      # (BakkesMod's HTTP client got a 400 from GitHub's file storage after the redirect). One orphan commit,
+      # force-pushed, with the DLL under a versioned path so no stale CDN copy is ever served.
+      - name: Mirror the DLL for the in-game updater
+        run: |
+          mkdir -p mirror/v$VERSION
+          cp dist/rltrainer.dll mirror/v$VERSION/
+          cd mirror
+          git init -q -b update
+          git add .
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "RL Trainer $VERSION"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" update
+
       - name: Publish
         run: |
           tag="v$VERSION"

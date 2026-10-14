@@ -77,6 +77,9 @@ std::string ReadyPhase::hudLine(float now) const {
     if (phase_ == Phase::Waiting) return "Appuie sur accélérer quand tu es prêt";
     if (waitingRelease(now)) return "Lâche l'accélérateur pour partir";
     if (phase_ == Phase::Countdown) {
+        // The game already shows its own 3, 2, 1 (player report on v1.0.7: two countdowns on screen). The panel
+        // counts only when it is the one countdown (no game messages: timed holds).
+        if (opt_.nativeMessages) return "Prêt ?";
         const int n = std::max(1, static_cast<int>(std::ceil(goTime_ - now - 1e-4f)));
         return "Départ dans " + std::to_string(n);
     }

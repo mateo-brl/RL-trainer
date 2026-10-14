@@ -44,30 +44,41 @@ Vec3 clampToField(Vec3 p, float margin);
 // Spin of a ball rolling on the floor without slipping (capped at the game's 6 rad/s), for rolling spawns.
 Vec3 rollingSpin(const Vec3& vel, float radius = kBallRadius);
 
-// ---- Moving roof start ("Balle sur le toit en mouvement") ---------------------------------------------------------
-// Driving speed of a moving roof start: 300 uu/s on the first moving levels (up to 0.1 above `firstMovingLevel`), then
-// 400 .. 1100 uu/s.
-float movingRoofSpeed(float level, float firstMovingLevel);
-constexpr float kRoofMovingFirstLevel = 0.3f;  // Cibles, balle sur le toit: moving starts above this level...
-constexpr int kRoofMovingFlickNiveau = 3;      // ...once the stationary flick reached niveau 3
+// ---- Dribble start ("Départ en dribble") ------------------------------------------------------------------------
+// Like a match: the ball already on the roof, the car already driving toward the attacked goal at a dribble speed,
+// from midfield, far enough to settle the ball, look at the goal and pick the moment of the flick. Speed 900 uu/s at
+// niveau 1 up to 1300 uu/s at niveau 10: under the ~1410 uu/s the throttle alone reaches (RocketSim throttle curve),
+// so the player holds it without boost. Distance to the goal line: 4500 to 5000 uu at niveau 1, 5000 to 5500 at
+// niveau 10 (3.3 s or more at niveau 1 before kFlickLateDist, 2.7 s or more at niveau 10).
+constexpr float kDribbleSpeedMin = 900.f;   // uu/s, niveau 1
+constexpr float kDribbleSpeedMax = 1300.f;  // niveau 10
+constexpr float kDribbleDistMin = 4500.f;   // uu from the goal line, niveau 1 (plus up to kDribbleDistSpread)
+constexpr float kDribbleDistMax = 5000.f;   // niveau 10 (plus up to kDribbleDistSpread)
+constexpr float kDribbleDistSpread = 500.f;
+// The flick must start before the car (ball still on the roof) is this close to the goal line: a flick is a shot
+// from range, not a dribble into the goal mouth. Closer, the attempt ends ("Trop près du but").
+constexpr float kFlickLateDist = 1200.f;
+float dribbleSpeed(float level);
+// Moving starts: carry assist of the first levels and early losses replayed.
 constexpr float kRoofAssistMaxLevel = 0.6f;    // carry assist after a moving release, up to this level
 constexpr float kRoofAssistSeconds = 0.6f;     // the ball is put back on the roof this long after the release...
 constexpr float kRoofAssistRadius = 40.f;      // ...while it is within this distance of its resting point
 constexpr float kEarlyLossReplay = 1.f;        // a ball that leaves the roof this soon after a moving release: replayed
+constexpr int kMaxEarlyReplays = 2;            // ...at most twice in a row (Mécas balle does the same), then it counts
 
-// Ball resting on the roof, car facing the attacked goal at a distance growing with the level (2000 .. 4500 uu).
-// `fixedSpeed` < 0: driving speed from the level (movingRoofSpeed) when `moving`.
+// Dribble start: ball on the roof (velocity of the car), car heading to the goal centre from a lateral offset growing
+// with the level (200 .. 1000 uu). `fixedSpeed` < 0: dribbleSpeed(level).
+Spawn dribbleSpawn(float level, float fixedSpeed, const GoalFrame& goal, const RoofParams& roof, Rng& rng);
+// Flick drill: `moving` = the dribble start above; otherwise the car is stopped with the ball resting on the roof,
+// facing the goal at a distance growing with the level (2000 .. 4500 uu), to learn the motion.
 Spawn flickSpawn(float level, bool moving, float fixedSpeed, const GoalFrame& goal, const RoofParams& roof, Rng& rng);
 
-struct TargetOptions {
-    bool roofMovingAllowed = true;  // Balle sur le toit: a moving start may be drawn (stationary flick at niveau 3)
-};
 // Net targeting setups (Mix is resolved by the caller).
 //  - Rolling: the ball rolls on a line that misses the goal mouth by at least 400 uu: the player redirects it.
 //  - Bouncing: dropped from 400 uu high at niveau 1 (900 at niveau 10), car 1200 uu behind (2000).
 //  - Pass: a cross from 1500 uu on the side at niveau 1 (2600), rolling at 550 uu/s (1300), car at rest.
-Spawn targetSpawn(TargetSetup setup, float level, const GoalFrame& goal, const RoofParams& roof, Rng& rng,
-                  const TargetOptions& opt = {});
+//  - Roof: the dribble start (a flick into the zone).
+Spawn targetSpawn(TargetSetup setup, float level, const GoalFrame& goal, const RoofParams& roof, Rng& rng);
 // Power challenge: ball rolling towards the player who faces the attacked goal.
 Spawn powerSpawn(float ballSpeed, const GoalFrame& goal, Rng& rng);
 

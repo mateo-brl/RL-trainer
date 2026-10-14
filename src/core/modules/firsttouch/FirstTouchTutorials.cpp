@@ -28,8 +28,9 @@ DrillTutorial rollIn() {
     t.tech = {
         "Balle à 16 m (1600 uu), 13 à 16 km/h (350 à 450 uu/s), droit sur ton nez au niveau 1. Niveau 10 : 19 à 25 m, "
         "29 à 50 km/h (800 à 1400 uu/s), jusqu'à 7 m sur le côté.",
-        "Avant chaque balle : 1 s d'attente, voiture et balle immobiles, chemin de la balle dessiné (0,5 s aux niveaux "
-        "4 à 6, rien ensuite). La première balle attend que tu appuies sur accélérer, puis compte 3 s.",
+        "Avant chaque balle : 1 s d'attente, voiture et balle immobiles (0,5 s aux niveaux 4 à 6, rien ensuite). Le "
+        "réglage « Trajectoire de la balle avant l'essai » (coupé par défaut) dessine son chemin pendant l'attente. La "
+        "première balle attend que tu appuies sur accélérer, puis compte 3 s.",
         "Touche parfaite sous 5 km/h d'écart de vitesse (150 uu/s), aucun point au-delà de 22 km/h (600 uu/s). "
         "Réussite au niveau 1 : 50/100 sur la touche seule. 9 s pour toucher.",
         "Si ta position de départ a moins de 35 m libres devant toi (3500 uu) ou est à moins de 12 m d'un mur de côté "
@@ -88,7 +89,7 @@ DrillTutorial pass() {
     DrillTutorial t;
     t.intro = "Une passe arrive par le côté. Au moment de la toucher, tu dois rouler dans le même sens qu'elle.";
     t.steps = {
-        {"Regarde le chemin de la balle (la ligne au sol) et le point où il croise ta route.", "",
+        {"Regarde d'où vient la balle et le point de rencontre (le cercle vert au sol).", "",
          "Tu dois savoir où aller avant de bouger.", "Tu vois le point de rencontre."},
         {"Roule vers ce point et tourne doucement pour partir dans le sens de la balle.", "",
          "Si tu la touches de travers, elle part sur le côté.",
@@ -103,7 +104,7 @@ DrillTutorial pass() {
         "l'avant au niveau 1, de plus en plus de travers jusqu'au niveau 6, puis la passe revient vers toi (20° au "
         "niveau 10).",
         "La balle met 2,6 s pour arriver au point de rencontre ; ta voiture peut y être vers 1,3 s. 1 s d'attente "
-        "avant la balle aux niveaux 1 à 3, avec le chemin et le point de rencontre dessinés. 9 s pour toucher.",
+        "avant la balle aux niveaux 1 à 3, avec le point de rencontre dessiné. 9 s pour toucher.",
     };
     t.fullTitle = "Parcours complet : passe d'un coéquipier";
     t.fullText = "Un coéquipier te passe la balle depuis l'autre aile. Lis la passe, va au point de rencontre avant la "

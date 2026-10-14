@@ -119,6 +119,7 @@ public:
     float drillLevel(const std::string& mechId) const;
     int drillMode(const std::string& mechId) const;  // 0 short, 1 full sequence
     float pickupLevel() const;                       // 0..1, the shared "Ramassage" staircase
+    bool defaultsMigrated() const { return defaultsV2_; }  // the one-time move of the old saved defaults ran
 
 private:
     enum class DrillPhase { Off, Ready, Live, Result };
@@ -143,8 +144,18 @@ private:
         bool hasResult = false;       // `result` holds the last attempt of this drill
         AttemptResult result;
         bool resolved = false;
+        // Dribble start of the flick family (short start): carry assist, when the ball left the roof, early replays.
+        bool assist = false;
+        bool roofSeen = false;        // the ball was carried on the roof since GO
+        float offRoofAt = -1.f;       // game time the ball left the roof (on the ground, before the carried jump)
+        int earlyReplays = 0;         // attempts replayed in a row because the ball fell right after GO
     };
 
+    // Saved settings of the previous version (config.cfg): move the old defaults once (flag "ballmech.defaults_v2").
+    void migrateDefaults(Actions& out);
+    // Flick family, dribble start: the carry assist after GO and the 12 m line (true when the attempt ended or restarted).
+    void flickAssist(const Snapshot& s, Actions& out);
+    bool flickTooClose(const Snapshot& s) const;
     bool analysing(const GameContext& game) const;
     void syncPipeline(const TickContext& ctx);
     void handleAcquisition(int64_t frame, int source, Actions& out);
@@ -181,6 +192,7 @@ private:
     std::array<int, 11> modes_{};         // drill start per mechanic (bm::DrillMode)
     std::array<bool, 11> modeChosen_{};   // start chosen by the player (saved; otherwise the default start)
     bool gameSpeedSet_ = false;           // a drill slowed the game down: put it back at the next launch
+    bool defaultsV2_ = false;             // migrateDefaults ran (saved)
     bool touchThisTick_ = false;          // onTouch since the last tick (full sequence checks)
     bool resetThisTick_ = false;          // flip reset game event since the last tick
     Drill drill_;

@@ -785,6 +785,34 @@ TEST(ft_draw_drill_panel) {
 
 // ---- Contexts ---------------------------------------------------------------------------------------------
 
+// Trajectories are opt-in: the ball's predicted path drawn during the get-ready hold is off by default. The landing
+// circle (the spot the drill asks to reach) stays drawn.
+TEST(ft_drill_path_off_by_default) {
+    const Color pathColor{0, 200, 255, 170};
+    const Color circleColor{255, 199, 64, 230};
+    auto count = [](const DrawList& dl, const Color& c) {
+        int n = 0;
+        for (const auto& l : dl.lines3D) n += l.color == c ? 1 : 0;
+        return n;
+    };
+    Harness h;
+    CHECK(!h.mod.config().drillPath);
+    const SettingDef* def = h.schema.find("rlt_ft_drill_path");
+    CHECK(def && def->defaultValue == "0" && def->type == SettingType::Bool);
+    h.set("rlt_ft_drill_seed", "9");
+    h.tick(makeSnap(100, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{})));
+    h.command("drill", {"lob"});
+    h.tick(makeSnap(101, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{})));
+    CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::Ready);
+    const DrawList off = h.draw();
+    CHECK_EQ(count(off, pathColor), 0);
+    CHECK(count(off, circleColor) >= 28);  // landing circle
+    h.set("rlt_ft_drill_path", "1");
+    const DrawList on = h.draw();
+    CHECK(count(on, pathColor) > 0);
+    CHECK(count(on, circleColor) >= 28);
+}
+
 TEST(ft_analysis_works_without_world_control) {
     for (GameMode mode : {GameMode::Workshop, GameMode::CustomTraining, GameMode::OfflineMatch}) {
         Harness h;

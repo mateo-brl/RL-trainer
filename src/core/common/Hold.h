@@ -88,8 +88,9 @@ public:
     // Seconds until GO during the countdown (the whole countdown while waiting, 0 after GO).
     float remaining(float now) const;
     float goTime() const { return goTime_; }  // game time of GO (valid in Countdown and Done)
-    // HUD action line: "Appuie sur accélérer quand tu es prêt" while waiting, "Départ dans 3" during the countdown,
-    // "Lâche l'accélérateur pour partir" while GO waits for the throttle to be let go, "" otherwise.
+    // HUD action line: "Appuie sur accélérer quand tu es prêt" while waiting; during the countdown "Prêt ?" when the
+    // game shows its own 3, 2, 1 (Options::nativeMessages), else "Départ dans 3"; "Lâche l'accélérateur pour partir"
+    // while GO waits for the throttle to be let go; "" otherwise.
     std::string hudLine(float now) const;
 
 private:

@@ -338,7 +338,7 @@ TEST(ko_fix_missed_pad_in_drill_and_quick_next) {
         CHECK(hasTip(v.grade, KickoffTip::MissedPad));
     }
     // Rep 1 picks the pad, "next" right after the touch with a 1 s countdown: rep 2 starts < 4 s after the
-    // pickup, but its placement respawned every pad, so missing the pad is blamed (it used to be excused).
+    // pickup, but every pad is respawned before its GO, so missing the pad is blamed (it used to be excused).
     {
         Harness h;
         h.set("rlt_ko_ghost", "0");
@@ -357,10 +357,14 @@ TEST(ko_fix_missed_pad_in_drill_and_quick_next) {
         CHECK_EQ(h.mod.lastResult().metrics.padsPicked, 1);
         CHECK(pickup > 0);
         h.command("next");
+        const size_t placeIdx = h.log.size();
         const Actions place = h.tick(makeSnap(++f));
         CHECK(h.mod.phase() == KickoffPhase::Countdown);
-        CHECK(place.resetPickups);
+        CHECK(!place.resetPickups);  // not on the teleport tick: the teleport may still take pads
         go = h.runCountdown(f);
+        int resets = 0;
+        for (size_t i = placeIdx; i < h.log.size(); ++i) resets += h.log[i].resetPickups ? 1 : 0;
+        CHECK_EQ(resets, 1);  // sent during the countdown, before GO
         CHECK(go < pickup + 4 * 120);  // the pad would still be respawning without the reset
         SimOut sim2 = simulate(KickoffSpawn::DiagonalLeft, KickoffTeam::Blue, fastSpeedflip(), go, 4.f);
         stripPads(sim2);

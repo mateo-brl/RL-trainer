@@ -44,7 +44,26 @@ struct ToastMessage {
     std::string text;
     ToastKind kind = ToastKind::Info;
     float seconds = 3.5f;
+    bool migration = false;  // a saved setting moved to a new default: the engine merges those of one tick into one
 };
+
+// Toast of a one-time move of saved settings to new defaults (a module's migrateDefaults).
+inline ToastMessage migrationToast(std::string title, std::string text) {
+    ToastMessage t;
+    t.title = std::move(title);
+    t.text = std::move(text);
+    t.kind = ToastKind::Info;
+    t.seconds = 8.f;
+    t.migration = true;
+    return t;
+}
+
+// The same toast for every trajectory turned off (prediction, guide lines, 3D markers...): they are all listed in
+// the HUD page, so the player gets one sentence and one place to look.
+inline ToastMessage trajectoriesMigrationToast() {
+    return migrationToast("Trajectoires", "Les trajectoires et lignes guides sont coupées par défaut. Tu peux les "
+                                          "remettre dans la page HUD, section Trajectoires.");
+}
 
 struct ChatMessage {
     std::string text;

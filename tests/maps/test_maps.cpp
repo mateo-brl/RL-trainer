@@ -127,6 +127,21 @@ TEST(maps_air_dribble_hint_mentions_contact_circle_auto) {
         }
 }
 
+TEST(maps_prediction_hints_match_the_default_off) {
+    // The prediction is off by default (round 2): no hint asks to turn it off, and every hint about it says where to
+    // turn it on.
+    int prediction = 0;
+    for (int i = 0; i < kMapCategoryCount; ++i)
+        for (const auto& h : mapCategoryHints(static_cast<MapCategory>(i))) {
+            if (h.tab != "Prédiction") continue;
+            ++prediction;
+            CHECK_MSG(h.text.find("coupe la prédiction") == std::string::npos, h.text);
+            CHECK_MSG(h.text.find("page HUD, section Trajectoires") != std::string::npos, h.text);
+        }
+    CHECK_EQ(prediction, 2);  // air dribble and shooting maps
+    CHECK_EQ(mapCategoryHints(MapCategory::Rings).size(), size_t(2));
+}
+
 TEST(maps_name_helpers) {
     CHECK(toLowerAscii("AbC-É") == std::string("abc-\xC3\x89"));
     CHECK(normalizeMapName("Leth's Giant_Rings 2!") == "lethsgiantrings2");

@@ -633,16 +633,19 @@ TEST(bm_tips_hud_text) {
 }
 
 TEST(bm_drill_beginner_attempts_pass_level_1) {
-    // A rough flick (weak, late, under-rotated, off target): a success at level 1, not at level 10.
+    // A rough flick from the dribble start (weak, late, under-rotated, over the bar but toward the goal): a success at
+    // level 1, not at level 10.
     MechGrade fl;
     fl.family = Family::Flick;
     fl.variant = "45";
     fl.success = true;  // the detector saw a flick that pushed the ball (>= 700 uu/s)
     fl.score = 0.32f;
-    fl.metrics = {makeMetric("ball_dv", "", 820.f, "uu/s"), makeMetric("delay", "", 0.62f, "s")};
+    fl.metrics = {makeMetric("ball_dv", "", 820.f, "uu/s"), makeMetric("ball_speed_after", "", 1550.f, "uu/s"),
+                  makeMetric("delay", "", 0.62f, "s")};
     fl.errors = {"FL_FLIP_TOO_LATE", "FL_UNDER_ROTATED", "FL_OFF_TARGET"};
     fl.projection.valid = true;
     fl.projection.onTarget = false;
+    fl.projection.angleErrDeg = 12.f;
     CHECK(judgeDrill(Mech::Flick, fl, 0.f, drillMinScore(50, 0.f), 4000.f).success);
     CHECK(!judgeDrill(Mech::Flick, fl, 1.f, drillMinScore(50, 1.f), 4000.f).success);
     // Even with a good score, level 10 asks for power and an on-target shot.

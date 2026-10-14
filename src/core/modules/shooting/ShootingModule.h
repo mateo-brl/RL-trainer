@@ -1,8 +1,9 @@
 #pragma once
 // Tirs & flicks: three drills that own the world-control activity while they run.
-//   - Flicks ("Flicks"): ball resting on the roof (exact spawn), car stopped or driving to the goal; the flick is
-//     detected (dodge while the ball is on the roof), classified (front, 45, 90, backflip, delayed, musty, breezi,
-//     reverse 45...), measured (power, direction vs the target, height, timing) and graded.
+//   - Flicks ("Flicks"): ball on the roof, by default a dribble start like a match (car already driving toward the
+//     goal from midfield at a dribble speed), or a stopped car to learn the motion; the flick is detected (dodge while
+//     the ball is on the roof), classified (front, 45, 90, backflip, delayed, musty, breezi, reverse 45...), measured
+//     like a shot (ball speed, on target, direction vs the target, height, timing) and graded.
 //   - Cibles ("Cibles"): zones inside the opponent goal (top corners, low posts, centre) with four ball setups
 //     (rolling, bouncing, pass across the box, ball on the roof) and adaptive difficulty. The hit point is
 //     measured on the goal plane; a predicted impact marker follows the ball in flight.
@@ -62,7 +63,7 @@ struct ShootingStatus {
     bool settled = false; // ball settled on the roof (flick drill)
     float settledTime = 0.f;
     // Get-ready, moving start, parcours complet.
-    std::string readyLine; // "Appuie sur accélérer quand tu es prêt" / "Départ dans 2" ("" when not holding)
+    std::string readyLine; // "Appuie sur accélérer quand tu es prêt" / "Prêt ?" ("" when not holding)
     bool movingStart = false; // the current attempt starts with the car moving (ball on the roof)
     bool full = false; // parcours complet running
     int fullKind = 0; // shoot::ShootDrill
@@ -118,11 +119,15 @@ public:
     const shoot::GoalFrame& goal() const { return goal_; }
     const shoot::Spawn& spawn() const { return spawn_; }
     bool hasPrediction() const { return shot_.hasPrediction(); }
+    // The one-time move of the previous version's saved defaults ran (flag "shooting.defaults_v2").
+    bool defaultsMigrated() const { return defaultsV2_; }
     Vec2 prediction() const { return shot_.predicted(); }
     // Tests: deterministic spawns (no reseeding at each drill start).
     void setSeed(uint64_t seed);
 
 private:
+    // Saved settings of the previous version (config.cfg): move the old defaults once (see migrateDefaults).
+    void migrateDefaults(Actions& out);
     // Drill flow
     void resetStaircases(); // every adaptive level back to niveau 1
     void resetLevel(shoot::ShootDrill d); // "Revenir au niveau 1": one drill and its parcours complet
@@ -138,6 +143,15 @@ private:
     void tickFree(const TickContext& ctx, bool teleported);
     void onFlickReport(const shoot::FlickReport& rep, const TickContext& ctx, Actions& out);
     void onTargetOutcome(const shoot::ShotOutcome& o, const TickContext& ctx, Actions& out);
+    // Dribble start: the car reached kFlickLateDist from the goal line with the ball still on the roof, no flick started.
+    bool tooClose(const Snapshot& s) const;
+    void onTooClose(const TickContext& ctx, Actions& out);
+    // A flick drill (Flicks, Cibles balle sur le toit) whose ball starts on the roof of a moving car or is picked up at
+    // speed (parcours complet).
+    bool dribbleAttempt() const;
+    // Whether the predicted impact (marker and HUD line) is shown: in drills with "Marqueur d'impact prévu", outside
+    // drills with "Impact prévu hors exercice" (or that marker on a shooting map).
+    bool predictionShown(bool drill, const GameContext& game) const;
     void tickAssist(const Snapshot& s, Actions& out);
     bool earlyLossReplay(const Snapshot& s);
     void prepareFull(const TickContext& ctx);
@@ -165,6 +179,7 @@ private:
 
     ShootingConfig cfg_;
     bool settingsSeen_ = false; // first onSettingsChanged applies the zone / setup selections
+    bool defaultsV2_ = false;   // migrateDefaults ran (saved)
     shoot::FlickThresholds thresholds_;
     Rng rng_;
     uint64_t seedCounter_ = 0;
@@ -198,6 +213,7 @@ private:
     bool assistActive_ = false;
     bool offRoof_ = false;         // the ball is off the roof (moving start)
     bool leftRoofEarly_ = false;   // it left the roof in the first second (kEarlyLossReplay)
+    int earlyReplays_ = 0;         // early losses replayed in a row (kMaxEarlyReplays, then the loss counts)
     // Circles on the floor: next bounces (bouncing), meeting point (pass), run-up point (power).
     std::vector<shoot::FloorBounce> bounceMarks_;
     bool showMeet_ = false;

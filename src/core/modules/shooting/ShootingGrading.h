@@ -13,9 +13,10 @@
 
 namespace rlt::shoot {
 
-// Ball speed after a flick needed for a success at a level (uu/s): 1000 (36 km/h, a slow flick from a stopped car)
-// .. 2400 (86 km/h).
-float flickMinPower(float level);
+// Ball speed after a flick needed for a success at a level (uu/s), measured like a shot in a match (the ball's own
+// speed, on target). Stopped car: 1000 (36 km/h, a slow flick) .. 2400 (86 km/h). Dribble start (the ball already
+// moves at 900 .. 1300 uu/s with the car): 1500 (54 km/h) .. 2400.
+float flickMinPower(float level, bool dribble = false);
 
 // The player sees the adaptive level (0..1) as "niveau 1" to "niveau 10".
 int shootPlayerLevel(float level);
@@ -41,6 +42,9 @@ AttemptResult gradeFlick(const FlickReport& r, const AimResult& aim, const Flick
                          const PlayerProfile& profile);
 // The ball fell off the car before any flick.
 AttemptResult gradeLostBall(int requested, float time);
+// The car reached kFlickLateDist from the goal line with the ball still on the roof, no flick started. `skill` is the
+// attempt's skill ("shoot.flick.front", "shoot.target.tl").
+AttemptResult gradeTooClose(const std::string& skill, float time);
 
 struct TargetGradeParams {
     Zone zone = Zone::Center;

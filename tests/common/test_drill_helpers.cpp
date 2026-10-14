@@ -690,7 +690,8 @@ TEST(ready_waits_for_the_throttle_then_counts_three_seconds) {
             CHECK(a.goMessage);
         }
         if (a.countdownMessage) messages.push_back({fr, *a.countdownMessage});
-        if (fr == pressFrame + 60) CHECK_EQ(r.hudLine(s.time), std::string("Départ dans 3"));
+        // The game shows its own 3, 2, 1: the panel does not count a second time.
+        if (fr == pressFrame + 60) CHECK_EQ(r.hudLine(s.time), std::string("Prêt ?"));
     }
     CHECK_EQ(gos, 1);
     CHECK_EQ(goFrame - pressFrame, static_cast<int64_t>(360));
@@ -706,6 +707,38 @@ TEST(ready_waits_for_the_throttle_then_counts_three_seconds) {
     CHECK(!r.active());
     CHECK(r.hudLine(snapAt(fr).time).empty());
     CHECK(!hasDash(r.hudLine(0.f)));
+}
+
+TEST(ready_panel_counts_only_without_the_game_countdown) {
+    // Player report on v1.0.7: two countdowns on screen, the game's and the panel's. With the game's messages on, the
+    // panel says "Prêt ?"; without them (timed holds) it is the one countdown and shows the number.
+    const ReadyPhase::Options native[] = {ReadyPhase::firstAttempt(), ReadyPhase::autoReset(), ReadyPhase::manualRetry()};
+    for (const ReadyPhase::Options& o : native) {
+        ReadyPhase r;
+        int64_t fr = 100;
+        r.start(snapAt(fr).time, o);
+        for (int i = 0; i < 600 && !r.counting(); ++i) {  // the first attempt waits for a press
+            Snapshot s = snapAt(++fr);
+            s.in.throttle = i < 2 ? 0.f : 1.f;
+            Actions a;
+            r.update(s, a);
+        }
+        CHECK(r.counting());
+        bool sawNumber = false;
+        for (int i = 0; i < 400 && r.counting(); ++i) {
+            Snapshot s = snapAt(++fr);
+            const std::string line = r.hudLine(s.time);
+            CHECK_MSG(line == "Prêt ?", line);
+            sawNumber = sawNumber || line.find("Départ dans") != std::string::npos;
+            Actions a;
+            r.update(s, a);
+        }
+        CHECK(!sawNumber && !r.counting());
+    }
+    ReadyPhase t;
+    t.start(snapAt(0).time, ReadyPhase::timed(2.f));
+    CHECK_EQ(t.hudLine(snapAt(1).time), std::string("Départ dans 2"));
+    CHECK_EQ(t.hudLine(snapAt(150).time), std::string("Départ dans 1"));
 }
 
 TEST(ready_needs_a_new_press_when_the_throttle_is_already_held) {

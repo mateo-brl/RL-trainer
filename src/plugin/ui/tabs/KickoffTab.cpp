@@ -443,10 +443,18 @@ void renderKickoffTab(UiContext& ctx) {
         return;
     }
 
-    ImGui::TextWrapped(
-        "Kickoff comme en match : la voiture est figée pendant le 3, 2, 1, puis GO. Un fantôme part de la "
-        "position adverse. Après chaque essai tu as une note sur 100 et un conseil. À chaque essai, les boosts du "
-        "terrain réapparaissent et le boost illimité est coupé (tes réglages reviennent à la fin).");
+    // Built from the settings: the countdown length, the game's countdown and the boost at GO can be changed.
+    std::string numbers;
+    for (int n = std::clamp(d.cfg.countdownSeconds, 1, 5); n >= 1; --n)
+        numbers += std::to_string(n) + (n > 1 ? ", " : "");
+    const std::string intro =
+        "Kickoff comme en match : la voiture est figée pendant le " + numbers +
+        (d.cfg.nativeCountdown ? " du jeu" : "") +
+        ", puis GO. Un fantôme part de la position adverse. Après chaque essai tu as une note sur 100 et un conseil. "
+        "À chaque essai, tu pars avec " + std::to_string(static_cast<int>(std::lround(d.cfg.spawnBoost))) +
+        " de boost, les boosts du terrain sont remis pendant le décompte et le boost illimité est coupé (tes "
+        "réglages reviennent à la fin).";
+    ImGui::TextWrapped("%s", intro.c_str());
 
     ui::separatorText("Exercice");
     statusBlock(d);

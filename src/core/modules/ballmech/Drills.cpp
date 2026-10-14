@@ -139,12 +139,14 @@ float ceilingSpeedNeeded(float level) { return 1200.f + 1000.f * clamp01(level);
 float flickPowerNeeded(Mech m, float level) {
     const float L = clamp01(level);
     if (m == Mech::Breezi) {
-        // The tornado alone below kBzTornadoLevel, then 700 at niveau 3 up to 1500 at niveau 10.
+        // The tornado alone below kBzTornadoLevel, then 1500 at niveau 3 up to 2400 at niveau 10.
         const float n = static_cast<float>(std::max(playerLevel(L), kBzTornadoLevel));
-        return 700.f + 800.f * (n - static_cast<float>(kBzTornadoLevel)) / (10.f - static_cast<float>(kBzTornadoLevel));
+        return 1500.f + 900.f * (n - static_cast<float>(kBzTornadoLevel)) / (10.f - static_cast<float>(kBzTornadoLevel));
     }
-    return 700.f + 800.f * L;
+    return 1500.f + 900.f * L;
 }
+
+float flickDribbleSpeed(float level) { return 900.f + 400.f * clamp01(level); }
 
 float airDribbleSeconds(float level) {
     const int n = playerLevel(level);
@@ -321,29 +323,14 @@ void flipResetFull(DrillSetup& d, int n, Rng& rng) {
     d.label = "Parcours complet";
 }
 
-void pickupStart(DrillSetup& d, const Vec3& carPos, int pickupNiveau, float r, Rng& rng) {
-    const pickup::Setup su = pickup::makeSetup(carPos, 90.f, pickupNiveau, rng, r);
+void pickupStart(DrillSetup& d, const Vec3& carPos, int pickupNiveau, float r, Rng& rng, bool chase = false) {
+    const pickup::Setup su =
+        chase ? pickup::makeChaseSetup(carPos, 90.f, pickupNiveau, rng, r) : pickup::makeSetup(carPos, 90.f, pickupNiveau, rng, r);
     d.car = su.car;
     d.ball = su.ball;
     d.pickup = true;
     d.pickupRolling = su.rolling;
-}
-
-float flickStartSpeed(Mech m, int n) {
-    switch (m) {
-    case Mech::Musty:
-        if (n <= 2) return 0.f;
-        if (n <= 5) return 400.f;
-        return 600.f + 400.f * static_cast<float>(n - 6) / 4.f;
-    case Mech::Breezi:
-        if (n < kBzTornadoLevel + 1) return 0.f;
-        return 500.f + 600.f * static_cast<float>(n - 4) / 6.f;
-    default:
-        if (n <= 2) return 0.f;
-        if (n <= 4) return 400.f;
-        if (n <= 6) return 700.f;
-        return 900.f + 500.f * static_cast<float>(n - 7) / 3.f;
-    }
+    d.pickupChase = su.chase;
 }
 
 } // namespace
@@ -377,19 +364,22 @@ DrillSetup makeDrillSetup(Mech m, float level, int team, const CarState& car, fl
     case Mech::Musty:
     case Mech::Breezi: {
         if (full) {
-            pickupStart(d, {rng.range(-1.f, 1.f) * 600.f, rng.range(-1500.f, -500.f), arena::kCarRestZ}, pickupNiveau, r, rng);
-            d.label = d.pickupRolling ? "Ramassage, balle qui arrive" : "Ramassage, balle posée";
+            // Pickup at speed from 5500 uu of the goal line: the car drives after the ball rolling ahead (like a match).
+            pickupStart(d, {rng.range(-1.f, 1.f) * 300.f, arena::kBackWallY - 5500.f, arena::kCarRestZ}, pickupNiveau, r,
+                        rng, true);
+            d.label = "Ramassage en course";
         } else {
-            // Niveaux 1-2 (1-3 for the breezi): car stopped, the ball balanced on the roof stays there while the
-            // throttle is not touched. Faster starts later, never supersonic.
-            const float speed = flickStartSpeed(m, n);
-            const Vec3 pos{rng.range(-1.f, 1.f) * (300.f + 900.f * L), rng.range(500.f, 1500.f), arena::kCarRestZ};
+            // Dribble start, like a match: from midfield toward the goal centre, the ball riding on the roof at the car's
+            // speed (900 uu/s at niveau 1, 1300 at niveau 10: the throttle alone holds it, never supersonic).
+            const float speed = flickDribbleSpeed(L);
+            const float dist = kFlickDistMin + (kFlickDistMax - kFlickDistMin) * L + rng.range(0.f, kFlickDistSpread);
+            const Vec3 pos{rng.range(-1.f, 1.f) * (200.f + 800.f * L), arena::kBackWallY - dist, arena::kCarRestZ};
             const float jitter = n <= 4 ? 0.f : rng.range(-1.f, 1.f) * (5.f + 10.f * L);
-            groundCar(d, pos, 90.f + jitter, speed);
+            groundCar(d, pos, std::atan2(arena::kBackWallY - pos.y, -pos.x) * kRadToDeg + jitter, speed);
             const Basis b = basisFromRot(d.car.rot);
             d.ball.pos = roofBallPos(pos, b, car, r);
             d.ball.vel = d.car.vel;
-            d.label = speed > 0.f ? "Balle sur le toit, en roulant" : "Balle sur le toit, voiture arrêtée";
+            d.label = "Balle sur le toit, en dribble";
         }
         d.car.boost = 100.f - 50.f * L;
         d.flickTarget = m == Mech::Musty ? "musty" : (m == Mech::Breezi ? "breezi" : opt.flickVariant);
@@ -597,6 +587,13 @@ DrillVerdict judgeDrill(Mech drill, const MechGrade& g, float level, int minScor
         if (!ok && code) v.extraErrors.push_back(code);
     };
     const bool onTarget = !g.projection.valid || g.projection.onTarget;
+    // Flick family: judged like a shot in a match, the ball's own speed (it already rides at the dribble speed), toward
+    // the goal at niveaux 1 and 2, on target from niveau 3.
+    auto flickShot = [&]() {
+        need(g.value("ball_speed_after") >= flickPowerNeeded(drill, L), "DRILL_NEED_POWER");
+        if (n >= kFlickTargetLevel) need(onTarget, "DRILL_NEED_TARGET");
+        else need(!g.projection.valid || g.projection.angleErrDeg <= kFlickDirectionDeg, "DRILL_NEED_DIRECTION");
+    };
     switch (drill) {
     case Mech::FlipReset: {
         const bool obtained = g.variant != "no_reset";
@@ -620,14 +617,10 @@ DrillVerdict judgeDrill(Mech drill, const MechGrade& g, float level, int minScor
             override((g.variant == "breezi" && g.has("roll_deg")) || g.variant == "tornado", "FL_BREEZI_NO_SPIN");
             break;
         }
-        need(g.value("ball_dv") >= flickPowerNeeded(drill, L), "DRILL_NEED_POWER");
-        if (n >= kTargetLevel) need(onTarget, "DRILL_NEED_TARGET");
+        flickShot();
         break;
     case Mech::Flick:
-    case Mech::Musty:
-        need(g.value("ball_dv") >= flickPowerNeeded(drill, L), "DRILL_NEED_POWER");
-        if (n >= kTargetLevel) need(onTarget, "DRILL_NEED_TARGET");
-        break;
+    case Mech::Musty: flickShot(); break;
     case Mech::DoubleTap:
         // First step: touching the rebound counts even when the ball does not go on target.
         if (n < kDtTargetLevel && g.hasShot && !g.success) {
@@ -697,8 +690,8 @@ std::string drillAction(Mech m, float level, const std::string& flickTarget) {
         return n < kTargetLevel ? "1. Laisse-toi tomber, sans sauter  2. Flippe dans la balle"
                                 : "1. Tombe sans sauter  2. Flippe dans la balle vers le but";
     case Mech::Flick: {
-        // Niveaux 1-2: the car is stopped with the ball balanced on the roof, the throttle would drop it.
-        const std::string first = n <= 2 ? "1. Pas d'accélérateur  " : "1. Balle sur le toit  ";
+        // The car already drives with the ball on the roof: the throttle keeps the speed.
+        const std::string first = "1. Garde ta vitesse  ";
         std::string a;
         if (flickTarget == "front") a = first + "2. Saute  3. Flip avant";
         else if (flickTarget == "45") a = "1. Saute  2. Huitième de tour  3. Flip en diagonale";
@@ -707,7 +700,7 @@ std::string drillAction(Mech m, float level, const std::string& flickTarget) {
         else if (flickTarget == "side") a = first + "2. Saute  3. Flip sur le côté";
         else if (flickTarget == "reverse") a = "1. Saute  2. Retourne la voiture  3. Flip arrière";
         else a = first + "2. Saute  3. Flippe dans la balle";
-        return n < kTargetLevel ? a : a + ", vers le but";
+        return a + ", vers le but";
     }
     case Mech::Musty: return "1. Saute  2. Stick vers l'avant : nez en bas  3. Flip arrière";
     case Mech::Breezi:
@@ -744,7 +737,9 @@ std::string drillLevelNote(Mech m, float level, DrillMode mode) {
     if (m == Mech::AirDribble && n == 1) return "le saut avec la balle puis une seule touche en l'air suffisent";
     if (m == Mech::Breezi && n < kBzTornadoLevel) return "la tornade seule suffit, sans le flip final";
     if (m == Mech::AirRoll && n < kArTargetLevel) return "le tir n'a pas besoin d'être cadré";
-    if (m == Mech::Ceiling && n <= 2) return "le jeu est ralenti et un cercle montre où frapper";
+    if (m == Mech::Ceiling && n <= 2) return "le jeu est ralenti";
+    if ((m == Mech::Flick || m == Mech::Musty) && n < kFlickTargetLevel)
+        return "le tir doit partir vers le but, pas forcément cadré";
     return "";
 }
 
@@ -761,11 +756,13 @@ std::string drillProgression(Mech m) {
                "le jeu est ralenti aux niveaux 1 et 2.";
     case Mech::Flick:
     case Mech::Musty:
-        return "Le flick doit être plus fort à chaque niveau. À partir du niveau 6, il doit être cadré. Aux niveaux 1 et "
-               "2 la voiture est arrêtée, ensuite tu roules de plus en plus vite.";
+        return "Comme en match : la balle est sur ton toit et tu roules déjà vers le but depuis le milieu du terrain, un "
+               "peu plus vite à chaque niveau. Aux niveaux 1 et 2, le tir doit partir vers le but ; à partir du niveau "
+               "3, il doit être cadré. La balle doit partir plus vite à chaque niveau, et le flick partir avant "
+               "d'arriver devant le but.";
     case Mech::Breezi:
-        return "Niveaux 1 et 2 : la tornade seule suffit. À partir du niveau 3, il faut le flip arrière, de plus en plus "
-               "fort. À partir du niveau 6, cadré. La voiture est arrêtée jusqu'au niveau 3.";
+        return "Niveaux 1 et 2 : la tornade seule suffit. À partir du niveau 3, il faut le flip arrière, cadré, de plus "
+               "en plus fort. Tu roules déjà vers le but avec la balle sur le toit, un peu plus vite à chaque niveau.";
     case Mech::DoubleTap:
         return "Niveaux 1 et 2 : toucher le rebond suffit, même si la balle ne va pas au but. Niveaux 3 à 6 : le rebond "
                "repris doit être cadré. Jusqu'au niveau 6 l'exercice envoie la balle sur le mur pour toi, ensuite tu "
@@ -809,8 +806,8 @@ std::string drillCriteria(Mech m, float level, int successScore, float pinchSpee
         [[fallthrough]];
     case Mech::Flick:
     case Mech::Musty:
-        return std::string(mechInfo(m).title) + " qui donne au moins " + speed(flickPowerNeeded(m, L)) + " à la balle" +
-               (n >= kTargetLevel ? ", tir cadré" : "") + ", " + score;
+        return std::string(mechInfo(m).title) + ", balle à " + speed(flickPowerNeeded(m, L)) + " ou plus" +
+               (n >= kFlickTargetLevel ? ", tir cadré" : ", tir vers le but") + ", flick avant 12 m du but, " + score;
     case Mech::DoubleTap:
         return std::string(n < kDtTargetLevel ? "rebond touché" : "rebond repris et cadré") + ", balle à " +
                speed(doubleTapSpeedNeeded(L)) + " ou plus" +

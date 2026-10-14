@@ -57,8 +57,8 @@ bool shootBallOnRoof(const Snapshot& s) {
     return ballOnRoof(s.ball.pos, s.car.pos, s.car.basis, hitboxOf(s.car), r);
 }
 
-pickup::Options pickupOptions(bool rolling) {
-    pickup::Options o = pickup::options(rolling);
+pickup::Options pickupOptions(bool rolling, bool chase) {
+    pickup::Options o = chase ? pickup::chaseOptions() : pickup::options(rolling);
     o.onRoof = shootBallOnRoof;
     o.roofCode = "shooting.pickup_no_roof";
     o.settleCode = "shooting.pickup_unstable";
@@ -78,16 +78,17 @@ FullSetup makeFullSetup(ShootDrill kind, float level, int pickupNiveau, const Go
     switch (kind) {
     case ShootDrill::Flick:
     case ShootDrill::Roof: {
-        // Shared Ramassage start: car at rest facing the goal, 3500 uu from it for the flick, 4500 for the roof
-        // (room for the dribble).
-        const float dist = kind == ShootDrill::Flick ? 3500.f : 4500.f;
+        // Shared Ramassage start, at speed like a match: the car drives toward the goal from 5500 uu of it after the
+        // ball rolling ahead (about 1.3 s to catch it up), then settles, carries and flicks from range.
+        const float dist = 5500.f;
         const Vec3 carPos{rng.range(-300.f, 300.f), s * (kGoalLineY - dist), kCarRestZ};
-        const pickup::Setup p =
-            pickup::makeSetup(carPos, yawToward(toGoal), pickupNiveau, rng, roof.ballRadius > 10.f ? roof.ballRadius : kBallRadius);
+        const pickup::Setup p = pickup::makeChaseSetup(carPos, yawToward(toGoal), pickupNiveau, rng,
+                                                       roof.ballRadius > 10.f ? roof.ballRadius : kBallRadius);
         su.car = p.car;
         su.ball = p.ball;
         su.pickup = true;
         su.rolling = p.rolling;
+        su.chase = p.chase;
         su.timeLimit = kind == ShootDrill::Flick ? 26.f : 30.f;
         break;
     }
@@ -181,7 +182,7 @@ std::vector<Step> fullSteps(FullState& st) {
     std::vector<Step> v;
     switch (st.kind) {
     case ShootDrill::Flick: {
-        const pickup::Options o = pickupOptions(st.setup.rolling);
+        const pickup::Options o = pickupOptions(st.setup.rolling, st.setup.chase);
         v.push_back(pickup::roofStep(o));
         v.push_back(pickup::settleStep(o));
         v.push_back(checkStep(
@@ -204,7 +205,7 @@ std::vector<Step> fullSteps(FullState& st) {
         break;
     }
     case ShootDrill::Roof: {
-        const pickup::Options o = pickupOptions(st.setup.rolling);
+        const pickup::Options o = pickupOptions(st.setup.rolling, st.setup.chase);
         v.push_back(pickup::roofStep(o));
         v.push_back(pickup::settleStep(o));
         v.push_back(checkStep(
@@ -260,7 +261,7 @@ std::vector<Step> fullSteps(FullState& st) {
                 if (!in.snap.car.valid) return StepVerdict::pending();
                 return headingErrorTo(in.snap.car, p->setup.target) < 30.f ? StepVerdict::done() : StepVerdict::pending();
             },
-            "Tourne ton nez vers le deuxième cercle dès le départ.", 1.f));
+            "Tourne ton nez vers le deuxième rebond dès le départ.", 1.f));
         v.push_back(checkStep(
             "arrive", "Arrive au deuxième rebond",
             [p](const StepInput& in) {
@@ -268,7 +269,7 @@ std::vector<Step> fullSteps(FullState& st) {
                 return length2D(hitboxCenter(in.snap.car) - p->setup.target) < 300.f ? StepVerdict::done()
                                                                                        : StepVerdict::fail();
             },
-            "Arrive au deuxième cercle juste quand la balle y retombe."));
+            "Arrive au deuxième rebond juste quand la balle y retombe."));
         v.push_back(eventStep(kStepVolley, "Tire quand elle remonte",
                               "Tire juste après le rebond, quand la balle remonte, en accélérant.", 2.f));
         v.push_back(eventStep(kStepZone, "Dans la zone", "Vise la zone en couleur."));
@@ -329,6 +330,7 @@ std::vector<Step> fullSteps(FullState& st) {
 std::vector<std::string> fullLabels(ShootDrill kind, int niveau) {
     FullState st;
     st.kind = kind;
+    st.setup.chase = kind == ShootDrill::Flick || kind == ShootDrill::Roof;  // the pickup at speed of makeFullSetup
     st.niveau = std::clamp(niveau, 1, 10);
     const auto steps = fullSteps(st);
     std::vector<std::string> out;

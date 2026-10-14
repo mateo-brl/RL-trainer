@@ -21,6 +21,13 @@
 // map unloaded, world control lost) the engine puts the game speed back to 1 itself.
 // Taking the activity for the focus slow motion or for "restore_speed" never stops another module's exercise: the
 // wish waits until that exercise ends (TickContext::otherActivityRunning). Only a drill started by the player does.
+// Demo ("demo <id>", Demos.h): the module takes the activity, holds the car at the demo's start pose for a short
+// countdown, sets the slow motion, then drives the car with Actions::overrideInputs on every tick of the timeline and
+// shows the current step on the HUD. Detection is off during the demo (and until the car is back on its wheels), so
+// the demo never counts as the player's attempt. It ends on its own (speed restored, activity released, "Rejouer la
+// démo" / "À toi" offered), or on Reset, "stop", the engine's stop or a map change.
+// Saved defaults: BakkesMod keeps every cvar in config.cfg, so a default changed for a new version is moved once on
+// the first tick (flag "mechanics.defaults_v2" in the Store): only a value still equal to the old default changes.
 
 #include <array>
 #include <cstdint>
@@ -36,6 +43,7 @@
 #include "core/common/Module.h"
 #include "core/common/Rng.h"
 #include "core/common/Steps.h"
+#include "core/modules/mechanics/Demos.h"
 #include "core/modules/mechanics/Drills.h"
 #include "core/modules/mechanics/FullSequence.h"
 #include "core/modules/mechanics/MechStats.h"
@@ -72,6 +80,14 @@ public:
         bool speedWaiting = false;
         int chainDashes = 0;
         int sessionAttempts = 0;
+        // Automatic demo ("Voir la démo").
+        bool demoActive = false;
+        bool demoEnded = false;           // the last demo played to its end a moment ago: "Rejouer" / "À toi"
+        mech::Focus demoFocus = mech::Focus::None;  // running demo, or the one that just ended
+        std::string demoPhase;            // "Mise en place", "Démo en cours"
+        std::string demoVariant;
+        std::vector<std::string> demoSteps;
+        int demoStep = -1;                // live: index in demoSteps (-1 before GO)
     };
     struct StatRow {
         mech::Focus focus = mech::Focus::None;
@@ -100,6 +116,7 @@ public:
         int levelNumber = 1;   // 1..10
         // What a drill success needs (with the numbers) at level 1, level 10 and the player's level.
         std::vector<std::string> checksFirst, checksLast, checksNow;
+        bool hasDemo = false;  // "Voir la démo" available (Demos.h)
     };
     struct LastAttempt {
         bool valid = false;
@@ -146,6 +163,12 @@ public:
     const mech::DetectConfig& detectConfig() const { return coach_.cfg; }
     const mech::DrillSetup& drillSetup() const { return setup_; }
     bool kickoffLive() const { return coach_.kickoff().live(); }
+    bool demoActive() const { return demo_.active; }
+    mech::Focus demoFocus() const { return demo_.focus; }
+    // Script of the running demo (built when its countdown starts).
+    const mech::DemoScript& demoScript() const { return demo_.script; }
+    // Ticks since the demo's GO (-1 before GO or without a demo).
+    int demoTick() const { return demo_.active && demo_.phase == DemoPhase::Playing ? demo_.tick : -1; }
 
 private:
     // Countdown = get-ready phase (car held: waiting for the throttle, then the countdown).
@@ -154,6 +177,15 @@ private:
     // player did nothing), Auto = the drill's own countdown, Manual = retry or reset by the player (3 s).
     enum class Start : int { First, Auto, Manual };
     enum class HeldFor : int { None, Touch, Landing };
+    enum class DemoPhase : int { Setup, Countdown, Playing };
+    struct Demo {
+        bool active = false;
+        mech::Focus focus = mech::Focus::None;
+        DemoPhase phase = DemoPhase::Setup;
+        mech::DemoScript script;
+        int64_t goFrame = 0;
+        int tick = 0;  // ticks since GO
+    };
     struct Drill {
         bool active = false;
         bool full = false;        // "parcours complet"
@@ -225,6 +257,15 @@ private:
     void takeFocusSpeed(const TickContext& ctx, Actions& out);
     // "restore_speed": same rule (never stops another module's exercise, applied once it ends).
     void restoreSpeed(const TickContext& ctx, Actions& out);
+    // Demo: start (command), one tick of it (owner, world control allowed), normal end, state dropped on any stop.
+    void startDemo(mech::Focus f, const TickContext& ctx, Actions& out);
+    void runDemo(const TickContext& ctx, Actions& out);
+    void finishDemo(const TickContext& ctx, Actions& out);
+    void clearDemo();
+    bool showDemoEnd(float now) const;
+    void drawDemo(float now, DrawPanel& p) const;
+    // One-time move of the previous version's saved defaults (flag "mechanics.defaults_v2").
+    void migrateDefaults(Actions& out);
     void handleGrade(mech::MechGrade& g, const TickContext& ctx, Actions& out);
     void emitAttempt(const mech::MechGrade& g, const TickContext& ctx, Actions& out, bool drillAttempt);
     void toast(Actions& out, const std::string& title, const std::string& text, ToastKind kind) const;
@@ -278,6 +319,13 @@ private:
     int resultsSinceSave_ = 0;
 
     LastAttempt last_;
+
+    Demo demo_;
+    mech::DemoPilot pilot_;
+    mech::Focus demoDone_ = mech::Focus::None;  // last demo that played to its end ("Rejouer" / "À toi")
+    float demoDoneTime_ = 0.f;
+    bool quietUntilGrounded_ = false;  // after a demo: no detection until the car is back on its wheels
+    bool defaultsV2_ = false;          // the one-time move of the old saved defaults ran
 };
 
 } // namespace rlt

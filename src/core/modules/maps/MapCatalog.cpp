@@ -393,7 +393,6 @@ std::vector<MapHint> mapCategoryHints(MapCategory c) {
     case MapCategory::Rings:
         return {
             {"Mécas mouvement", "Tes mécas aériennes (fast aerial, air roll, recoveries) sont analysées en direct."},
-            {"Prédiction", "Pas de balle sur ces maps : coupe la prédiction pour alléger l'écran."},
             {"Progression", "Chaque run terminé arrive dans Progression avec ton record et tes splits."}};
     case MapCategory::Dribble:
         return {
@@ -403,12 +402,14 @@ std::vector<MapHint> mapCategoryHints(MapCategory c) {
     case MapCategory::AirDribble:
         return {
             {"Affichage", "Active le cercle de contact en mode Auto : il suit la balle pour monter tes air dribbles."},
-            {"Prédiction", "Affiche la trajectoire de la balle pour te placer dessous plus tôt."},
+            {"Prédiction", "Coupée par défaut : active-la (page HUD, section Trajectoires) pour voir où descend la "
+                           "balle."},
             {"Mécas balle", "Tes air dribbles et flip resets sont détectés et notés."}};
     case MapCategory::Shooting:
         return {{"Tirs & flicks", "La vitesse et la précision de chaque tir sont mesurées."},
                 {"Première touche", "Regarde l'écart de vitesse au contact pour doser ta puissance."},
-                {"Prédiction", "La trajectoire t'aide à lire les rebonds avant de frapper."}};
+                {"Prédiction", "Coupée par défaut : active-la (page HUD, section Trajectoires) pour lire les rebonds "
+                               "avant de frapper."}};
     case MapCategory::Obstacle:
         return {{"Mécas mouvement", "Wavedash, half flip et speedflip sont détectés pendant le parcours."},
                 {"Affichage", "Le chrono de session suit ton temps d'entraînement total."}};

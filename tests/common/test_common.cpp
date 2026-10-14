@@ -1,5 +1,7 @@
 #include "tests/TestFramework.h"
 
+#include <algorithm>
+
 #include "core/common/Adaptive.h"
 #include "core/common/Color.h"
 #include "core/common/DrawList.h"
@@ -202,6 +204,66 @@ TEST(engine_world_control_by_mode) {
     CHECK(e.worldControlAllowed());
     CHECK(e.applySetting("rlt_enabled", "0"));
     CHECK(!e.worldControlAllowed());
+}
+
+TEST(engine_merges_the_migration_toasts_of_a_v107_config) {
+    // A v1.0.7 player: config.cfg holds every old default the round-2 migrations move (Prédiction, Parcours, Mécas
+    // mouvement, Mécas balle, Kickoff, Tirs & flicks). His first tick in freeplay used to show six 8 s toasts.
+    Engine e;
+    const std::pair<const char*, const char*> v107[] = {
+        {"rlt_pr_enabled", "1"},        {"rlt_co_guide_line", "1"},     {"rlt_me_guides", "1"},
+        {"rlt_bm_draw_trajectory", "1"}, {"rlt_ko_big_countdown", "1"}, {"rlt_ko_show_path", "1"},
+        {"rlt_sh_flick_start", "0"},    {"rlt_sh_flick_speed", "800"},  {"rlt_sh_show_prediction", "1"}};
+    for (const auto& [cvar, value] : v107) CHECK_MSG(e.applySetting(cvar, value), cvar);
+    Actions out;
+    GameContext ctx;
+    ctx.mode = GameMode::Freeplay;
+    ctx.mapName = "Stadium_P";
+    e.setContext(ctx, out);
+    Actions first;
+    e.tick(snapAt(100), first);
+    // One toast: the trajectories sentence once (five modules sent it), the countdown, the flick start and marker.
+    CHECK_EQ(first.toasts.size(), size_t(1));
+    if (!first.toasts.empty()) {
+        const ToastMessage& t = first.toasts[0];
+        CHECK(t.title == "Nouveaux réglages par défaut" && t.kind == ToastKind::Info && t.migration);
+        CHECK_EQ(static_cast<int>(std::count(t.text.begin(), t.text.end(), '\n')), 2);  // three sentences
+        CHECK(t.text.find("section Trajectoires") != std::string::npos);
+        CHECK(t.text.find("celui du jeu") != std::string::npos);
+        CHECK(t.text.find("en dribble") != std::string::npos);
+        size_t shared = 0;
+        for (size_t at = t.text.find("Les trajectoires et lignes guides"); at != std::string::npos;
+             at = t.text.find("Les trajectoires et lignes guides", at + 1))
+            ++shared;
+        CHECK_EQ(shared, size_t(1));
+        CHECK_NEAR(t.seconds, 10.f, 1e-6f);  // 4 + 2 per sentence, at most 12
+        CHECK(t.text.find("\xE2\x80\x94") == std::string::npos && t.text.find("\xE2\x80\x93") == std::string::npos);
+    }
+    CHECK(first.setCvars.size() >= 9);
+    for (const auto& c : first.setCvars) e.applySetting(c.first, c.second);  // what the glue does
+    Actions second;
+    e.tick(snapAt(101), second);
+    CHECK(second.toasts.empty() && second.setCvars.empty());
+}
+
+TEST(engine_keeps_a_single_migration_toast_and_ordinary_toasts) {
+    // New install (every new default): no migration toast at all. One migration alone keeps its own title.
+    Engine e;
+    Actions out;
+    GameContext ctx;
+    ctx.mode = GameMode::Freeplay;
+    ctx.mapName = "Stadium_P";
+    e.setContext(ctx, out);
+    Actions first;
+    e.tick(snapAt(100), first);
+    for (const auto& t : first.toasts) CHECK_MSG(!t.migration, t.title + " : " + t.text);
+    Engine one;
+    CHECK(one.applySetting("rlt_pr_enabled", "1"));
+    one.setContext(ctx, out);
+    Actions a;
+    one.tick(snapAt(100), a);
+    CHECK_EQ(a.toasts.size(), size_t(1));
+    if (!a.toasts.empty()) CHECK(a.toasts[0].title == "Trajectoires" && a.toasts[0].seconds == 8.f);
 }
 
 TEST(engine_restores_boost_rules_when_a_module_switches_drill) {

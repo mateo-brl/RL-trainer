@@ -34,16 +34,19 @@ Paramètres Windows > Applications > « RL Trainer (plugin BakkesMod) ». Ta pro
   carte de tes points de contact, conseils, exercices (balle roulante, passe, lob, chute du mur, réception aérienne).
 - **Mécas mouvement** : détection et note du speedflip, half-flip, wavedash, chain wavedash, zap dash, wall dash,
   fast aerial, stall, hélicoptère, réceptions, powerslide et gestion du boost. Mode focus au ralenti.
+  « Voir la démo » : ta voiture fait la méca toute seule, au ralenti, en freeplay (speedflip, flip cancel, half-flip,
+  wavedash, fast aerial, powerslide, stall), et des liens vers des tutos vidéo.
 - **Mécas balle** : flip reset, ceiling shot, flicks (45, 90, musty, breezi...), double tap, air dribble,
   air roll shot, pinch, frappe puissante.
 - **Kickoff** : les 5 positions, décompte comme en match, temps à la frame, fantôme (niveaux ou ton record),
   note et conseils.
 - **Parcours** : anneaux en vol, au sol et en air dribble, dribble sur le toit, slalom, rattrapages, directement
   en freeplay. Codes de parcours à partager.
-- **Tirs & flicks** : balle posée sur le toit pour flicker, cibles dans le but (lucarnes, poteaux, centre),
-  record de puissance.
-- **Prédiction** : trajectoire de la balle avec rebonds, point d'atterrissage, premier point où ta voiture
-  peut l'atteindre.
+- **Tirs & flicks** : flicks comme en match (balle sur le toit, en dribble vers le but depuis le milieu du terrain,
+  ou voiture à l'arrêt pour apprendre le geste), cibles dans le but (lucarnes, poteaux, centre), record de puissance.
+- **Prédiction** (désactivée par défaut) : trajectoire de la balle avec rebonds, point d'atterrissage, premier point
+  où ta voiture peut l'atteindre. Les trajectoires de tous les modules sont coupées par défaut et se rallument dans la
+  page **HUD**, section Trajectoires.
 - **Maps** : tes maps workshop installées, lancement en un clic, chronos sur les maps connues, stats par map.
 - **Progression** : records, historique, erreurs qui reviennent, objectifs de session, jours d'affilée,
   exercice conseillé.

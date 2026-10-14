@@ -59,7 +59,7 @@ const char* flickLabel(const std::string& v) {
 
 // The two "Ramassage" steps with the ballmech roof test and the drill's codes.
 void addPickup(std::vector<Step>& out, Mech m, const DrillSetup& d) {
-    pickup::Options o = pickup::options(d.pickupRolling);
+    pickup::Options o = d.pickupChase ? pickup::chaseOptions() : pickup::options(d.pickupRolling);
     o.onRoof = [](const Snapshot& s) { return carriedOnRoof(s); };
     // Module codes (short HUD lines in Tips.cpp); the step's own tip text stays the helper's (rolling or resting ball).
     o.roofCode = m == Mech::AirDribble ? "AD_NO_CATCH" : "PU_NO_ROOF";

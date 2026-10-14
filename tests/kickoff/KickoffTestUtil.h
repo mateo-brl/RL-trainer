@@ -89,7 +89,8 @@ struct Harness {
     std::vector<int64_t> pendingTouches;
     bool hasSnapshot = false;
     Snapshot latest;
-    std::vector<Actions> log;  // filtered actions of every tick (index = call order)
+    std::vector<Actions> log;         // filtered actions of every tick (index = call order)
+    std::vector<int64_t> logFrames;   // snapshot frame of each `log` entry
 
     Harness() {
         describeGeneralSettings(schema);
@@ -149,6 +150,7 @@ struct Harness {
         all.merge(std::move(a));
         if (touchThisStep) pendingTouches.push_back(sn.frame);
         log.push_back(all);
+        logFrames.push_back(sn.frame);
         return all;
     }
 

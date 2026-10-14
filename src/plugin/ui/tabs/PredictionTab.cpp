@@ -77,7 +77,7 @@ void renderLive(UiContext& ctx, const PredictionStatus& st, const PredictionConf
     const Color zoneColor = cfg.zoneColor.withAlpha(255.f);
     const Color interceptColor = cfg.interceptColor.withAlpha(255.f);
     if (!st.enabled) {
-        ui::textColored(colors::Grey, "Prédiction désactivée (coche 'Activer la prédiction' plus bas).");
+        ui::textColored(colors::Grey, "Prédiction coupée (coche « Activer la prédiction » en haut de la page).");
     } else if (st.hidden) {
         ui::textColored(kWarn, "Prédiction masquée. Clique sur 'Afficher' ou tape 'rlt prediction toggle'.");
     } else if (st.frozen) {
@@ -122,6 +122,7 @@ void renderLive(UiContext& ctx, const PredictionStatus& st, const PredictionConf
         ImGui::Columns(1);
     }
 
+    if (!st.enabled) return;  // hide / recompute mean nothing while the module is off
     if (ImGui::Button(st.hidden ? "Afficher la prédiction##pr" : "Masquer la prédiction##pr")) ctx.post("prediction", "toggle");
     ImGui::SameLine();
     if (ImGui::Button("Recalculer##pr")) ctx.post("prediction", "recompute");
@@ -193,6 +194,15 @@ void renderPredictionTab(UiContext& ctx) {
     ImGui::TextWrapped("Vois où va la balle avant elle : trajectoire, rebonds, point de chute, zone de première touche "
                        "et le meilleur moment pour l'intercepter. Marche en freeplay, en match hors ligne, sur les maps "
                        "workshop et dans les replays.");
+    // Off by default, like every trajectory: the switch comes first so it is found without opening the settings.
+    const Settings current = ctx.settings();
+    if (const SettingDef* def = ctx.engine.schema().find("rlt_pr_enabled")) {
+        ImGui::PushID("pr_top");  // the same checkbox is also in the settings below
+        ui::settingWidget(ctx, *def, current);
+        ImGui::PopID();
+    }
+    if (!cfg.enabled)
+        ImGui::TextDisabled("Coupée par défaut, comme toutes les trajectoires (page HUD, section Trajectoires).");
     renderHowTo();
     renderLive(ctx, st, cfg);
     renderAccuracy(ctx, st, acc);

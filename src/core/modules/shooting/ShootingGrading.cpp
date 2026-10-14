@@ -109,7 +109,7 @@ void wrongTypeTip(std::vector<Tip>& tips, const FlickReport& r, FlickType want, 
 
 } // namespace
 
-float flickMinPower(float level) { return lerpf(1000.f, 2400.f, clamp01(level)); }
+float flickMinPower(float level, bool dribble) { return lerpf(dribble ? 1500.f : 1000.f, 2400.f, clamp01(level)); }
 
 std::string frenchDecimal(float value) {
     std::string s = formatNumber(value, 2);
@@ -201,8 +201,10 @@ std::string flickTechNote(FlickType t, float delayedSec, float mustyPitchDeg, fl
         break;
     default: break;
     }
-    s += " Puissance demandée : " + formatNumber(flickMinPower(0.f) * kUusToKph, 0) + " km/h au niveau 1, " +
-         formatNumber(flickMinPower(1.f) * kUusToKph, 0) + " km/h au niveau 10.";
+    s += " Vitesse de balle demandée en départ en dribble : " + formatNumber(flickMinPower(0.f, true) * kUusToKph, 0) +
+         " km/h au niveau 1, " + formatNumber(flickMinPower(1.f, true) * kUusToKph, 0) +
+         " km/h au niveau 10 (voiture à l'arrêt : " + formatNumber(flickMinPower(0.f) * kUusToKph, 0) +
+         " km/h au niveau 1).";
     return s;
 }
 
@@ -365,6 +367,20 @@ AttemptResult gradeLostBall(int requested, float time) {
     addTip(a.tips, "shooting.flick_lost_ball", "Garde la balle au centre du toit avant de flick.", 10.f);
     addTip(a.tips, "shooting.flick_unsettled", "Roule à la même vitesse que la balle, sans coup de volant brusque.",
            4.f);
+    return a;
+}
+
+AttemptResult gradeTooClose(const std::string& skill, float time) {
+    AttemptResult a;
+    a.module = "shooting";
+    a.time = time;
+    a.skill = skill;
+    a.title = "Trop près du but";
+    a.score = 0.f;
+    a.success = false;
+    a.verdict = Verdict::Fail;
+    addTip(a.tips, "shooting.flick_too_close",
+           "Flick plus tôt : avant d'arriver à 12 m du but. Garde la balle stable, puis choisis ton moment.", 10.f);
     return a;
 }
 

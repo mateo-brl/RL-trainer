@@ -14,6 +14,9 @@
 // Start of every attempt: the car (and the ball) are held still, re-placed on every tick; the first attempt waits for
 // the throttle then counts 3 s down, the next ones count down `countdown` seconds (ReadyPhase).
 // Commands: "rlt courses <cmd>", see onCommand and the tab.
+// The guide lines (car or ball to the next ring, floor line to a wall arch, ball to its landing point) are off by
+// default since v1.0.8; saved settings of the previous version are moved once on the first tick (flag
+// "courses.defaults_v2" in the Store). The rings and the catch circle are the exercise itself: always drawn.
 
 #include <array>
 #include <cstdint>
@@ -119,6 +122,8 @@ public:
     void load(const Store& store) override;
 
     const CoursesConfig& config() const { return cfg_; }
+    // The one-time move of the previous version's saved defaults ran (flag "courses.defaults_v2").
+    bool defaultsMigrated() const { return defaultsV2_; }
 
     // ---- UI accessors (plain copies) ------------------------------------------------------------------------
     CoursesStatus status() const;
@@ -190,6 +195,9 @@ private:
         std::string date;
         uint64_t lastUse = 0;
     };
+
+    // Saved settings of the previous version (config.cfg): move the old defaults once (see migrateDefaults).
+    void migrateDefaults(Actions& out);
 
     // Lifecycle
     bool acquireActivity(CoursesKind kind, const TickContext& ctx, Actions& out);
@@ -364,6 +372,7 @@ private:
     float dribbleBest_ = 0.f;
     float catchBest_ = 0.f;
     uint64_t useSeq_ = 0;
+    bool defaultsV2_ = false;      // migrateDefaults ran (saved)
 
     // Context
     std::string lastMapName_;

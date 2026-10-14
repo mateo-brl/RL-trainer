@@ -218,8 +218,9 @@ void CoursesModule::describeSettings(SettingsSchema& schema) {
               "Nombre d'anneaux visibles après le prochain.");
     d.toggle("rlt_co_show_passed", &CoursesConfig::showPassed, true, "Afficher les anneaux passés",
              "Garde les derniers anneaux passés visibles (vert), les ratés en rouge.");
-    d.toggle("rlt_co_guide_line", &CoursesConfig::guideLine, true, "Ligne guide",
-             "Ligne pointillée de ta voiture (ou de la balle) vers le prochain anneau.");
+    d.toggle("rlt_co_guide_line", &CoursesConfig::guideLine, false, "Ligne guide",
+             "Lignes pointillées de ta voiture (ou de la balle) vers le prochain anneau, au sol vers une arche de mur, "
+             "et de la balle vers son point de chute. Coupées par défaut, comme toutes les trajectoires.");
     d.toggle("rlt_co_ring_numbers", &CoursesConfig::ringNumbers, true, "Numéros des anneaux",
              "Affiche le numéro des anneaux à venir.");
     d.toggle("rlt_co_hud", &CoursesConfig::hud, true, "Panneau d'infos",
@@ -243,6 +244,17 @@ void CoursesModule::describeSettings(SettingsSchema& schema) {
 }
 
 void CoursesModule::onSettingsChanged(const Settings& settings) { cfg_ = settings.courses; }
+
+// The previous version drew the guide lines by default; BakkesMod saved that value in config.cfg. A player who still
+// has the old default never chose it: turn them off once, like every trajectory now. A value the player chose is kept,
+// and the saved flag stops it from running twice.
+void CoursesModule::migrateDefaults(Actions& out) {
+    defaultsV2_ = true;
+    out.requestSave = true;
+    if (!cfg_.guideLine) return;
+    out.setCvars.emplace_back("rlt_co_guide_line", "0");
+    out.toasts.push_back(trajectoriesMigrationToast());  // the same toast for every trajectory (merged by the engine)
+}
 
 courses::MissPolicy CoursesModule::missPolicy() const {
     switch (cfg_.missPolicy) {
@@ -896,6 +908,7 @@ std::string fmtFloat(float v) {
 void CoursesModule::save(Store& store) const {
     store.erasePrefix("courses.");
     store.setInt("courses.version", 1);
+    store.setInt("courses.defaults_v2", defaultsV2_ ? 1 : 0);
     store.setInt("courses.seq", static_cast<long long>(useSeq_));
     std::vector<std::string> list;
     for (const auto& e : pbs_) {
@@ -927,6 +940,7 @@ void CoursesModule::save(Store& store) const {
 
 void CoursesModule::load(const Store& store) {
     pbs_.clear();
+    defaultsV2_ = store.getInt("courses.defaults_v2", 0) != 0;
     const long long seq = store.getInt("courses.seq", 0);
     useSeq_ = seq > 0 ? static_cast<uint64_t>(seq) : 0;
     for (const std::string& line : store.getList("courses.pb")) {

@@ -59,6 +59,7 @@ struct FirstTouchConfig {
     float drillPause = 1.5f;           // s between two reps
     bool drillResetCar = true;         // put the car back on its start pose (speed 0) every rep
     bool drillFullBoost = true;
+    bool drillPath = false;            // predicted ball path drawn during the get-ready hold (trajectories are opt-in)
     float drillTarget = 0.75f;         // target success rate of the adaptive level
     float drillStep = 0.04f;           // level step after a success
     float drillHudX = 0.01f;

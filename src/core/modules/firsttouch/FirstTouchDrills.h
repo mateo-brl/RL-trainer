@@ -9,8 +9,8 @@
 //    little room ahead or sits next to a side wall, and their floor balls are kept off the floor-to-wall ramp;
 //  - "Chute du mur" places the car itself, parallel to the wall, close to it (the wall side alternates);
 //  - "Balle haute" hangs the ball in the air at niveaux 1 to 6 (released by the jump, then by being under it);
-//  - every rep starts with a short get-ready hold (car and ball held still) at the first levels, the ball's path
-//    or landing point drawn, and the velocity given at the release.
+//  - every rep starts with a short get-ready hold (car and ball held still) at the first levels, the landing or
+//    meeting point drawn (the ball's path too when "rlt_ft_drill_path" is on), and the velocity given at the release.
 
 #include <array>
 #include <cstdint>
@@ -75,8 +75,9 @@ std::string drillRepTip(const DrillCriteria& c, const std::vector<Tip>& tips);
 // Goal of the level in a few words for the HUD ("Objectif : une touche douce.").
 const char* drillGoal(float level);
 
-// Get-ready hold before each rep (car and ball held still, path drawn): 1 s at niveaux 1 to 3, 0.5 s at niveaux 4 to
-// 6, none after. The first ball of a drill waits for the throttle, then counts down 3 s (Hold.h ReadyPhase).
+// Get-ready hold before each rep (car and ball held still, path drawn when the option is on): 1 s at niveaux 1 to 3,
+// 0.5 s at niveaux 4 to 6, none after. The first ball of a drill waits for the throttle, then counts down 3 s (Hold.h
+// ReadyPhase).
 float freezeSeconds(float level);
 constexpr float kMixFreeze = 1.f;            // Mix: the next drill's name is shown during at least this hold
 

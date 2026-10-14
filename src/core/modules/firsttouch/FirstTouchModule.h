@@ -92,7 +92,7 @@ public:
         std::string lastOutcome;     // verdict of the last rep ("Réussi ! 72/100", "Temps écoulé.")
         std::string lastTip;         // the one tip of the last failed rep, in words ("" after a success)
         bool lastSuccess = false;
-        std::string readyLine;       // "Appuie sur accélérer quand tu es prêt" / "Départ dans 2" ("" when not holding)
+        std::string readyLine;       // "Appuie sur accélérer quand tu es prêt" / "Prêt ?" ("" when not holding)
         std::string nextBall;        // Mix: name of the next ball
         std::vector<std::string> steps;  // parcours complet: the step lines ("2/4 Ralentis : OK")
         int matchBall = 0, matchPassed = 0;  // séquence de match: balls played / passed in the current sequence
@@ -182,7 +182,7 @@ private:
         ft::DrillSpawn spawn;
         float wallSide = 1.f;              // Chute du mur: side of the next rep (alternates)
         bool waitingWall = false;
-        // What is drawn: the predicted path (hold), the landing / meeting circle.
+        // What is drawn: the predicted path (hold, when cfg drillPath is on), the landing / meeting circle.
         ft::BallTrack path;
         bool showLanding = false;
         Vec3 landing;

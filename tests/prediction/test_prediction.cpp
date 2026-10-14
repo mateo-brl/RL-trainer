@@ -59,6 +59,97 @@ TEST(pr_schema_defaults_parse_and_naming) {
     CHECK_EQ(c.arenaMode, def.arenaMode);
     CHECK_NEAR(c.horizon, 3.f, 1e-6f);
     CHECK_EQ(c.recomputeTicks, 4);
+    // Trajectories are opt-in: the whole module is off by default, its elements on once it is switched on.
+    CHECK(!def.enabled);
+    CHECK(schema.find("rlt_pr_enabled") && schema.find("rlt_pr_enabled")->defaultValue == "0");
+    CHECK(def.showPath && def.showBounces && def.showLanding && def.showIntercept);
+}
+
+TEST(pr_off_by_default_draws_nothing) {
+    // A new player: schema defaults, nothing drawn and nothing simulated even with a ball in the air.
+    Harness h;
+    h.set("rlt_pr_enabled", "0");
+    Settings fresh;
+    h.schema.applyDefaults(fresh);
+    CHECK(!fresh.prediction.enabled);
+    h.setBall({0.f, 0.f, 800.f}, {300.f, 0.f, 200.f});
+    h.run(10);
+    CHECK(!h.mod.path().valid);
+    CHECK(h.draw().empty());
+    CHECK(!h.mod.status().enabled && !h.mod.status().active);
+    CHECK_EQ(h.mod.status().recomputes, 0LL);
+}
+
+TEST(pr_show_command_while_off_says_where_to_switch_it_on) {
+    Harness h;
+    h.set("rlt_pr_enabled", "0");
+    const Actions a = h.command("show");
+    CHECK_EQ(a.toasts.size(), static_cast<size_t>(1));
+    CHECK(!a.toasts.empty() && a.toasts[0].text.find("Trajectoires") != std::string::npos);
+    CHECK(!a.toasts.empty() && a.toasts[0].text.find("affichee") == std::string::npos);
+    h.set("rlt_pr_enabled", "1");
+    const Actions b = h.command("hide");
+    CHECK(!b.toasts.empty() && b.toasts[0].text.find("masquee") != std::string::npos);
+    const Actions c = h.command("toggle");
+    CHECK(!c.toasts.empty() && c.toasts[0].text.find("affichee") != std::string::npos);
+}
+
+TEST(pr_old_default_migrated_once) {
+    // A player of the previous version: config.cfg holds the old default (module on) and the Store has no flag. The
+    // first tick turns it off once; a reload never does it again; a value chosen differently is kept.
+    auto cvar = [](const Actions& a, const std::string& name) {
+        for (const auto& c : a.setCvars)
+            if (c.first == name) return c.second;
+        return std::string();
+    };
+    Harness h;
+    h.mod.load(Store{});  // save of the previous version: no flag
+    h.set("rlt_pr_enabled", "1");
+    CHECK(!h.mod.defaultsMigrated());
+    // No snapshot (main menu): nothing moves yet.
+    h.hasSnapshot = false;
+    const Actions menu = h.tick();
+    CHECK(menu.setCvars.empty() && menu.toasts.empty() && !menu.requestSave);
+    CHECK(!h.mod.defaultsMigrated());
+    h.hasSnapshot = true;
+    h.setBall({0.f, 0.f, 800.f});
+    const Actions first = h.tick();
+    CHECK_EQ(first.setCvars.size(), static_cast<size_t>(1));
+    CHECK(cvar(first, "rlt_pr_enabled") == "0");
+    CHECK(first.requestSave);
+    CHECK_EQ(first.toasts.size(), static_cast<size_t>(1));
+    CHECK(!first.toasts.empty() && noEmDash(first.toasts[0].text) &&
+          first.toasts[0].text.find("\xE2\x80\x93") == std::string::npos);
+    CHECK(!first.toasts.empty() && first.toasts[0].text.find("Trajectoires") != std::string::npos);
+    // The value the engine sets back through the cvar is a valid setting.
+    for (const auto& c : first.setCvars) CHECK_MSG(h.set(c.first, c.second), c.first);
+    CHECK(!h.mod.config().enabled);
+    CHECK(h.mod.defaultsMigrated());
+    h.run(1);
+    CHECK(h.draw().empty());
+    const Actions second = h.tick();
+    CHECK(second.setCvars.empty() && second.toasts.empty());
+    // The flag is saved: a reload where the player turned it back on does not migrate again.
+    Store st;
+    h.mod.save(st);
+    CHECK_EQ(st.getInt("prediction.defaults_v2", 0), 1);
+    Harness again;
+    again.mod.load(st);
+    again.set("rlt_pr_enabled", "1");
+    CHECK(again.mod.defaultsMigrated());
+    again.setBall({0.f, 0.f, 800.f});
+    const Actions reloaded = again.tick();
+    CHECK(reloaded.setCvars.empty() && reloaded.toasts.empty());
+    CHECK(again.mod.config().enabled);
+    CHECK(!again.draw().lines3D.empty());
+    // A value chosen differently (already off) is kept; only the flag is set.
+    Harness chosen;
+    chosen.mod.load(Store{});
+    chosen.set("rlt_pr_enabled", "0");
+    const Actions kept = chosen.tick();
+    CHECK(kept.setCvars.empty() && kept.toasts.empty() && kept.requestSave);
+    CHECK(chosen.mod.defaultsMigrated());
+    CHECK(!chosen.mod.config().enabled);
 }
 
 TEST(pr_schema_clamps_and_rejects) {

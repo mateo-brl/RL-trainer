@@ -55,6 +55,8 @@ void renderHomeTab(UiContext& ctx) {
     else
         bullet("En jeu, tous les panneaux s'affichent ensemble (« Un seul panneau à la fois » est désactivé).");
     if (general.hudCompact) bullet("HUD compact : chaque panneau garde l'essentiel, le détail de tes essais reste ici.");
+    bullet("Les trajectoires (prédiction de la balle, lignes guides) sont coupées par défaut : active-les dans la page "
+           "HUD, section Trajectoires.");
     if (ImGui::SmallButton("Régler le HUD")) ui::goToPage("hud");
 
     ui::separatorText("Statut");

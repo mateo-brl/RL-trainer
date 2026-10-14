@@ -1,6 +1,7 @@
-// "HUD" page: which panel the HUD shows right now, the general HUD options, the menu key, and the position, size
-// and colours of every element drawn in game, each with its own reset. Render thread: engine state is copied under
-// the engine lock, settings change through cvars only.
+// "HUD" page: which panel the HUD shows right now, the general HUD options, the trajectories of every module (off by
+// default, one place to turn them back on), the menu key, and the position, size and colours of every element drawn
+// in game, each with its own reset. Render thread: engine state is copied under the engine lock, settings change
+// through cvars only.
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -130,6 +131,25 @@ const std::vector<HudElement>& hudElements() {
     return elements;
 }
 
+// Trajectory and prediction drawings of every module (ball path, landing and impact markers, guide lines), all off by
+// default since v1.0.8: the player found them gadget-like and far from what a match looks like. Listed by cvar name;
+// names missing from the schema are skipped.
+const std::vector<const char*>& trajectoryCvars() {
+    static const std::vector<const char*> names = {
+        "rlt_pr_enabled",         // Prédiction: the whole module (path, bounces, landing, touch zone, interception)
+        "rlt_ft_drill_path",      // Première touche: ball path during the get-ready hold
+        "rlt_co_guide_line",      // Parcours: guide lines to the next ring and to the landing point
+        "rlt_sh_show_prediction", // Tirs & flicks: predicted impact marker on the goal line
+        "rlt_sh_free_analysis",   // Tirs & flicks: predicted impact of shots outside the exercises
+        "rlt_sh_floor_marks",     // Tirs & flicks: next bounces, meeting point and run-up point on the floor
+        "rlt_bm_draw_trajectory", // Mécas balle: path of the last graded shot
+        "rlt_bm_draw_guide",      // Mécas balle: ceiling start guide (ball path and meeting point)
+        "rlt_ko_show_path",       // Kickoff: lines to the ball (player and ghost)
+        "rlt_me_guides",          // Mécas mouvement: 3D drill markers (line to the ball, lane, target)
+    };
+    return names;
+}
+
 // General HUD options, in display order. The menu key is not part of the HUD reset.
 const std::vector<std::string>& generalHudCvars() {
     static const std::vector<std::string> names = {"rlt_hud_compact", "rlt_hud_focus",   "rlt_hud_text",
@@ -194,6 +214,46 @@ void renderCurrentPanel(const UiContext& ctx, const Settings& current) {
         ImGui::TextUnformatted("Panneau affiché en ce moment : tous les panneaux activés");
         wrappedDisabled("« Un seul panneau à la fois » est désactivé : tous les panneaux s'affichent ensemble.");
     }
+}
+
+void renderTrajectories(const UiContext& ctx, const Settings& current) {
+    std::vector<const SettingDef*> defs;
+    for (const char* name : trajectoryCvars())
+        if (const SettingDef* d = ctx.engine.schema().find(name)) defs.push_back(d);
+    if (defs.empty()) return;
+    std::vector<std::string> labels;
+    {
+        auto lk = ctx.engine.lock();
+        for (const SettingDef* d : defs) labels.push_back(moduleTitle(ctx.engine, d->module) + " : " + d->label);
+    }
+    int shown = 0;
+    for (const SettingDef* d : defs) {
+        bool on = false;
+        if (d->read) parseBoolValue(d->read(current), on);
+        shown += on ? 1 : 0;
+    }
+    const int total = static_cast<int>(defs.size());
+
+    ui::separatorText("Trajectoires");
+    bool all = shown == total;
+    if (ImGui::Checkbox("Afficher les trajectoires##hud_traj_all", &all))
+        for (const SettingDef* d : defs) ctx.setCvar(d->cvar, boolToCvar(all));
+    hoverText("Active ou coupe d'un coup toutes les trajectoires de la liste.");
+    ImGui::SameLine();
+    if (shown == 0) ImGui::TextDisabled("(toutes coupées)");
+    else ImGui::TextDisabled("(%d sur %d affichées)", shown, total);
+    wrappedDisabled("Chemin prévu de la balle, points d'impact et lignes guides tracés sur le terrain. Coupés par "
+                    "défaut : coche ceux qui t'aident.");
+    ImGui::PushID("hud_traj");  // the same checkboxes are also in each module's page
+    ImGui::Indent();
+    for (size_t i = 0; i < defs.size(); ++i) cvarWidget(ctx, current, defs[i]->cvar.c_str(), labels[i].c_str());
+    ImGui::Unindent();
+    // Targets the exercise grades the player on reaching: never switched by "Afficher les trajectoires" (not in
+    // trajectoryCvars), the catch point keeps its own checkbox here.
+    wrappedDisabled("Gardés car l'exercice te demande d'y aller : point de chute (Parcours, rattrapage) et cercles de "
+                    "Première touche.");
+    cvarWidget(ctx, current, "rlt_co_catch_marker", "Parcours : point de chute");
+    ImGui::PopID();
 }
 
 void renderMenuKey(const UiContext& ctx, const Settings& current) {
@@ -266,6 +326,7 @@ void renderHudTab(UiContext& ctx) {
     ui::separatorText("Réglages généraux");
     for (const std::string& name : generalHudCvars()) cvarWidget(ctx, current, name.c_str());
 
+    renderTrajectories(ctx, current);
     renderMenuKey(ctx, current);
     renderElements(ctx, current);
     renderResetAll(ctx);

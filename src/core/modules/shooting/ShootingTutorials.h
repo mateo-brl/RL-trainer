@@ -18,7 +18,7 @@ constexpr int kShootDrillCount = static_cast<int>(ShootDrill::Count);
 
 const char* shootDrillId(ShootDrill d);     // "flick", "roof", "rolling", "bouncing", "pass", "power"
 bool parseShootDrill(const std::string& text, ShootDrill& out);
-const char* shootDrillTitle(ShootDrill d);  // "Flick, balle sur le toit", "Flick en roulant", "Cibles, balle roulante"...
+const char* shootDrillTitle(ShootDrill d);  // "Flick, balle sur le toit", "Flick en dribble vers la cible"...
 
 struct ShootTutorialStep {
     const char* title;  // the step in a few words
@@ -44,6 +44,9 @@ std::string shootPanelLine(ShootDrill d, int index);
 int shootPanelCount(ShootDrill d);
 
 const char* shootLexicon();
+// One short HUD hint of the dribble starts: the ball cam off during the dribble (the goal in view), back on after the
+// flick. The plugin never changes the player's camera.
+const char* shootBallCamHint();
 const char* shootProgressRule();
 // {jump} / {boost} -> the player's own buttons ("saut (A)").
 std::string shootFillButtons(const std::string& text, const PlayerProfile& profile, KeyStyle style);

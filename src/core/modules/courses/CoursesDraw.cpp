@@ -163,7 +163,9 @@ void CoursesModule::drawCatchMarker(const ViewContext& view, DrawList& out) cons
     if (!have) return;
     const Vec3 ground{land.x, land.y, 4.f};
     out.circle3D(ground, {0.f, 0.f, 1.f}, 130.f, cfg_.guideColor, 2.5f, 24);
-    if (view.ballValid) courses::appendDashedLine(view.ballVisualPos, ground, 8, cfg_.guideColor.withAlpha(120.f), 1.5f, out);
+    // The circle is where the exercise asks to stop; the line from the ball down to it is a guide line (opt-in).
+    if (cfg_.guideLine && view.ballValid)
+        courses::appendDashedLine(view.ballVisualPos, ground, 8, cfg_.guideColor.withAlpha(120.f), 1.5f, out);
 }
 
 void CoursesModule::drawHud(const ViewContext& view, const DrawContext& ctx, DrawList& out) const {
@@ -201,13 +203,11 @@ void CoursesModule::drawHud(const ViewContext& view, const DrawContext& ctx, Dra
     switch (phase_) {
     case CoursesPhase::Setup:
     case CoursesPhase::Countdown: {
-        // Get-ready phase: "Appuie sur accélérer quand tu es prêt", then "Départ dans 3" (then "Lâche l'accélérateur
-        // pour partir" when the ball is balanced on a stopped car and the throttle is still held).
+        // Get-ready phase: "Appuie sur accélérer quand tu es prêt", then "Prêt ?" while the game counts 3, 2, 1 (then
+        // "Lâche l'accélérateur pour partir" when the ball is balanced on a stopped car and the throttle is still held).
         std::string ready = ready_.hudLine(ctx.snap.time);
         const bool waiting = ready_.waiting() || ready_.waitingRelease(ctx.snap.time) || (ready.empty() && firstAttempt_);
-        if (ready.empty())
-            ready = firstAttempt_ ? "Appuie sur accélérer quand tu es prêt"
-                                  : "Départ dans " + std::to_string(std::max(1, static_cast<int>(std::ceil(cfg_.countdown))));
+        if (ready.empty()) ready = firstAttempt_ ? "Appuie sur accélérer quand tu es prêt" : "Prêt ?";
         line(ready, 0, waiting ? kAccent : colors::White, -1.f, colors::Green, waiting ? 1.15f : 1.3f);
         if (full_) {
             // The full sequence: its first step, then the others as details.

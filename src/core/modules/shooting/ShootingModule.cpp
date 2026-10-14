@@ -162,13 +162,15 @@ void ShootingModule::describeSettings(SettingsSchema& schema) {
              {"N'importe lequel", "Flick avant", "Flick 45°", "Flick 90°", "Back flick", "Flick retardé", "Musty flick",
               "Breezi flick", "Reverse 45"},
              "Flick demandé", "Le flick à travailler. Un autre flick reste analysé mais compte comme raté.");
-    f.choice("rlt_sh_flick_start", &ShootingConfig::flickStart, 0,
-             {"Voiture à l'arrêt", "Voiture en mouvement", "Aléatoire"}, "Départ",
-             "À l'arrêt pour apprendre le geste, en mouvement vers le but pour le jeu réel.");
+    f.choice("rlt_sh_flick_start", &ShootingConfig::flickStart, 1,
+             {"Voiture à l'arrêt", "En dribble vers le but", "Aléatoire"}, "Départ",
+             "En dribble : comme en match, la balle est sur ton toit et ta voiture roule déjà vers le but depuis le "
+             "milieu du terrain. À l'arrêt : pour apprendre le geste, plus près du but.");
     f.toggle("rlt_sh_flick_adaptive", &ShootingConfig::flickAdaptive, true, "Difficulté adaptative",
-             "La distance au but, la vitesse de départ et la puissance demandée suivent ton taux de réussite.");
-    f.number("rlt_sh_flick_speed", &ShootingConfig::flickCarSpeed, 800.f, 0.f, 2000.f, "Vitesse de départ (uu/s)",
-             "Vitesse de la voiture au départ en mouvement quand la difficulté adaptative est coupée.", 0);
+             "La vitesse du dribble, la distance au but et la vitesse de balle demandée suivent ton taux de réussite.");
+    f.number("rlt_sh_flick_speed", &ShootingConfig::flickCarSpeed, 1100.f, 0.f, 2000.f, "Vitesse du dribble (uu/s)",
+             "Vitesse de la voiture au départ en dribble quand la difficulté adaptative est coupée. L'accélérateur seul "
+             "la tient jusqu'à 1400 uu/s environ.", 0);
     f.choice("rlt_sh_flick_target", &ShootingConfig::flickTarget, 0,
              {"But entier", "Zone choisie dans Cibles", "Zone aléatoire"}, "Cible des flicks",
              "Où viser : la précision de chaque flick est mesurée par rapport à cette cible.");
@@ -191,8 +193,9 @@ void ShootingModule::describeSettings(SettingsSchema& schema) {
              "Difficulté utilisée quand l'adaptatif est coupé (0 facile, 1 difficile).", 2);
     t.toggle("rlt_sh_show_zones", &ShootingConfig::showAllZones, true, "Afficher toutes les zones",
              "Dessine aussi les autres zones du but, en discret.");
-    t.toggle("rlt_sh_show_prediction", &ShootingConfig::showPrediction, true, "Marqueur d'impact prévu",
-             "Pendant que la balle vole, montre où elle va croiser la ligne de but.");
+    t.toggle("rlt_sh_show_prediction", &ShootingConfig::showPrediction, false, "Marqueur d'impact prévu",
+             "Pendant que la balle vole, montre où elle va croiser la ligne de but. Coupé par défaut : le point "
+             "d'arrivée s'affiche quand même dans le but après le tir.");
 
     auto p = schema.section(&Settings::shooting, "shooting", "Puissance");
     p.number("rlt_sh_power_ball_speed", &ShootingConfig::powerBallSpeedKph, 25.f, 0.f, 80.f,
@@ -213,6 +216,9 @@ void ShootingModule::describeSettings(SettingsSchema& schema) {
              "Multiplie la taille du texte du panneau.", 2);
     h.toggle("rlt_sh_free_analysis", &ShootingConfig::freeAnalysis, false, "Impact prévu hors exercice",
              "Montre aussi l'impact prévu de tes tirs en jeu libre, sur les maps workshop et dans les replays.");
+    h.toggle("rlt_sh_floor_marks", &ShootingConfig::floorMarks, false, "Cercles au sol",
+             "Dessine au sol les prochains rebonds (balle qui rebondit), le point de rencontre (centre en travers) et "
+             "le point d'élan (puissance). Coupé par défaut.");
     h.color("rlt_sh_zone_color", &ShootingConfig::zoneColor, Color{200.f, 200.f, 200.f, 140.f}, "Couleur des zones",
             "Couleur des zones du but qui ne sont pas visées.");
     h.color("rlt_sh_target_color", &ShootingConfig::targetColor, Color{255.f, 200.f, 40.f, 255.f},
@@ -261,6 +267,32 @@ void ShootingModule::onSettingsChanged(const Settings& settings) {
 void ShootingModule::setSeed(uint64_t seed) {
     rng_.reseed(seed);
     fixedSeed_ = true;
+}
+
+// The previous version started the flicks with a stopped car near the goal and drew the predicted impact marker by
+// default; BakkesMod saved those values in config.cfg. A player who still has exactly an old default never chose it:
+// move it once to the new default (dribble start, 1100 uu/s without the adaptive difficulty, no marker). A value the
+// player chose is kept, and the saved flag stops it from running twice.
+void ShootingModule::migrateDefaults(Actions& out) {
+    defaultsV2_ = true;
+    out.requestSave = true;
+    const bool start = cfg_.flickStart == 0;
+    const bool speed = std::fabs(cfg_.flickCarSpeed - 800.f) < 0.5f;
+    const bool marker = cfg_.showPrediction;
+    if (start) out.setCvars.emplace_back("rlt_sh_flick_start", "1");
+    if (speed) out.setCvars.emplace_back("rlt_sh_flick_speed", floatToCvar(1100.f));
+    if (marker) out.setCvars.emplace_back("rlt_sh_show_prediction", "0");
+    if (!start && !speed && !marker) return;
+    // The text says only what moved: a player who chose his own start keeps it and is not told otherwise.
+    std::string text;
+    if (start)
+        text = "Les flicks partent maintenant en dribble depuis le milieu du terrain. Tu peux le changer dans la page "
+               "Tirs & flicks.";
+    else if (speed)
+        text = "Le dribble des flicks part maintenant à 1100 uu/s. Tu peux le changer dans la page Tirs & flicks.";
+    if (marker) text += std::string(text.empty() ? "" : " ") +
+                        "Le marqueur d'impact prévu est coupé (page HUD, section Trajectoires).";
+    out.toasts.push_back(migrationToast(kToastTitle, text));
 }
 
 // ---- Accessors --------------------------------------------------------------------------------------------
@@ -475,6 +507,7 @@ bool ShootingModule::startDrill(ShootMode m, const TickContext& ctx, Actions& ou
     mode_ = m;
     full_ = full;
     firstAttempt_ = true;  // the first attempt waits for the throttle
+    earlyReplays_ = 0;
     steps_.clear();
     phase_ = ShootPhase::Setup;
     phaseStart_ = ctx.snap.frame;
@@ -516,6 +549,7 @@ void ShootingModule::stopDrill(bool release) {
     ready_.stop();
     movingStart_ = assistActive_ = false;
     offRoof_ = leftRoofEarly_ = false;
+    earlyReplays_ = 0;
     bounceMarks_.clear();
     showMeet_ = showRunUp_ = false;
     if (release && wasActive) releaseActivity();
@@ -536,6 +570,7 @@ void ShootingModule::newAttemptLater(const std::string& message) {
 // ---- Tick -------------------------------------------------------------------------------------------------
 void ShootingModule::onTick(const TickContext& ctx, Actions& out) {
     if (!ctx.hasSnapshot) return;
+    if (!defaultsV2_) migrateDefaults(out);  // ticks only come from a running game: config.cfg is loaded
     const Snapshot& s = ctx.snap;
     if (!cfg_.enabled) {
         if (mode_ != ShootMode::None) stopDrill(true);
@@ -699,6 +734,10 @@ bool ShootingModule::earlyLossReplay(const Snapshot& s) {
     const bool onFloor = s.ball.pos.z < kBallRestZ + 25.f;
     const bool away = distance(s.ball.pos, hitboxCenter(s.car)) > 250.f;
     if (!(onFloor && away)) return false;
+    // Twice in a row at most: a start the player keeps losing is graded as a lost ball (level lowered, tip shown)
+    // instead of an endless replay.
+    if (earlyReplays_ >= kMaxEarlyReplays) return false;
+    ++earlyReplays_;
     newAttemptLater("Balle tombée au départ : essai rejoué, sans compter.");
     return true;
 }
@@ -748,10 +787,7 @@ void ShootingModule::prepareAttempt(const TickContext& ctx) {
                      : static_cast<TargetSetup>(rng_.rangeInt(1, kTargetSetupCount - 1));
         attemptLevel_ = targetLevel(setup_);
         zone_ = pickTargetZone(zoneSel_, attemptLevel_, zone_, rng_);  // low and centre zones only at niveaux 1-3
-        TargetOptions opt;
-        // Moving roof starts only once the stationary flick reached niveau 3.
-        opt.roofMovingAllowed = shootPlayerLevel(flickLevel()) >= kRoofMovingFlickNiveau;
-        spawn_ = targetSpawn(setup_, attemptLevel_, goal_, roof, rng_, opt);
+        spawn_ = targetSpawn(setup_, attemptLevel_, goal_, roof, rng_);
         break;
     }
     case ShootMode::Power:
@@ -807,6 +843,7 @@ void ShootingModule::prepareFull(const TickContext& ctx) {
     spawn_.ball.pos = fullSetup_.ball.pos;
     spawn_.ballReleaseVel = fullSetup_.ball.vel;
     spawn_.ballReleaseAngVel = fullSetup_.ball.angVel;
+    spawn_.carReleaseVel = fullSetup_.car.vel;  // pickup at speed: the car drives at GO
     steps_.clear();
     fullRecorded_ = false;
     switch (fullKind_) {
@@ -891,6 +928,10 @@ void ShootingModule::tickFlick(const TickContext& ctx, Actions& out) {
         onFlickReport(*rep, ctx, out);
         return;
     }
+    if (dribbleAttempt() && tooClose(s)) {
+        onTooClose(ctx, out);
+        return;
+    }
     if (full_) return;  // the steps handle a lost ball and the time
     const FlickPhase ph = flick_.phase();
     if (s.ball.valid && s.car.valid && ph != FlickPhase::Air && ph != FlickPhase::Dodged && elapsed(s.frame) > 0.3f) {
@@ -906,6 +947,38 @@ void ShootingModule::tickFlick(const TickContext& ctx, Actions& out) {
     // Never cut a flick in progress (jump or dodge already started).
     if (elapsed(s.frame) > cfg_.attemptTimeout && ph != FlickPhase::Air && ph != FlickPhase::Dodged)
         newAttemptLater("Temps écoulé : nouvel essai.");
+}
+
+bool ShootingModule::dribbleAttempt() const {
+    const bool roofDrill = mode_ == ShootMode::Flick || (mode_ == ShootMode::Targets && setup_ == TargetSetup::Roof);
+    return roofDrill && (movingStart_ || full_);
+}
+
+bool ShootingModule::tooClose(const Snapshot& s) const {
+    if (!s.car.valid || !s.ball.valid) return false;
+    const FlickPhase ph = flick_.phase();
+    if (ph == FlickPhase::Air || ph == FlickPhase::Dodged) return false;  // never cut a flick in progress
+    return goal_.distanceToPlane(s.car.pos) < kFlickLateDist && shootBallOnRoof(s);
+}
+
+void ShootingModule::onTooClose(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
+    const AttemptResult r = gradeTooClose(
+        mode_ == ShootMode::Targets ? std::string("shoot.target.") + zoneId(zone_)
+                                    : std::string("shoot.flick.") +
+                                          (requested_ >= 0 ? flickTypeId(static_cast<FlickType>(requested_)) : "any"),
+        s.time);
+    if (full_) {
+        // Parcours complet: the step being played fails with the tip (finishFull reports it next tick).
+        if (steps_.running()) steps_.fail(s.time, r.tips.front().code, r.tips.front().text);
+        return;
+    }
+    earlyReplays_ = 0;
+    if (mode_ == ShootMode::Flick && cfg_.flickAdaptive) flickStair_.record(false);
+    if (mode_ == ShootMode::Targets && cfg_.targetAdaptive)
+        targetStairs_[static_cast<size_t>(setupIndex(setup_))].record(false);
+    lastFlick_ = r.title;
+    finishAttempt(r, ctx, out);
 }
 
 namespace {
@@ -937,7 +1010,7 @@ void ShootingModule::onFlickReport(const FlickReport& rep, const TickContext& ct
     // counts from niveau 3.
     p.requested = full_ || shootPlayerLevel(attemptLevel_) <= 2 ? -1 : requested_;
     p.level = attemptLevel_;
-    p.minPower = flickMinPower(attemptLevel_);
+    p.minPower = flickMinPower(attemptLevel_, movingStart_ || full_);  // a moving ball needs a real shot
     p.requireOnTarget = full_ || cfg_.flickRequireOnTarget;
     p.aimErrorDeg = angleBetweenDeg(flat(rep.launchVel), flat(targetWorld - rep.ballPos));
     p.delayedSec = cfg_.delayedSec;
@@ -1001,6 +1074,9 @@ void ShootingModule::tickTargets(const TickContext& ctx, Actions& out) {
             hasLastShot_ = true;
             lastShotSpeed_ = rep->power;
             shot_.start(s.ball, goal_, s.frame, rep->power);
+        } else if (!lastFlickReport_ && dribbleAttempt() && tooClose(s)) {
+            onTooClose(ctx, out);
+            return;
         }
     }
     if (shot_.active()) {
@@ -1176,6 +1252,7 @@ void ShootingModule::recordFull(bool success) {
 // tip, the right staircase, no result for the coach.
 void ShootingModule::finishFull(const TickContext& ctx, Actions& out) {
     if (phase_ != ShootPhase::Live || !steps_.finished()) return;
+    earlyReplays_ = 0;
     const bool success = steps_.isComplete();
     const auto& f = steps_.failure();
     // A failed pickup (or carry) feeds the pickup's own staircase (pickup::Progress), never the mechanic's.
@@ -1321,6 +1398,7 @@ void ShootingModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, Ac
 
 // ---- Results ----------------------------------------------------------------------------------------------
 void ShootingModule::finishAttempt(AttemptResult r, const TickContext& ctx, Actions& out) {
+    earlyReplays_ = 0;  // a graded attempt ends the run of early replays
     if (cfg_.chatResults) {
         ChatMessage m;
         m.text = r.title + " : " + verdictLabel(r.verdict) + " (" + formatNumber(r.score, 0) + "/100)";
@@ -1360,6 +1438,7 @@ void ShootingModule::save(Store& store) const {
     pickup_.save(store, "shooting.stair.pickup");
     for (int i = 0; i < kShootDrillCount; ++i)
         fullStairs_[static_cast<size_t>(i)].save(store, std::string("shooting.full.") + shootDrillId(static_cast<ShootDrill>(i)));
+    store.setInt("shooting.defaults_v2", defaultsV2_ ? 1 : 0);
 }
 
 void ShootingModule::load(const Store& store) {
@@ -1376,6 +1455,7 @@ void ShootingModule::load(const Store& store) {
     loadStair(pickup_.staircase(), "shooting.stair.pickup");
     for (int i = 0; i < kShootDrillCount; ++i)
         loadStair(fullStairs_[static_cast<size_t>(i)], std::string("shooting.full.") + shootDrillId(static_cast<ShootDrill>(i)));
+    defaultsV2_ = store.getInt("shooting.defaults_v2", 0) != 0;
 }
 
 // ---- Drawing ----------------------------------------------------------------------------------------------
@@ -1497,6 +1577,7 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
         const std::string ready = phase_ == ShootPhase::Countdown ? ready_.hudLine(now) : std::string();
         if (!ready.empty()) line(ready, colors::White);
         if (reminder) line(tip, kTipColor);
+        else if (roofBall && (movingStart_ || full_)) line(shootBallCamHint(), colors::Cyan);  // the goal stays in view
         else if (!how.empty()) line(how, colors::Cyan);
         break;
     }
@@ -1517,8 +1598,10 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
                 line(named ? std::string("Balle stable : ") + flickTypeHudLabel(static_cast<FlickType>(requested_)) + " !"
                            : std::string("Balle stable : saute !"),
                      colors::Green);
+            else if (movingStart_ || full_)
+                line(shootPanelLine(ShootDrill::Flick, 0), colors::White);  // "Garde ta vitesse..."
             else
-                line(shootPanelLine(ShootDrill::Flick, 0), colors::White);
+                line("Attends « Balle stable »", colors::White);  // stopped car
         } else if (roofBall && flick_.phase() == FlickPhase::Air) {
             line(shootPanelLine(ShootDrill::Flick, 2), colors::White);
         } else if (mode_ == ShootMode::Flick) {
@@ -1604,7 +1687,8 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
 
     // Early feedback while the ball travels: where it is predicted to cross the goal line (also drawn in 3D). Main
     // line outside drills, where it is the whole analysis.
-    if (shot_.hasPrediction() && (phase_ == ShootPhase::Live || mode_ == ShootMode::None)) {
+    if (shot_.hasPrediction() && (phase_ == ShootPhase::Live || mode_ == ShootMode::None) &&
+        predictionShown(mode_ != ShootMode::None, ctx.game)) {
         const Vec2 pp = shot_.predicted();
         const bool main = mode_ == ShootMode::None;
         auto predicted = [&](const std::string& text, Color c) {
@@ -1630,9 +1714,13 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
     return p;
 }
 
+bool ShootingModule::predictionShown(bool drill, const GameContext& game) const {
+    if (drill) return cfg_.showPrediction;
+    return cfg_.freeAnalysis || (game.category == MapCategory::Shooting && cfg_.showPrediction);
+}
+
 void ShootingModule::draw(const ViewContext& view, const DrawContext& ctx, DrawList& out) {
     if (!cfg_.enabled) return;
-    const bool analysis = cfg_.freeAnalysis || ctx.game.category == MapCategory::Shooting;
     Occluder occ; // goal lines behind the ball are hidden by it
     if (view.ballValid) {
         occ.enabled = true;
@@ -1641,7 +1729,7 @@ void ShootingModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
     }
     if (ctx.game.mode == GameMode::Replay) {
         // No physics ticks in replays: predict from the visual ball state only.
-        if (analysis && view.valid && view.ballValid && std::fabs(view.ballVel.y) > 500.f) {
+        if (predictionShown(false, ctx.game) && view.valid && view.ballValid && std::fabs(view.ballVel.y) > 500.f) {
             const GoalFrame g{view.ballVel.y > 0.f ? 1.f : -1.f};
             if (const auto c =
                     predictToPlaneY(view.ballVisualPos, view.ballVel, Vec3{}, g.planeY(), 3.f, view.ballRadius)) {
@@ -1664,7 +1752,8 @@ void ShootingModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
             else
                 drawRect(goal_, goalMouthRect(), active, 2.f, 4.f, occ, out);
         }
-        if (cfg_.showPrediction && shot_.hasPrediction() && (drill || analysis)) {
+        // Predicted impact (a prediction: off by default); the point where the ball really crossed is drawn below.
+        if (shot_.hasPrediction() && predictionShown(drill, ctx.game)) {
             const GoalFrame& g = shot_.goal();
             const Vec2 pp = shot_.predicted();
             bool good = shoot::onGoal(pp);
@@ -1677,10 +1766,11 @@ void ShootingModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
         if (hasLastHit_ && ctx.snap.frame - lastHitFrame_ < 240)
             drawMarker(lastHitGoal_, lastHitWorld_, view.ballRadius * 0.6f, lastHitGood_ ? colors::Green : colors::Red,
                        occ, out);
-        // Circles on the floor until the first touch: next bounces, meeting point, run-up point.
+        // Circles on the floor until the first touch: next bounces, meeting point, run-up point (predictions: only
+        // with "Cercles au sol").
         const bool beforeTouch = (phase_ == ShootPhase::Countdown || phase_ == ShootPhase::Live) && !touched_ &&
                                  !powerTouched_ && (!full_ || fullState_.touches == 0);
-        if (drill && beforeTouch) {
+        if (drill && beforeTouch && cfg_.floorMarks) {
             const Vec3 up{0.f, 0.f, 1.f};
             const float t = phase_ == ShootPhase::Live ? elapsed(ctx.snap.frame) : 0.f;
             int shown = 0;

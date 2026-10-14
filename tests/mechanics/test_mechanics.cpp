@@ -390,7 +390,7 @@ TEST(mechanics_drill_speedflip_countdown) {
     Actions k = ko.tick(Inputs{});
     CHECK(ko.mod.drillSetup().stage == 2 && ko.mod.drillSetup().kickoff);
     CHECK(k.boostRules.has_value() && !k.boostRules->unlimited);
-    CHECK(k.resetPickups);
+    CHECK(!k.resetPickups);  // not on the teleport tick: the pads are respawned at GO
     if (k.setCar) {
         CHECK(k.setCar->boost.has_value() && std::fabs(*k.setCar->boost - 33.33f) < 0.01f);
         CHECK(length2D(k.setCar->pos) > 2000.f);  // a kickoff spawn
@@ -400,6 +400,7 @@ TEST(mechanics_drill_speedflip_countdown) {
     Inputs boost;
     boost.boost = true;  // boost held at GO
     CHECK(ko.waitGo(boost));
+    CHECK(ko.routed.resetPickups && !ko.routed.setCar);  // GO tick: every pad back, nothing re-placed
     CHECK(ko.mod.kickoffLive());
     // Orange team: the spawn is mirrored.
     Rig orange;
@@ -410,6 +411,110 @@ TEST(mechanics_drill_speedflip_countdown) {
     Actions o = orange.tick(Inputs{});
     CHECK(o.setCar.has_value());
     if (o.setCar) CHECK(o.setCar->pos.y > 2000.f);
+}
+
+// Boost pads of the speedflip kickoff drill (same cause as the kickoff report on v1.0.7: "il me fait prendre les
+// boosts"). Pad model of tests/kickoff/test_kickoff_round2.cpp (PadWorld): in the glue the pad reset runs before the
+// physics step that moves a placed car, so a teleport takes every available pad whose pickup radius its straight move
+// crosses, after a reset sent on the same tick. Small pads come back 4 s after a pickup, big ones 10 s (RLBot "Useful
+// Game Values"). Soccar pads: KickoffData.cpp kickoffSoccarPads (not linked here).
+namespace {
+struct MechPad {
+    float x, y;
+    bool big;
+};
+const std::vector<MechPad>& mechSoccarPads() {
+    static const std::vector<MechPad> pads = {
+        {0, -4240, false},    {-1792, -4184, false}, {1792, -4184, false}, {-940, -3308, false},  {940, -3308, false},
+        {0, -2816, false},    {-3584, -2484, false}, {3584, -2484, false}, {-1788, -2300, false}, {1788, -2300, false},
+        {-2048, -1036, false}, {0, -1024, false},    {2048, -1036, false}, {-1024, 0, false},     {1024, 0, false},
+        {-2048, 1036, false}, {0, 1024, false},      {2048, 1036, false},  {-1788, 2300, false},  {1788, 2300, false},
+        {-3584, 2484, false}, {3584, 2484, false},   {0, 2816, false},     {-940, 3308, false},   {940, 3308, false},
+        {-1792, 4184, false}, {1792, 4184, false},   {0, 4240, false},     {-3584, 0, true},      {3584, 0, true},
+        {-3072, 4096, true},  {3072, 4096, true},    {-3072, -4096, true}, {3072, -4096, true}};
+    return pads;
+}
+float segDist2D(float px, float py, const Vec3& a, const Vec3& b) {
+    const float dx = b.x - a.x, dy = b.y - a.y;
+    const float l2 = dx * dx + dy * dy;
+    float t = l2 > 1e-6f ? ((px - a.x) * dx + (py - a.y) * dy) / l2 : 0.f;
+    t = std::max(0.f, std::min(1.f, t));
+    const float ex = a.x + dx * t - px, ey = a.y + dy * t - py;
+    return std::sqrt(ex * ex + ey * ey);
+}
+struct MechPadWorld {
+    std::vector<int64_t> backAt = std::vector<int64_t>(mechSoccarPads().size(), 0);
+    int teleportPickups = 0;
+    // `from`: car position of the tick's snapshot; `reset` / `to`: what the tick sends.
+    void step(int64_t frame, const Vec3& from, bool reset, const std::optional<CarPlacement>& to) {
+        if (reset) std::fill(backAt.begin(), backAt.end(), 0);
+        if (!to) return;
+        const auto& pads = mechSoccarPads();
+        for (size_t i = 0; i < pads.size(); ++i) {
+            const float r = pads[i].big ? 208.f : 144.f;
+            if (frame < backAt[i] || segDist2D(pads[i].x, pads[i].y, from, to->pos) >= r) continue;
+            backAt[i] = frame + (pads[i].big ? 10 : 4) * 120;
+            ++teleportPickups;
+        }
+    }
+    // Pads still missing at `frame` on the straight route from `spawn` to the ball at the centre.
+    int missingOnRoute(int64_t frame, const Vec3& spawn) const {
+        const auto& pads = mechSoccarPads();
+        int n = 0;
+        for (size_t i = 0; i < pads.size(); ++i)
+            if (frame < backAt[i] && segDist2D(pads[i].x, pads[i].y, spawn, Vec3{0.f, 0.f, 0.f}) < (pads[i].big ? 208.f : 144.f))
+                ++n;
+        return n;
+    }
+};
+}  // namespace
+
+TEST(mechanics_speedflip_kickoff_pads_respawned_at_go_not_on_the_teleport) {
+    Rig rig;
+    rig.set("rlt_me_drill_adaptive", "0");  // stays on the kickoff step whatever the attempts give
+    rig.command("drill", {"speedflip", "kickoff"});
+    CHECK(rig.mod.drillActive());
+    MechPadWorld now, old;  // old: v1.0.7 timing, the reset sent with the placement (the tick with the boost rules)
+    Inputs in;
+    in.boost = true;
+    int gos = 0, resets = 0, holdTicks = 0, oldMissing = 0;
+    Vec3 spawn;
+    bool placed = false;
+    for (int i = 0; i < 40 * 120 && gos < 4; ++i) {
+        in.throttle = i < 2 ? 0.f : 1.f;  // first attempt: throttle released, then pressed
+        rig.tick(in);
+        const Vec3 from = rig.last.car.pos;  // the snapshot the module saw: the car before this tick's placement
+        const int64_t frame = rig.last.frame;
+        const Actions& a = rig.routed;
+        if (a.boostRules) {
+            CHECK(a.setCar.has_value());
+            if (a.setCar) spawn = a.setCar->pos;
+            placed = true;
+        }
+        if (a.setCar) {
+            ++holdTicks;
+            CHECK_MSG(!a.resetPickups, "pad reset on a tick that places the car, frame " + std::to_string(frame));
+        }
+        if (a.resetPickups) {
+            ++resets;
+            CHECK(a.goMessage);  // only at GO
+        }
+        now.step(frame, from, a.resetPickups, a.setCar);
+        old.step(frame, from, a.boostRules.has_value(), a.setCar);
+        if (a.goMessage) {
+            CHECK(placed && a.resetPickups && !a.setCar);
+            ++gos;
+            CHECK_EQ(now.missingOnRoute(frame, spawn), 0);
+            oldMissing += old.missingOnRoute(frame, spawn);
+        }
+    }
+    CHECK_EQ(gos, 4);
+    CHECK_EQ(resets, gos);  // exactly once per attempt
+    CHECK(holdTicks > 4 * 200);
+    // The model reproduces the report: the teleports back to the spawn ran over pads of the route, and with the reset
+    // on the teleport tick some were still missing at GO (2 s countdown, 4 s respawn).
+    CHECK(now.teleportPickups > 0);
+    CHECK(oldMissing > 0);
 }
 
 TEST(mechanics_drill_air_start_held_during_countdown) {
@@ -602,20 +707,25 @@ TEST(mechanics_reset_shot_replaces_drill) {
     CHECK(ticks >= 358 && ticks <= 362);
 }
 
+// The 3D lines of the drills (line to the ball, lane, target, wall band) are off by default since the player found
+// them gadget-like; turned on in the settings they stay bounded.
 TEST(mechanics_drill_guides_bounded) {
     for (const char* id : {"chaindash", "walldash", "speedflip", "fastaerial", "powerslide"}) {
-        Rig rig;
-        rig.command("drill", {id});
-        rig.tick(Inputs{});
-        DrawList dl;
-        ViewContext view;
-        view.valid = true;
-        view.ballValid = true;
-        DrawContext dctx{rig.settings, rig.game, rig.profile, rig.last, true, true, 1.f};
-        rig.mod.draw(view, dctx, dl);
-        CHECK_MSG(!dl.lines3D.empty(), id);
-        CHECK_MSG(dl.lines3D.size() < 100, id);
-        CHECK(dl.panels.size() == 1);
+        for (bool on : {false, true}) {
+            Rig rig;
+            if (on) rig.set("rlt_me_guides", "1");
+            rig.command("drill", {id});
+            rig.tick(Inputs{});
+            DrawList dl;
+            ViewContext view;
+            view.valid = true;
+            view.ballValid = true;
+            DrawContext dctx{rig.settings, rig.game, rig.profile, rig.last, true, true, 1.f};
+            rig.mod.draw(view, dctx, dl);
+            CHECK_MSG(on ? !dl.lines3D.empty() : dl.lines3D.empty(), id);
+            CHECK_MSG(dl.lines3D.size() < 100, id);
+            CHECK(dl.panels.size() == 1);
+        }
     }
 }
 

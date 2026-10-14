@@ -29,6 +29,7 @@ KickoffLevel ghostLevel(KickoffGhostMode m) {
 }
 
 constexpr int64_t kPadRespawnTicks = 4 * 120;  // small boost pad respawn time (4 s)
+constexpr float kOnSpawnTolerance = 30.f;       // 2D distance from the spawn beyond which the car is placed again
 
 BallPlacement restingBall(float z) {
     BallPlacement b;
@@ -105,7 +106,7 @@ void KickoffModule::describeSettings(SettingsSchema& schema) {
     d.toggle("rlt_ko_go_jitter", &KickoffConfig::goJitter, false, "GO imprévisible",
              "Ajoute un petit délai aléatoire avant le GO : tu travailles ta réaction au lieu du rythme du décompte.");
     d.toggle("rlt_ko_native_countdown", &KickoffConfig::nativeCountdown, true, "Décompte du jeu",
-             "Affiche aussi le 3, 2, 1, GO officiel de Rocket League.");
+             "Le 3, 2, 1, GO de Rocket League, comme en match. C'est le seul décompte affiché par défaut.");
 
     auto da = schema.section(&Settings::kickoff, "kickoff", "Exercice");
     da.advanced();
@@ -116,7 +117,7 @@ void KickoffModule::describeSettings(SettingsSchema& schema) {
     da.toggle("rlt_ko_hold_car", &KickoffConfig::holdCar, true, "Maintenir la voiture au décompte",
               "Replace la voiture à chaque image du décompte pour qu'elle ne bouge pas avant le GO.");
     da.number("rlt_ko_spawn_boost", &KickoffConfig::spawnBoost, 100.f / 3.f, 0.f, 100.f, "Boost de départ",
-              "Boost donné au départ et gardé plein pendant le décompte (33 comme en match).", 1);
+              "Boost de ta voiture au GO (33 comme en match). Il reste à cette valeur pendant tout le décompte.", 1);
     da.number("rlt_ko_ball_height", &KickoffConfig::ballHeight, kKoBallRestZ, 85.f, 100.f, "Hauteur de la balle (uu)",
               "Hauteur de la balle posée au centre. Ne change que si la balle saute au départ.", 2);
 
@@ -156,17 +157,20 @@ void KickoffModule::describeSettings(SettingsSchema& schema) {
 
     auto h = schema.section(&Settings::kickoff, "kickoff", "Affichage");
     h.toggle("rlt_ko_hud", &KickoffConfig::hudEnabled, true, "Panneau en jeu",
-             "Position, décompte, chrono, temps intermédiaires et dernier résultat.");
+             "Position, chrono, temps intermédiaires et dernier résultat. Il montre le décompte seulement si le "
+             "décompte du jeu et le grand décompte sont coupés.");
     h.number("rlt_ko_hud_x", &KickoffConfig::hudX, 0.01f, 0.f, 1.f, "Position X du panneau",
              "Fraction de la largeur de l'écran (0 = bord gauche).", 2);
     h.number("rlt_ko_hud_y", &KickoffConfig::hudY, 0.12f, 0.f, 1.f, "Position Y du panneau",
              "Fraction de la hauteur de l'écran (0 = haut).", 2);
     h.number("rlt_ko_hud_scale", &KickoffConfig::hudScale, 1.f, 0.5f, 2.f, "Taille du panneau",
              "Multiplie la taille du panneau, en plus de la taille générale du HUD.", 2);
-    h.toggle("rlt_ko_big_countdown", &KickoffConfig::bigCountdown, true, "Grand décompte",
-             "Affiche 3, 2, 1, GO en grand au milieu de l'écran.");
-    h.toggle("rlt_ko_show_path", &KickoffConfig::showPath, true, "Ligne vers la balle",
-             "Trace la ligne droite de ta position à la balle, avec les repères 25/50/75 %.");
+    h.toggle("rlt_ko_big_countdown", &KickoffConfig::bigCountdown, false, "Grand décompte du plugin",
+             "Affiche aussi un 3, 2, 1, GO en grand au milieu de l'écran. Utile seulement si tu coupes le décompte "
+             "du jeu, sinon tu en vois deux.");
+    h.toggle("rlt_ko_show_path", &KickoffConfig::showPath, false, "Lignes vers la balle",
+             "Trace au sol la ligne droite de ta position à la balle (repères à 25, 50 et 75 %) et celle du "
+             "fantôme. La boîte du fantôme reste affichée sans les lignes.");
     h.toggle("rlt_ko_show_splits", &KickoffConfig::showSplits, true, "Temps intermédiaires",
              "Compare ton temps au fantôme à 25, 50, 75 et 100 % du trajet.");
     h.color("rlt_ko_path_color", &KickoffConfig::pathColor, Color(255, 200, 60, 170), "Couleur de la ligne",
@@ -215,23 +219,39 @@ void KickoffModule::notify(Actions& out, const std::string& text, ToastKind kind
     out.toasts.push_back(std::move(t));
 }
 
-// The previous version defaulted to the Pro ghost and Pro grading, saved in config.cfg by BakkesMod. A player who
-// still has exactly that pair never chose it: move them once to the beginner-friendly defaults.
+// Old defaults are saved in config.cfg by BakkesMod, so a new default never reaches a player of an earlier version.
+// A player who still has exactly the old default never chose it: move them once to the new one. Each step is saved
+// (defaults_v2, defaults_v3) and runs once; a value the player changed is never touched.
 void KickoffModule::migrateDefaults(Actions& out) {
-    defaultsV2_ = true;
     out.requestSave = true;
-    if (cfg_.ghostLevel != static_cast<int>(KickoffGhostMode::Pro) ||
-        cfg_.gradeTarget != static_cast<int>(KickoffLevel::Pro))
-        return;
-    out.setCvars.emplace_back("rlt_ko_ghost", std::to_string(static_cast<int>(KickoffGhostMode::Adaptive)));
-    out.setCvars.emplace_back("rlt_ko_grade_target", std::to_string(static_cast<int>(KickoffLevel::Standard)));
-    ToastMessage t;
-    t.title = "Kickoff";
-    t.text = "Fantôme Adaptatif et notation Standard, plus adaptés pour progresser. Tu peux les changer dans la "
-             "page Kickoff.";
-    t.kind = ToastKind::Info;
-    t.seconds = 8.f;
-    out.toasts.push_back(std::move(t));
+    auto info = [&out](std::string text) { out.toasts.push_back(migrationToast("Kickoff", std::move(text))); };
+    // v2: the Pro ghost and Pro grading pair, too hard to start with, becomes Adaptive / Standard.
+    if (!defaultsV2_) {
+        defaultsV2_ = true;
+        if (cfg_.ghostLevel == static_cast<int>(KickoffGhostMode::Pro) &&
+            cfg_.gradeTarget == static_cast<int>(KickoffLevel::Pro)) {
+            out.setCvars.emplace_back("rlt_ko_ghost", std::to_string(static_cast<int>(KickoffGhostMode::Adaptive)));
+            out.setCvars.emplace_back("rlt_ko_grade_target",
+                                      std::to_string(static_cast<int>(KickoffLevel::Standard)));
+            info("Fantôme Adaptatif et notation Standard, plus adaptés pour progresser. Tu peux les changer dans la "
+                 "page Kickoff.");
+        }
+    }
+    // v3 (v1.0.8, player feedback): the plugin's big 3, 2, 1 doubled the game's own countdown, and the lines to the
+    // ball looked like a gadget. Both were on by default. The big countdown stays when the game's countdown is off
+    // (it is then the only one on screen).
+    if (!defaultsV3_) {
+        defaultsV3_ = true;
+        const bool big = cfg_.bigCountdown && cfg_.nativeCountdown;
+        const bool path = cfg_.showPath;
+        if (big) out.setCvars.emplace_back("rlt_ko_big_countdown", "0");
+        if (path) out.setCvars.emplace_back("rlt_ko_show_path", "0");
+        if (big)
+            info("Un seul décompte maintenant : celui du jeu. Tu peux remettre le grand décompte dans la page "
+                 "Kickoff, section Affichage.");
+        // The lines to the ball are listed with every other trajectory: one toast for all of them.
+        if (path) out.toasts.push_back(trajectoriesMigrationToast());
+    }
 }
 
 // ---- Tick ----------------------------------------------------------------------------------------------------
@@ -241,7 +261,8 @@ void KickoffModule::onTick(const TickContext& ctx, Actions& out) {
     lastMap_ = ctx.game.mapName;
     contextKnown_ = true;
     if (!ctx.hasSnapshot) return;
-    if (!defaultsV2_) migrateDefaults(out);  // ticks only come from a running game: config.cfg is loaded
+    // Ticks only come from a running game: config.cfg is loaded by then.
+    if (!defaultsV2_ || !defaultsV3_) migrateDefaults(out);
     const Snapshot& sn = ctx.snap;
     if (sn.frame == lastTickFrame_) return;
     if (sn.frame < lastTickFrame_) resetTransient();  // physics frame counter restarted (new map)
@@ -324,6 +345,17 @@ void KickoffModule::notePadPickups() {
     if (recorder_.started()) lastPadFrame_ = std::max(lastPadFrame_, recorder_.metrics().lastPadFrame);
 }
 
+void KickoffModule::armPadReset(int64_t teleportFrame) {
+    padResetPending_ = true;
+    padResetFrame_ = teleportFrame + kKoPadResetDelayTicks;
+}
+
+void KickoffModule::sendPadReset(Actions& out) {
+    out.resetPickups = true;
+    padResetPending_ = false;
+    lastPadFrame_ = -1;  // every pad is back: pickups made before no longer matter
+}
+
 void KickoffModule::resetRepState() {
     notePadPickups();
     recorder_.reset();
@@ -335,6 +367,7 @@ void KickoffModule::resetRepState() {
     haveLastCar_ = false;
     invalidTicks_ = 0;
     fedFrame_ = -1;
+    padResetPending_ = false;
 }
 
 void KickoffModule::resetTransient() {
@@ -401,10 +434,15 @@ void KickoffModule::placeRep(const TickContext& ctx, Actions& out) {
     out.setBoost = cfg_.spawnBoost;
     // Match conditions for every rep (placeRep only runs while the drill owns the activity): limited boost (the
     // freeplay "unlimited boost" would falsify the times; the engine puts the player's rules back when the activity
-    // ends) and every boost pad respawned, so pickups made before this tick no longer matter.
+    // ends) and every boost pad respawned before GO, like at a real kickoff.
     out.boostRules = BoostRules{false, false};
-    out.resetPickups = true;
-    lastPadFrame_ = -1;
+    // The pads are NOT respawned on this tick. Player report on v1.0.7 (reset sent here): the teleport back to the
+    // spawn took the boost pads, which were then missing on the way to the ball. Likely cause, not measured in game:
+    // pads are picked up on touch (VehiclePickupWrapper::eventTouch in the SDK) while the game moves the car, in the
+    // physics step that follows this hook, so a reset sent now comes before those pickups, and a small pad needs 4 s
+    // to come back, more than the 3 s countdown. The reset is sent once the car has been on its spawn for
+    // kKoPadResetDelayTicks (tickCountdown), or at GO at the latest (enterLive).
+    armPadReset(sn.frame);
     // Zero the inputs without freezing on this tick: the placement is applied before the car is frozen.
     out.overrideInputs = Inputs{};
     const int countdown = std::max(1, cfg_.countdownSeconds);
@@ -427,7 +465,7 @@ void KickoffModule::tickCountdown(const TickContext& ctx, Actions& out) {
     }
     out.freezeCar = true;
     const KickoffPose pose = kickoffPose(spawn_, team_, kKoCarPlaceZ);
-    const bool drifted = !sn.car.valid || length2D(sn.car.pos - pose.pos) > 30.f;
+    const bool drifted = !sn.car.valid || length2D(sn.car.pos - pose.pos) > kOnSpawnTolerance;
     if (cfg_.holdCar || drifted) {
         CarPlacement car;
         car.pos = pose.pos;
@@ -437,6 +475,10 @@ void KickoffModule::tickCountdown(const TickContext& ctx, Actions& out) {
         car.boost = cfg_.spawnBoost;
         out.setCar = car;
     }
+    // Boost pads: a car moved back from elsewhere (game reset during the countdown) may run over pads again, so the
+    // reset waits for it to stay on the spawn. The hold re-pin above moves it by a few uu only.
+    if (drifted) armPadReset(sn.frame);
+    else if (padResetPending_ && sn.frame >= padResetFrame_) sendPadReset(out);
     out.setBoost = cfg_.spawnBoost;  // held boost drains even while frozen
     out.setBall = restingBall(cfg_.ballHeight);
     const int64_t left = nominalGo_ - sn.frame;  // messages follow the nominal schedule; GO may come later
@@ -452,6 +494,7 @@ void KickoffModule::enterLive(const TickContext& ctx, Actions& out) {
     goFrame_ = sn.frame;
     // No freeze from this tick on: the inputs the player already holds act on this very tick.
     out.setBoost = cfg_.spawnBoost;
+    if (padResetPending_) sendPadReset(out);  // the car never stayed on its spawn during the countdown
     if (cfg_.nativeCountdown) out.goMessage = true;
     recorder_.begin(spawn_, team_, goFrame_, recorderParams(ctx.profile));
     fedFrame_ = goFrame_ - 1;
@@ -937,6 +980,7 @@ void KickoffModule::save(Store& store) const {
     stats_.save(store);
     staircase_.save(store, "kickoff.adaptive");
     store.setInt("kickoff.defaults_v2", defaultsV2_ ? 1 : 0);
+    store.setInt("kickoff.defaults_v3", defaultsV3_ ? 1 : 0);
 }
 
 void KickoffModule::load(const Store& store) {
@@ -945,6 +989,7 @@ void KickoffModule::load(const Store& store) {
     // who never used it starts at the beginner time.
     if (store.getInt("kickoff.adaptive.attempts", 0) > 0) staircase_.load(store, "kickoff.adaptive");
     defaultsV2_ = store.getInt("kickoff.defaults_v2", 0) != 0;
+    defaultsV3_ = store.getInt("kickoff.defaults_v3", 0) != 0;
 }
 
 } // namespace rlt

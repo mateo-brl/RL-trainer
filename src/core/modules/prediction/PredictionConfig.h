@@ -2,6 +2,8 @@
 // Settings of the "Prédiction" module (ball path with bounces, landing point, first-touch zone, intercept
 // advisor and goal warning). Every field is declared once in PredictionModule::describeSettings (cvar
 // prefix "rlt_pr_"). This header is included by every module through Settings.h: keep it dependency-light.
+// The whole module is off by default (trajectories are opt-in, page HUD > Trajectoires); once switched on, every
+// element below shows with its own default.
 
 #include "core/common/Color.h"
 
@@ -9,7 +11,7 @@ namespace rlt {
 
 struct PredictionConfig {
     // ---- Général
-    bool enabled = true;
+    bool enabled = false;
     float horizon = 3.f;          // seconds predicted ahead (1..6)
     bool onlyAirborne = false;    // hide everything while the ball rolls on the ground
     int unit = 0;                 // SpeedUnit: 0 auto (game setting), 1 km/h, 2 mph, 3 uu/s

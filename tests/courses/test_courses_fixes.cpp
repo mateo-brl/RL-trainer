@@ -581,7 +581,7 @@ TEST(courses_fix_draw_worst_case_line_budget) {
     DrawContext dctx{h.settings, h.game, h.profile, h.snap, true, true, 1.f};
     DrawList dl;
     h.mod.draw(view, dctx, dl);
-    // 9 rings x 64 + 3 passed x 24 + arrow 3 + floor shadow 2 + guide line 5 = 658.
+    // 9 rings x 64 + 3 passed x 24 + arrow 3 + floor shadow 2 = 653 (the guide line is off by default).
     CHECK(dl.lines3D.size() >= 640u);
     CHECK(dl.lines3D.size() < 700u);
 }

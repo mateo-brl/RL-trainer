@@ -20,6 +20,30 @@ namespace rlt {
 namespace {
 constexpr int kNewContactGapTicks = 6;  // 50 ms without contact => a new touch
 constexpr int kMaxRouteDepth = 3;
+
+// Toasts of one tick. The same toast sent by several modules is shown once (every trajectory turned off by a
+// migration sends the same one). The migration toasts of one tick (a player coming from an older version, whose saved
+// settings move to the new defaults on his first tick) become one toast, one sentence per line, instead of a stack.
+void tidyToasts(std::vector<ToastMessage>& toasts) {
+    for (size_t i = 0; i < toasts.size(); ++i)
+        for (size_t j = toasts.size(); j-- > i + 1;)
+            if (toasts[j].title == toasts[i].title && toasts[j].text == toasts[i].text)
+                toasts.erase(toasts.begin() + static_cast<std::ptrdiff_t>(j));
+    const auto isMigration = [](const ToastMessage& t) { return t.migration; };
+    const auto first = std::find_if(toasts.begin(), toasts.end(), isMigration);
+    const std::ptrdiff_t count = std::count_if(toasts.begin(), toasts.end(), isMigration);
+    if (count < 2) return;
+    const std::ptrdiff_t at = first - toasts.begin();
+    ToastMessage merged = migrationToast("Nouveaux réglages par défaut", "");
+    for (const ToastMessage& t : toasts) {
+        if (!t.migration) continue;
+        if (!merged.text.empty()) merged.text += "\n";
+        merged.text += t.text;
+    }
+    merged.seconds = std::min(12.f, 4.f + 2.f * static_cast<float>(count));
+    toasts.erase(std::remove_if(toasts.begin(), toasts.end(), isMigration), toasts.end());
+    toasts.insert(toasts.begin() + at, std::move(merged));
+}
 } // namespace
 
 // ---- Construction --------------------------------------------------------------------------------------
@@ -141,6 +165,7 @@ void Engine::tick(const Snapshot& snap, Actions& out) {
     }
     resolveTouches(out);
     dispatch(out, [&](Module* m, Actions& a) { m->onTick(makeTickContext(m), a); });
+    tidyToasts(out.toasts);
 }
 
 void Engine::reportTouch(int64_t frame, bool hasHitInfo, const Vec3& hitLocation, const Vec3& hitNormal) {

@@ -26,6 +26,14 @@ namespace {
 
 constexpr float kReact = 0.4f;  // scripted player reaction (fix 10: 0.3 to 0.5 s)
 
+// Ground acceleration of the throttle alone (RocketSim curve): a speed is held without boost while it is positive.
+float throttleAccel(float v) {
+    if (v < 1400.f) return 1600.f - 1440.f * (v / 1400.f);
+    if (v < 1410.f) return 160.f * (1410.f - v) / 10.f;
+    return 0.f;
+}
+bool throttleCanHold(float v) { return throttleAccel(v) > 100.f; }
+
 pr::PredictedPath simulate(const Vec3& p, const Vec3& v, const Vec3& w = {}, float seconds = 6.f) {
     pr::SimBall b;
     b.pos = p;
@@ -144,6 +152,122 @@ TEST(shooting_flick_power_bar_matches_distance) {
     }
 }
 
+// ==== Départ en dribble (flick comme en match) ===================================================================
+namespace {
+
+// Ball carried on the roof of a car that holds its speed (the player keeps the throttle just right): the core physics
+// moves the ball (gravity, drag), the roof is a plane under it with Coulomb friction 0.35 (the ball-vs-arena value of
+// the core physics; car-ball contacts are not in it). Returns the seconds the ball stayed over the roof, up to
+// `seconds`, and the car's last distance to the goal line.
+struct Carry {
+    float time = 0.f;
+    float goalDist = 0.f;
+};
+Carry carryOnRoof(const Spawn& sp, const RoofParams& roof, float seconds) {
+    pr::SimBall b;
+    b.pos = sp.ball.pos;
+    b.vel = sp.ballReleaseVel;
+    const Basis B = basisFromRot(sp.car.rot);
+    Vec3 car = sp.car.pos;
+    const Vec3 carVel = sp.carReleaseVel;
+    const float rest = roof.hb.roofZ() + roof.ballRadius;
+    Carry c;
+    for (float t = 0.f; t < seconds; t += kTickDt) {
+        pr::stepBall(b);
+        car += carVel * kTickDt;
+        Vec3 l = B.toLocal(b.pos - car);
+        const bool over = std::fabs(l.x - roof.hb.offset.x) <= roof.hb.extent.x * 0.5f &&
+                          std::fabs(l.y - roof.hb.offset.y) <= roof.hb.extent.y * 0.5f;
+        if (over && l.z < rest) {
+            b.pos.z += rest - l.z;
+            if (b.vel.z < 0.f) {
+                const float jn = -b.vel.z;
+                b.vel.z = 0.f;
+                Vec3 rel = flat(b.vel - carVel);
+                const float r = length(rel);
+                if (r > 1e-4f) b.vel -= rel * (std::min(r, 0.35f * jn) / r);
+            }
+            l = B.toLocal(b.pos - car);
+        }
+        if (!ballOnRoof(b.pos, car, B, roof.hb, roof.ballRadius)) break;
+        c.time = t + kTickDt;
+    }
+    c.goalDist = sp.goal.distanceToPlane(car);
+    return c;
+}
+
+// Lowest ball speed (25 uu/s steps) that scores from `start` toward the goal centre, best elevation (core physics).
+float speedToScore(const Vec3& start) {
+    const Vec3 toGoal = normalize(flat(Vec3{0.f, kGoalLineY, 0.f} - start), Vec3{0.f, 1.f, 0.f});
+    float best = 1e9f;
+    for (float e = 0.f; e <= 40.f; e += 2.5f) {
+        const Vec3 dir = toGoal * std::cos(e * kDegToRad) + Vec3{0.f, 0.f, std::sin(e * kDegToRad)};
+        for (float v = 300.f; v < best; v += 25.f) {
+            pr::SimBall b;
+            b.pos = start;
+            b.vel = dir * v;
+            bool scored = false;
+            for (int i = 0; i < 480; ++i) {
+                const Vec3 before = b.pos;
+                pr::stepBall(b);
+                if (before.y < kGoalLineY && b.pos.y >= kGoalLineY) {
+                    scored = std::fabs(b.pos.x) < kOnTargetHalfU && b.pos.z < kOnTargetTopZ;
+                    break;
+                }
+            }
+            if (scored) {
+                best = v;
+                break;
+            }
+        }
+    }
+    return best;
+}
+
+} // namespace
+
+TEST(shooting_dribble_start_is_playable_with_the_core_physics) {
+    RoofParams roof;
+    roof.gap = 2.f;
+    for (int niveau = 1; niveau <= 10; ++niveau) {
+        const float level = levelOf(niveau);
+        for (uint64_t seed = 1; seed <= 12; ++seed) {
+            Rng rng(seed * 7 + static_cast<uint64_t>(niveau));
+            const GoalFrame goal{seed % 2 ? 1.f : -1.f};
+            const Spawn sp = flickSpawn(level, true, -1.f, goal, roof, rng);
+            const float speed = length(sp.carReleaseVel);
+            const float dist = goal.distanceToPlane(sp.car.pos);
+            // From midfield at a dribble speed the throttle alone holds, ball on the roof moving with the car.
+            CHECK_MSG(dist >= 4499.f && dist <= 5501.f, std::to_string(dist));
+            CHECK(speed >= 899.f && speed <= 1301.f);
+            CHECK_NEAR(speed, dribbleSpeed(level), 1e-2f);
+            CHECK(throttleCanHold(speed));
+            CHECK(sp.ballOnRoof && distance(sp.ballReleaseVel, sp.carReleaseVel) < 1e-3f);
+            CHECK(ballOnRoof(sp.ball.pos, sp.car.pos, basisFromRot(sp.car.rot), roof.hb, roof.ballRadius));
+            CHECK(dot(normalize(flat(sp.carReleaseVel)), Vec3{0.f, goal.sign, 0.f}) > 0.9f);
+            // Several seconds before the 12 m line at the start speed, and the ball stays on the roof all along.
+            const float available = (dist - kFlickLateDist) / speed;
+            CHECK_MSG(available >= (niveau == 1 ? 3.6f : 2.9f), std::to_string(available));
+            const Carry c = carryOnRoof(sp, roof, available);
+            CHECK_MSG(c.time >= available - 0.02f, std::to_string(niveau) + ": " + std::to_string(c.time));
+            CHECK(c.goalDist >= kFlickLateDist - 20.f);
+        }
+        // The shot asked is a real shot, and enough: at the bar speed, a flick toward the goal centre scores from the
+        // 12 m line and from 25 m (core physics, best elevation).
+        const float bar = flickMinPower(level, true);
+        CHECK(bar >= 1499.f && bar <= 2401.f);
+        for (float d : {kFlickLateDist, 2500.f}) {
+            const float need = speedToScore(Vec3{0.f, kGoalLineY - d, 160.f});
+            CHECK_MSG(need <= bar, std::to_string(d) + ": " + std::to_string(need));
+        }
+    }
+    // The stopped-car start is still there to learn the motion (and still near the goal).
+    Rng rng(9);
+    const Spawn still = flickSpawn(0.f, false, -1.f, GoalFrame{1.f}, roof, rng);
+    CHECK(length(still.carReleaseVel) < 1e-3f);
+    CHECK_NEAR(GoalFrame{1.f}.distanceToPlane(still.car.pos), 2000.f, 1.f);
+}
+
 TEST(shooting_flick_niveau_1_and_2_accept_any_flick_on_target) {
     // A backflip on target when a front flick is asked: a success at niveaux 1 and 2, the requested type counts from 3.
     for (int niveau : {1, 3}) {
@@ -175,7 +299,7 @@ TEST(shooting_flick_niveau_1_and_2_accept_any_flick_on_target) {
     }
 }
 
-// ==== Balle sur le toit en mouvement =============================================================================
+// ==== Balle sur le toit, départ en dribble =========================================================================
 namespace {
 
 // Harness on Targets / roof at `level`, seeded until the attempt starts moving. The stationary flick is at niveau 3.
@@ -241,8 +365,9 @@ TEST(shooting_moving_roof_start_is_announced_and_assisted) {
     Harness h;
     World w;
     CHECK(startMovingRoof(h, w, 0.5f));
-    // The countdown announces the moving start.
-    CHECK(anyContains(panelMain(h, w), "mouvement"));
+    // The countdown announces the dribble start and the ball cam hint.
+    CHECK(anyContains(panelMain(h, w), "dribble"));
+    CHECK(anyContains(panelMain(h, w), "ball cam"));
     CHECK(h.mod.status().movingStart);
     pressToLive(h, w);
     CHECK(h.mod.phase() == ShootPhase::Live);
@@ -265,17 +390,17 @@ TEST(shooting_moving_roof_start_is_announced_and_assisted) {
     CHECK(g.mod.status().message.find("rejoué") != std::string::npos);
     CHECK(g.mod.targetStaircase(TargetSetup::Roof).attempts() == attempts);
     CHECK(g.results.empty());
-    // No moving start before the stationary flick reached niveau 3, nor at the first levels; 300 uu/s at first.
+    // The roof setup is always the dribble start, like a match: 900 uu/s at niveau 1 up to 1300 at niveau 10, the ball
+    // riding with the car.
     Rng rng(3);
-    TargetOptions locked;
-    locked.roofMovingAllowed = false;
-    for (int k = 0; k < 200; ++k)
-        CHECK(length(targetSpawn(TargetSetup::Roof, 0.9f, GoalFrame{1.f}, RoofParams{}, rng, locked).carReleaseVel) < 1.f);
-    for (int k = 0; k < 200; ++k)
-        CHECK(length(targetSpawn(TargetSetup::Roof, 0.25f, GoalFrame{1.f}, RoofParams{}, rng).carReleaseVel) < 1.f);
-    CHECK_NEAR(movingRoofSpeed(0.35f, kRoofMovingFirstLevel), 300.f, 1e-3f);
-    CHECK(movingRoofSpeed(1.f, kRoofMovingFirstLevel) > 1099.f);
-    CHECK(movingRoofSpeed(0.6f, kRoofMovingFirstLevel) >= 400.f);
+    for (int k = 0; k < 200; ++k) {
+        const Spawn lo = targetSpawn(TargetSetup::Roof, 0.f, GoalFrame{1.f}, RoofParams{}, rng);
+        CHECK_NEAR(length(lo.carReleaseVel), 900.f, 1e-2f);
+        CHECK(lo.ballOnRoof && distance(lo.carReleaseVel, lo.ballReleaseVel) < 1e-3f);
+        CHECK_NEAR(length(targetSpawn(TargetSetup::Roof, 1.f, GoalFrame{1.f}, RoofParams{}, rng).carReleaseVel), 1300.f,
+                   1e-2f);
+    }
+    CHECK_NEAR(dribbleSpeed(0.5f), 1100.f, 1e-3f);
 }
 
 TEST(shooting_flick_mode_moving_loss_in_first_second_is_replayed) {
@@ -300,6 +425,38 @@ TEST(shooting_flick_mode_moving_loss_in_first_second_is_replayed) {
     tickWorld(h, w, 150);
     CHECK(h.mod.flickStaircase().attempts() == before + 1);
     CHECK(h.results.size() == 1);
+}
+
+TEST(shooting_flick_early_losses_replayed_twice_then_counted) {
+    // A start the player keeps losing is not replayed forever (dribble start by default now): two replays in a row at
+    // most, like Mécas balle, then the loss is graded ("Balle perdue", level lowered, tip shown).
+    Harness h;
+    loadLevel(h, "shooting.stair.flick", levelOf(4));
+    h.set("rlt_sh_flick_start", "1");
+    World w;
+    h.tick(w.snap());
+    h.command("flick", {"front"});
+    const int before = h.mod.flickStaircase().attempts();
+    const float level = h.mod.flickStaircase().level();
+    for (int k = 0; k < 2; ++k) {
+        pressToLive(h, w);
+        CHECK(h.mod.movingStart());
+        coastWithDrift(h, w, 240, 80);  // falls off at 0.67 s
+        CHECK_MSG(h.mod.status().message.find("rejoué") != std::string::npos, h.mod.status().message);
+        CHECK(h.mod.flickStaircase().attempts() == before && h.results.empty());
+    }
+    pressToLive(h, w);
+    coastWithDrift(h, w, 240, 80);
+    CHECK(h.mod.flickStaircase().attempts() == before + 1);
+    CHECK(h.mod.flickStaircase().level() < level);
+    CHECK_EQ(h.results.size(), size_t(1));
+    if (!h.results.empty()) CHECK(!h.results[0].success && !h.results[0].tips.empty());
+    CHECK(h.mod.status().lastFlick == "Balle perdue");
+    // The graded attempt ends the run: the next early loss is replayed again.
+    pressToLive(h, w);
+    coastWithDrift(h, w, 240, 80);
+    CHECK(h.mod.status().message.find("rejoué") != std::string::npos);
+    CHECK(h.mod.flickStaircase().attempts() == before + 1 && h.results.size() == 1);
 }
 
 // ==== Cibles, balle roulante =====================================================================================
@@ -374,7 +531,8 @@ TEST(shooting_bouncing_niveau1_meets_the_second_bounce) {
             }
         }
     }
-    // Module: the two next bounces are drawn from the countdown on; "tire quand elle remonte" after a bounce.
+    // Module: the two next bounces are drawn from the countdown on with "Cercles au sol" (a prediction: off by default);
+    // "tire quand elle remonte" after a bounce.
     Harness h;
     World w;
     h.tick(w.snap());
@@ -384,11 +542,15 @@ TEST(shooting_bouncing_niveau1_meets_the_second_bounce) {
     v.valid = true;
     v.screenW = 1920.f;
     v.screenH = 1080.f;
-    const DrawList d = h.draw(v);
-    int floorLines = 0;
-    for (const auto& l : d.lines3D)
-        if (std::fabs(l.a.z - 6.f) < 1e-3f) ++floorLines;
-    CHECK(floorLines >= 2 * 28);
+    auto floorLinesOf = [&]() {
+        int n = 0;
+        for (const auto& l : h.draw(v).lines3D)
+            if (std::fabs(l.a.z - 6.f) < 1e-3f) ++n;
+        return n;
+    };
+    CHECK_EQ(floorLinesOf(), 0);
+    h.set("rlt_sh_floor_marks", "1");
+    CHECK(floorLinesOf() >= 2 * 28);
     pressToLive(h, w);
     bool cue = false;
     for (int i = 0; i < 300 && !cue; ++i) {
@@ -467,10 +629,15 @@ TEST(shooting_power_drill_moves_its_staircase_and_draws_the_run_up) {
     v.valid = true;
     v.screenW = 1920.f;
     v.screenH = 1080.f;
-    int circle = 0;
-    for (const auto& l : h.draw(v).lines3D)
-        if (std::fabs(l.a.z - 6.f) < 1e-3f) ++circle;
-    CHECK(circle >= 28);  // the run-up circle
+    auto circleLines = [&]() {
+        int n = 0;
+        for (const auto& l : h.draw(v).lines3D)
+            if (std::fabs(l.a.z - 6.f) < 1e-3f) ++n;
+        return n;
+    };
+    CHECK_EQ(circleLines(), 0);  // a prediction: off by default
+    h.set("rlt_sh_floor_marks", "1");
+    CHECK(circleLines() >= 28);  // the run-up circle
     pressToLive(h, w);
     w.car.dodging = true;
     tickWorld(h, w, 6);
@@ -615,37 +782,49 @@ Vec3 shotTo(const Vec3& from, const Vec3& target, float t) {
 
 } // namespace
 
-TEST(shooting_full_flick_pickup_carry_flick) {
-    for (bool rolling : {false, true}) {
+TEST(shooting_full_flick_pickup_at_speed_carry_flick) {
+    for (int niveau : {1, 10}) {
         Harness h;
-        if (rolling) loadLevel(h, "shooting.stair.pickup", levelOf(4));
+        if (niveau > 1) loadLevel(h, "shooting.stair.pickup", levelOf(niveau));
         ShootWorld w(h);
         h.tick(w.snap());
         h.command("flick", {"full"});
         CHECK(h.mod.fullMode());
         w.toLive();
         CHECK(h.mod.phase() == ShootPhase::Live);
-        CHECK(h.mod.fullSetup().pickup && h.mod.fullSetup().rolling == rolling);
-        // Pickup (scripted climb: the ball is put on the roof when the car reaches it slowly), then on the roof 0.5 s
-        // and settled 0.3 s, then carry at 450 uu/s for more than a second.
-        for (int i = 0; i < 1500 && !w.rides; ++i) {
+        CHECK(h.mod.fullSetup().pickup && h.mod.fullSetup().chase && !h.mod.fullSetup().rolling);
+        // Like a match: at GO the car already drives toward the goal from 55 m, the ball rolls ahead of it, slower.
+        const float ballSpeed = length2D(w.ball.vel);
+        CHECK(w.speed >= 699.f && w.speed <= 921.f);
+        CHECK(ballSpeed >= 440.f && ballSpeed < w.speed - 200.f);
+        CHECK(dot(w.ball.vel, w.car.basis.fwd) > 0.f);
+        CHECK(h.mod.goal().distanceToPlane(w.car.pos) > 5000.f);
+        // Pickup at speed (scripted climb: the ball is put on the roof when the nose reaches it): keep 250 uu/s more
+        // than the ball until the nose is under it, then on the roof 0.5 s and settled 0.3 s while driving on.
+        int ticks = 0;
+        for (; ticks < 1500 && !w.rides; ++ticks) {
             const float d = length2D(w.ball.pos - hitboxCenter(w.car));
-            w.tick(&w.ball.pos, d > 400.f ? 600.f : 250.f, false);
+            w.tick(&w.ball.pos, length2D(w.ball.vel) + 250.f, false);
             if (d < 170.f) w.rides = true;
         }
         CHECK(w.rides);
+        CHECK_MSG(ticks < static_cast<int>(2.5f * kTickRate), std::to_string(ticks));  // a short pickup
         const Vec3 goal{0.f, 5120.f, 0.f};
-        for (int i = 0; i < 110; ++i) w.tick(&goal, 0.f, false);  // R1 0.5 s then settle 0.3 s, car stopped
+        const float keep = std::max(700.f, w.speed - 100.f);
+        for (int i = 0; i < 110; ++i) w.tick(&goal, keep, false);  // R1 0.5 s then settle 0.3 s
         CHECK(h.mod.fullSteps().done(pickup::kStepRoof) && h.mod.fullSteps().done(pickup::kStepSettle));
-        for (int i = 0; i < 170; ++i) w.tick(&goal, 450.f, false);  // carry
+        for (int i = 0; i < 130; ++i) w.tick(&goal, keep, false);  // carry
         CHECK(h.mod.fullSteps().done("carry"));
+        // Room left to choose the moment of the flick before the 12 m line.
+        CHECK_MSG(h.mod.goal().distanceToPlane(w.car.pos) > kFlickLateDist + 800.f,
+                  std::to_string(h.mod.goal().distanceToPlane(w.car.pos)));
         // The flick (scripted like the drill tests).
         FlickScript s;
         s.start = w.car.pos;
         s.yawDeg = w.yawDeg;
         s.startFrame = w.frame;
         s.carSpeed = w.speed;
-        s.launch = {2200.f, 0.f, 350.f};
+        s.launch = {1600.f, 0.f, 350.f};
         const ScriptRun run = buildFlick(s);
         for (size_t i = 0; i < run.snaps.size(); ++i) {
             for (const auto& t : run.touches)
@@ -657,8 +836,45 @@ TEST(shooting_full_flick_pickup_carry_flick) {
         CHECK(h.mod.fullSteps().isComplete());
         CHECK(h.mod.fullStaircase(ShootDrill::Flick).attempts() == 1);
         CHECK(h.mod.fullStaircase(ShootDrill::Flick).successes() == 1);
-        CHECK(h.mod.pickupStaircase().attempts() == (rolling ? 2 : 1));
-        CHECK(h.mod.flickStaircase().attempts() == 0);  // the stationary drill's level is not touched
+        CHECK(h.mod.pickupStaircase().attempts() == (niveau > 1 ? 2 : 1));
+        CHECK(h.mod.flickStaircase().attempts() == 0);  // the short drill's level is not touched
+    }
+}
+
+// The pickup at speed with the core physics: the ball rolls ahead (pr::stepBall, drag and rolling), the car follows at a
+// steady speed a little faster: the nose meets it soon, at a gentle relative speed, far from the goal and the walls.
+TEST(shooting_pickup_at_speed_is_reachable_with_the_core_physics) {
+    for (int niveau = 1; niveau <= 10; ++niveau) {
+        for (uint64_t seed = 1; seed <= 20; ++seed) {
+            Rng rng(seed);
+            const GoalFrame goal{seed % 2 ? 1.f : -1.f};
+            const FullSetup su = makeFullSetup(ShootDrill::Flick, 0.f, niveau, goal, RoofParams{}, rng);
+            CHECK(su.chase && su.pickup);
+            const Vec3 fwd = normalize(flat(su.car.vel));
+            const float carSpeed = length(su.car.vel);
+            CHECK(throttleCanHold(carSpeed));
+            pr::SimBall b;
+            b.pos = su.ball.pos;
+            b.vel = su.ball.vel;
+            b.angVel = su.ball.angVel;
+            Vec3 car = su.car.pos;
+            float t = 0.f, rel = 0.f;
+            bool met = false;
+            for (; t < 4.f && !met; t += kTickDt) {
+                pr::stepBall(b);
+                car += fwd * (carSpeed * kTickDt);
+                const float gap = dot(b.pos - car, fwd);
+                if (gap <= 13.88f + 59.f + 91.25f) {
+                    met = true;
+                    rel = carSpeed - dot(b.vel, fwd);
+                }
+                CHECK(b.pos.z < 95.f);  // it keeps rolling on the floor
+            }
+            CHECK_MSG(met && t <= 2.f, std::to_string(niveau) + ": " + std::to_string(t));
+            CHECK_MSG(rel >= 200.f && rel <= 450.f, std::to_string(rel));  // the gentle catch of the pickup helper
+            CHECK(goal.distanceToPlane(car) > 3500.f);
+            CHECK(std::fabs(b.pos.x) < kArenaHalfX - 600.f);
+        }
     }
 }
 

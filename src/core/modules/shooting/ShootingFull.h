@@ -1,8 +1,8 @@
 #pragma once
 // "Parcours complet" of the shooting drills (cross-cutting fix 2): the whole match situation, every step checked in
 // order by the shared StepTracker.
-//   Flick:    shared "Ramassage" start (pickup R1, R2), "Porte-la" (carry while driving), "Flick", "Cadre".
-//   Roof:     shared "Ramassage" start, "Dribble vers le but", "Flick", "Dans la zone".
+//   Flick:    shared "Ramassage" start at speed (pickup R1, R2), "Porte-la" (carry while driving), "Flick", "Cadre".
+//   Roof:     shared "Ramassage" start at speed, "Dribble vers le but", "Flick", "Dans la zone".
 //   Rolling:  ball at midfield, "Va à la balle sans la frapper", "Pousse-la vers le but", "Tire", "Dans la zone".
 //   Bouncing: high drop in front of the goal, "Lis les rebonds", "Arrive au rebond", "Tire en montée", "Dans la zone".
 //   Pass:     cross from the corner, "Démarre au bon moment", "Coupe la trajectoire", "Tire du premier coup", zone.
@@ -35,7 +35,7 @@ inline constexpr const char* kStepPower = "power";    // power: speed over the b
 
 constexpr float kCarryMinSpeed = 300.f;    // "Porte-la": uu/s
 constexpr float kDribbleMinSpeed = 500.f;  // "Dribble vers le but"
-constexpr float kDribbleMaxSpeed = 1200.f;
+constexpr float kDribbleMaxSpeed = 1400.f;  // the throttle alone holds up to about 1410 uu/s
 constexpr float kShotSpeed = 1200.f;       // a touch that is a shot
 constexpr float kFirstTouchMaxRel = 600.f; // rolling: "sans la frapper"
 constexpr float kRunUpSpeed = 1600.f;      // power: at 800 uu from the ball
@@ -47,6 +47,7 @@ struct FullSetup {
     BallPlacement ball;          // at GO (velocity included); held still at this position before GO
     bool pickup = false;         // shared Ramassage start (flick, roof)
     bool rolling = false;        // the pickup ball rolls toward the car
+    bool chase = false;          // pickup at speed: the car drives at GO after the ball rolling ahead (car.vel)
     Vec3 target;                 // pass: meeting point; bouncing: second bounce point; power: meeting point
     float targetTime = -1.f;     // s after GO the ball is there
     Vec3 aim;                    // pass: where the cross is aimed (penalty spot)
@@ -54,7 +55,8 @@ struct FullSetup {
     float timeLimit = 16.f;      // s after GO for the whole parcours
 };
 
-// `pickupNiveau`: niveau of the shared pickup staircase (resting ball at 1 to 3, rolling from 4).
+// `pickupNiveau`: niveau of the shared pickup staircase. Flick and roof: the pickup at speed (pickup::makeChaseSetup)
+// from 5500 uu of the goal line, like a match; the flick must still come before kFlickLateDist.
 FullSetup makeFullSetup(ShootDrill kind, float level, int pickupNiveau, const GoalFrame& goal, const RoofParams& roof,
                         Rng& rng);
 
@@ -86,8 +88,8 @@ void fullTick(FullState& st, const Snapshot& s);
 
 // The shooting roof test used by the pickup steps (the module's own ballOnRoof, tolerances 15 / 40 / 15).
 bool shootBallOnRoof(const Snapshot& s);
-// Options of the shared pickup steps for the shooting drills (codes and labels for the rolling ball).
-pickup::Options pickupOptions(bool rolling);
+// Options of the shared pickup steps for the shooting drills (codes, and labels of the rolling ball or the chase).
+pickup::Options pickupOptions(bool rolling, bool chase = false);
 
 // Steps of the full sequence (checks keep a pointer to `st`), pickup steps first for the flick and the roof.
 std::vector<Step> fullSteps(FullState& st);

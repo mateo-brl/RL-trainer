@@ -432,7 +432,7 @@ std::vector<Step> walldash(float level, const DrillSetup& d, const LivePtr& live
     v.push_back(makeStep("wall.climb", "Monte sur le mur", "WALL_NO_CLIMB", [live, onWall](const StepInput&) {
         return (onWall() && live->s.car.pos.z >= 250.f) ? done() : pending();
     }, 3.f));
-    Step ride = makeStep("wall.ride", "Longe la bande bleue", "WALL_NOT_RIDING", [live, onWall](const StepInput&) {
+    Step ride = makeStep("wall.ride", "Longe le mur sans monter ni descendre", "WALL_NOT_RIDING", [live, onWall](const StepInput&) {
         const FullLive& l = *live;
         const Vec3 vb = l.blue(l.s.car.vel);
         return (onWall() && vb.y >= 500.f && std::fabs(vb.z) <= 300.f) ? done() : pending();

@@ -183,19 +183,25 @@ double pathLength(const DVec3& start, const std::vector<Ring>& rings) {
     return len;
 }
 
-bool genGroundWall(Rng& rng, double d, uint64_t seed, Course& c, GenStats& st) {
+bool genGroundWall(Rng& rng, double d, uint64_t seed, Course& c, GenStats& st, uint32_t version) {
     // Path on the "unrolled" surface: u in [-(4096+H), 4096+H]; |u| <= 4096 is the floor x = u, |u| > 4096 is
     // the side wall x = sign(u)*4096 at height |u| - 4096. Rings are arches standing on the surface.
     const int autoCount = static_cast<int>(std::lround(dlerp(8, 16, d)));
     const int count = countFor(seed, CourseType::GroundWall, autoCount, d);
     const double sepExtra = count > autoCount ? 100.0 : 300.0;  // long custom courses: tighter packing
-    const double radius = std::round(rngRange(rng, dlerp(400, 250, d), dlerp(440, 280, d)));
+    // Version 2: floor arches only (radius 450) up to difficulty 30, then the version 1 arches with wall arches from
+    // niveau 4 (e: 0..1 over the rest of the range, for the wall height).
+    const bool v2 = version >= 2;
+    const bool floorOnly = v2 && d <= kGroundFloorOnlyPct / 100.0 + 1e-9;
+    const double e = v2 ? dclamp01((d - kGroundFloorOnlyPct / 100.0) / (1.0 - kGroundFloorOnlyPct / 100.0)) : d;
+    const double radius = floorOnly ? 450.0 : std::round(rngRange(rng, dlerp(400, 250, d), dlerp(440, 280, d)));
     const double sMin = dlerp(1100, 800, d), sMax = dlerp(1500, 1300, d);
     const double vRef = dlerp(1200, 1500, d);
     const double turnStep = degToRad(dlerp(30, 75, d));
     const double noise = dlerp(0.35, 0.8, d);
-    const double wallH = dlerp(800, 1400, d);    // max ring height on walls (centre)
-    const double pWall = dlerp(0.15, 0.45, d);   // share of waypoints placed on a side wall
+    const double wallH = dlerp(800, 1400, e);    // max ring height on walls (centre)
+    // Share of waypoints placed on a side wall.
+    const double pWall = floorOnly ? 0.0 : (v2 ? 0.45 : dlerp(0.15, 0.45, d));
     const double band = 350;                     // keep rings off the floor/wall curve
     const double hc = 0.55 * radius;             // arch: centre above the surface
     const double rMinTurn = 1.25 / maxGroundCurvature(vRef);
@@ -256,6 +262,7 @@ bool genGroundWall(Rng& rng, double d, uint64_t seed, Course& c, GenStats& st) {
             const double cu = u + std::cos(phi + dphi / 2) * s, cy = y + std::sin(phi + dphi / 2) * s;
             const double au = std::fabs(cu);
             if (au > phys::kArenaX - band && au < phys::kArenaX + band) continue;  // floor/wall curve band
+            if (floorOnly && au > phys::kArenaX) continue;                         // v2 niveaux 1 to 3: floor only
             if (au > phys::kArenaX + wallH) continue;                              // too high on the wall
             if (au > phys::kArenaX && std::fabs(cy) > 3968.0 - 500.0) continue;    // flat part of the wall only
             DVec3 center, dir;
@@ -279,6 +286,138 @@ bool genGroundWall(Rng& rng, double d, uint64_t seed, Course& c, GenStats& st) {
     c.estLength = len;
     c.parTime = len / vRef;
     c.estBoost = 0;
+    return true;
+}
+
+// Slalom, generator v2: start at rest with the ball on the roof, first gate 1500 uu ahead, and a real weave: a clean
+// pass asks the ball to move `weave` = 150..300 uu sideways from the lane. The ball path is ~ a sinusoid of amplitude
+// `weave` and half-wavelength s: v^2 weave (pi/s)^2 <= aLat, so the spacing grows and the reference speed (target
+// time) is capped by what that weave allows.
+bool genDribbleGatesV2(Rng& rng, double d, uint64_t seed, Course& c) {
+    const double aLat = dlerp(300, 700, d);  // comfort limit for a roof dribble (to calibrate in game)
+    const double s = std::round(rngRange(rng, dlerp(1550, 1300, d), dlerp(1650, 1400, d)));
+    const double w = std::round(dlerp(500, 250, d));  // gate half-width
+    const double hh = 230;                             // gate half-height (ball centre <= 460)
+    const double weave = dlerp(kSlalomWeaveMin, kSlalomWeaveMax, d);
+    const double amp = std::ceil(w - phys::kBallRadius + weave);
+    const double vMax = std::sqrt(aLat / (weave * (phys::kPi / s) * (phys::kPi / s)));
+    const double vRef = std::min(dlerp(900, 650, d), std::floor(vMax));
+    const double firstGate = kSlalomFirstGate;
+    const int fit = 1 + static_cast<int>((8900.0 - firstGate) / s);
+    const int count = std::min(countFor(seed, CourseType::DribbleGates, static_cast<int>(std::lround(dlerp(5, 9, d))), d), fit);
+    const double dirY = (rng.next() & 1u) ? 1.0 : -1.0;
+    const double laneX = std::round(rngRange(rng, -2200, 2200));
+    const double y0 = -dirY * 4200.0;
+    const double firstSign = (rng.next() & 1u) ? 1.0 : -1.0;
+    c.start = {};
+    c.start.carPos = {laneX, y0, phys::kCarRestZ};
+    c.start.carYaw = dirY > 0 ? phys::kPi / 2 : -phys::kPi / 2;
+    c.start.carVel = {};
+    c.start.hasBall = true;
+    c.start.ballOnRoof = true;
+    std::vector<DVec3> pts;
+    pts.reserve(static_cast<size_t>(std::max(count, 0)));
+    for (int i = 0; i < count; ++i)
+        pts.push_back(quantize({laneX + firstSign * ((i % 2) ? -amp : amp), y0 + dirY * (firstGate + i * s), hh}));
+    c.rings.clear();
+    for (int i = 0; i < count; ++i) {
+        const DVec3 prev = (i == 0) ? DVec3{laneX, y0, hh} : pts[static_cast<size_t>(i - 1)];
+        const DVec3 next = (i + 1 < count) ? pts[static_cast<size_t>(i + 1)] : pts[static_cast<size_t>(i)] + DVec3{0, dirY * s, 0};
+        c.rings.push_back(makeGate(pts[static_cast<size_t>(i)], next - prev, w, hh));
+    }
+    bool ok = count > 0;
+    for (const auto& r : c.rings) ok = ok && ringInsideArena(r, 120);
+    c.objRadius = phys::kBallRadius;
+    c.ballCourse = true;
+    c.estLength = firstGate + (count - 1) * s;
+    c.parTime = c.estLength / vRef;
+    c.estBoost = 0;
+    return ok;
+}
+
+// Aerial rings, generator v2 "Initiation" (niveaux 1 to 3): a few big rings low over the floor, gentle turns, the
+// car released at rest with ring 1 at least 2500 uu ahead. Stage 1: passable on the floor; stage 2: a single jump;
+// stage 3: the first real aerial.
+struct InitBand {
+    int count;
+    double radius, zMin, zMax, sMin, sMax, turnDeg, vRef, duty;
+};
+
+InitBand initBand(int stage) {
+    switch (stage) {
+    case 1: return {4, 600, 280, 380, 1500, 1800, 15, 1100, 0.15};
+    case 2: return {5, 450, 400, 600, 1400, 1700, 20, 1000, 0.3};
+    default: return {6, 400, 500, 900, 1300, 1600, 25, 1000, 0.45};
+    }
+}
+
+bool genAerialInit(Rng& rng, int stage, uint64_t seed, Course& c, GenStats& st) {
+    const InitBand b = initBand(stage);
+    const int minCount = minRingCount(CourseType::Aerial);
+    const int forced = seedRingCount(seed);
+    const int count = forced > 0 ? std::clamp(forced, minCount, std::max(minCount, b.count)) : b.count;
+    const double turn = degToRad(b.turnDeg);
+    c.start = {};
+    const double sx = rngRange(rng, -2000, 2000);
+    const double sy = rngRange(rng, -4300, -3700);
+    c.start.carPos = quantize({sx, sy, phys::kCarRestZ});
+    // Roughly towards +Y, a little towards the middle of the field.
+    c.start.carYaw = phys::kPi / 2 + rngRange(rng, -degToRad(10), degToRad(10)) - degToRad(8) * (sx / 2000.0);
+    c.start.carVel = {};  // released at rest
+    double phi = c.start.carYaw;
+    double px = c.start.carPos.x, py = c.start.carPos.y;
+    DVec3 aim{rngRange(rng, -1500, 1500), rngRange(rng, 0, 2500), 0};
+    c.rings.clear();
+    double len = 0;
+    DVec3 prev = c.start.carPos;
+    for (int i = 0; i < count; ++i) {
+        bool placed = false;
+        for (int attempt = 0; attempt < 48 && !placed; ++attempt) {
+            ++st.attempts;
+            double s = rngRange(rng, b.sMin, b.sMax);
+            double dphi = 0;
+            if (i == 0) {
+                s = rngRange(rng, kAerialFirstRingMin, kAerialFirstRingMin + 300);
+            } else {
+                if (attempt == 16 || std::hypot(aim.x - px, aim.y - py) < 1500.0)
+                    aim = {rngRange(rng, -2000, 2000), rngRange(rng, -2500, 2500), 0};
+                dphi = 0.6 * wrapAngle(std::atan2(aim.y - py, aim.x - px) - phi) + 0.4 * turn * rngRange(rng, -1.0, 1.0);
+                if (attempt >= 32) {  // fallback: steer towards the field centre
+                    ++st.fallbacks;
+                    dphi = wrapAngle(std::atan2(-py, -px) - phi);
+                }
+                dphi = std::clamp(dphi, -turn, turn);
+            }
+            const double nphi = phi + dphi;
+            const double hx = px + std::cos(phi + dphi / 2) * s, hy = py + std::sin(phi + dphi / 2) * s;
+            const DVec3 center = quantize({hx, hy, rngRange(rng, b.zMin, b.zMax)});
+            // A ring whose bottom would be under the floor is drawn as an arch standing on it.
+            const Surface surf = center.z - b.radius < 150.0 ? Surface::Floor : Surface::Air;
+            Ring r = makeDisk(center, dirFromYawPitch(nphi, 0), b.radius, surf);
+            if (surf == Surface::Floor) r.up = {0, 0, 1};
+            if (!ringInsideArena(r, 150)) {
+                ++st.rejBounds;
+                continue;
+            }
+            if (!farFromOthers(c.rings, r.center, 2 * b.radius + 400, 1)) {
+                ++st.rejSep;
+                continue;
+            }
+            len += length(r.center - prev);
+            prev = r.center;
+            c.rings.push_back(r);
+            px = hx;
+            py = hy;
+            phi = nphi;
+            placed = true;
+        }
+        if (!placed) return false;
+    }
+    c.objRadius = phys::kCarPassRadius;
+    c.ballCourse = false;
+    c.estLength = len;
+    c.parTime = len / b.vRef;
+    c.estBoost = c.parTime * phys::kBoostPerSecond * b.duty;
     return true;
 }
 
@@ -387,18 +526,52 @@ AirParams airParamsFor(CourseType type, double d, uint64_t seed) {
     return p;
 }
 
-Course generateCourse(uint64_t seed, CourseType type, int difficultyPct, GenStats* statsOut) {
+int niveauOf(int difficultyPct) {
+    return 1 + static_cast<int>(std::lround(std::clamp(difficultyPct, 0, 100) * 9 / 100.0));
+}
+
+int beginnerStage(CourseType type, int difficultyPct, uint32_t version) {
+    if (version < 2) return 0;
+    const int n = niveauOf(difficultyPct);
+    if (type == CourseType::Aerial && n <= 3) return n;
+    if (type == CourseType::AirDribble && n <= 2) return n;
+    return 0;
+}
+
+double regularD(CourseType type, int difficultyPct, uint32_t version) {
+    const int pct = std::clamp(difficultyPct, 0, 100);
+    if (version >= 2) {
+        // First pct of niveau 4 (aerial) and niveau 3 (air dribble): the niveaux below are the beginner bands.
+        if (type == CourseType::Aerial) return dclamp01((pct - 28) / 72.0);
+        if (type == CourseType::AirDribble) return dclamp01((pct - 17) / 83.0);
+    }
+    return pct / 100.0;
+}
+
+DVec3 roofBallOffset() {
+    // Octane hitbox: offset (13.88, 0, 20.75), full height 36.16; ball radius 91.25 plus the 2 uu gap of roofSpawn.
+    return {0.0, 13.88, 20.75 + 36.16 * 0.5 + phys::kBallRadius + 2.0};
+}
+
+Course generateCourse(uint64_t seed, CourseType type, int difficultyPct, GenStats* statsOut, uint32_t version) {
     Course c;
     c.seed = seed;
     c.type = type;
+    c.version = std::clamp(version, kOldestGeneratorVersion, kGeneratorVersion);
     c.difficultyPct = std::clamp(difficultyPct, 0, 100);
-    const double d = c.difficultyPct / 100.0;
+    const bool v2 = c.version >= 2;
+    const int stage = beginnerStage(type, c.difficultyPct, c.version);
+    const double d = regularD(type, c.difficultyPct, c.version);
     GenStats st;
     for (int restart = 0; restart < 64; ++restart) {
         Rng rng(splitmix64(seed ^ (static_cast<uint64_t>(restart) << 56)), 0xDA3E39CB94B95BDBULL + static_cast<uint64_t>(type));
         bool ok = false;
         switch (type) {
         case CourseType::Aerial: {
+            if (stage > 0) {
+                ok = genAerialInit(rng, stage, seed, c, st);
+                break;
+            }
             const AirParams p = airParamsFor(type, d, seed);
             // Start on the floor in the blue half, facing roughly +Y, rolling at 800 uu/s.
             c.start = {};
@@ -407,7 +580,8 @@ Course generateCourse(uint64_t seed, CourseType type, int difficultyPct, GenStat
             c.start.carPos = quantize({sx, sy, phys::kCarRestZ});
             c.start.carYaw = phys::kPi / 2 + rngRange(rng, -degToRad(15), degToRad(15));
             c.start.carVel = dirFromYawPitch(c.start.carYaw, 0) * 800.0;
-            const double dist0 = rngRange(rng, 1500, 2000);
+            // Version 2: ring 1 at least 2500 uu ahead, so the take-off is not due right after the start.
+            const double dist0 = v2 ? rngRange(rng, kAerialFirstRingMin, kAerialFirstRingMin + 500) : rngRange(rng, 1500, 2000);
             const double h0 = rngRange(rng, dlerp(650, 450, d), dlerp(850, 800, d));
             const DVec3 firstC = c.start.carPos + dirFromYawPitch(c.start.carYaw, 0) * dist0 + DVec3{0, 0, h0};
             ok = genAir(rng, p, c.start.carPos, firstC, c.rings, c.estBoost, st);
@@ -420,35 +594,59 @@ Course generateCourse(uint64_t seed, CourseType type, int difficultyPct, GenStat
             break;
         }
         case CourseType::AirDribble: {
-            const AirParams p = airParamsFor(type, d, seed);
+            AirParams p = airParamsFor(type, d, seed);
             c.start = {};
             const double sx = rngRange(rng, -1800, 1800);
             c.start.carPos = quantize({sx, -4500, phys::kCarRestZ});
             c.start.carYaw = phys::kPi / 2;
-            c.start.carVel = {0, 600, 0};
             c.start.hasBall = true;
-            // Ball popped ahead of the car (rising, slowly moving away): the player chases it and takes it up.
-            c.start.ballPos = c.start.carPos + DVec3{0, 650, 280};
-            c.start.ballVel = {0, 450, 500};
-            const double fx = rngRange(rng, -200, 200);
-            const double fy = rngRange(rng, 1100, 1500);
-            const double fz = rngRange(rng, dlerp(300, 350, d), dlerp(400, 450, d));
-            const DVec3 firstC = c.start.ballPos + DVec3{fx, fy, fz};
+            // Version 1 always measured ring 1 from the popped ball (whatever the start setting); version 2 from the
+            // real start, chosen by the seed bit.
+            const bool popped = !v2 || (seed & kSeedPoppedStart) != 0;
+            DVec3 firstC;
+            if (popped) {
+                // Ball popped ahead of the car (rising, slowly moving away): the player chases it and takes it up.
+                c.start.carVel = {0, 600, 0};
+                c.start.ballPos = c.start.carPos + DVec3{0, 650, 280};
+                c.start.ballVel = {0, 450, 500};
+                const double fx = rngRange(rng, -200, 200);
+                const double fy = rngRange(rng, 1100, 1500);
+                const double fz = rngRange(rng, dlerp(300, 350, d), dlerp(400, 450, d));
+                firstC = c.start.ballPos + DVec3{fx, fy, fz};
+            } else {
+                // Ball resting on the roof of a car at rest.
+                c.start.carVel = {};
+                c.start.ballOnRoof = true;
+                c.start.ballPos = c.start.carPos + roofBallOffset();
+                c.start.ballVel = {};
+                const double fx = rngRange(rng, -200, 200);
+                const double fy = rngRange(rng, 1300, 1700);
+                const double fz = rngRange(rng, 350, 450);
+                firstC = c.start.ballPos + DVec3{fx, fy, fz};
+            }
+            if (stage > 0) {
+                // Niveau 1: one ring ("pop et pousse"), niveau 2: two. Big rings (the ball must still be popped: a
+                // ball carried on the roof passes under the opening).
+                p.count = stage;
+                p.rMin = p.rMax = stage == 1 ? 450 : 430;
+                if (!popped) firstC = c.start.ballPos + DVec3{0, 1500, 450};
+            }
             ok = genAir(rng, p, c.start.ballPos, firstC, c.rings, c.estBoost, st);
             c.objRadius = phys::kBallRadius;
             c.ballCourse = true;
             if (ok) {
                 c.estLength = pathLength(c.start.ballPos, c.rings);
-                c.parTime = c.estLength / p.vRef;
+                // A roof start at rest (v2) first needs the pop: one more second in the target time.
+                c.parTime = c.estLength / p.vRef + (popped ? 0.0 : 1.0);
             }
             break;
         }
         case CourseType::GroundWall:
-            ok = genGroundWall(rng, d, seed, c, st);
+            ok = genGroundWall(rng, d, seed, c, st, c.version);
             c.ballCourse = false;
             break;
         case CourseType::DribbleGates:
-            ok = genDribbleGates(rng, d, seed, c);
+            ok = v2 ? genDribbleGatesV2(rng, d, seed, c) : genDribbleGates(rng, d, seed, c);
             break;
         }
         if (ok && !c.rings.empty()) {
@@ -462,7 +660,7 @@ Course generateCourse(uint64_t seed, CourseType type, int difficultyPct, GenStat
     }
     if (seedRingCount(seed) > 0) {
         // The requested ring count did not fit: same course seed with the automatic count (still deterministic).
-        Course f = generateCourse(seed & 0x00FFFFFFFFFFFFFFULL, type, difficultyPct, statsOut);
+        Course f = generateCourse(seed & 0x00FFFFFFFFFFFFFFULL, type, difficultyPct, statsOut, c.version);
         f.seed = seed;
         return f;
     }

@@ -60,6 +60,27 @@ private:
     bool everOnRoof_ = false;
 };
 
+// ---- Catch ----------------------------------------------------------------------------------------------------
+// A ball that lands on a still roof hops back up at about kCatchBounce of its impact speed, with a small forward kick
+// (RocketSim car-ball "extra impulse"; UNVERIFIED in game, like the suspension damping). It only rests once a hop
+// stays under the roof tolerance (40 uu: launch speed under kCatchSettleSpeed).
+constexpr float kCatchBounce = 0.65f;
+constexpr float kCatchSettleSpeed = 228.f;  // sqrt(2 * 650 * 40)
+constexpr float kCatchRoofZ = 148.f;        // ball centre on the roof of a car resting on the floor (Octane)
+// Tiny hops still count as "on the roof" for the catch: ball centre at most kCatchLooseTolUp above its resting
+// height (and above the roof), and a break of at most kCatchHopGrace seconds does not restart the hold.
+constexpr float kCatchLooseTolUp = 70.f;
+constexpr float kCatchHopGrace = 0.15f;
+// Time margin added to every catch limit (after the fall, the hops and the hold).
+constexpr float kCatchMargin = 1.f;
+
+// Vertical speed of the ball when it reaches roof height (no drag) from `ballPos` moving at `ballVel`.
+float catchImpactSpeed(const Vec3& ballPos, const Vec3& ballVel);
+// Seconds of hops on a still roof after an impact at `impactSpeed`: sum of 2 v / g over the hops v = impact * e^k
+// (k >= 1) while v >= settleSpeed.
+float catchSettleTime(float impactSpeed, float e = kCatchBounce, float settleSpeed = kCatchSettleSpeed);
+int catchHopCount(float impactSpeed, float e = kCatchBounce, float settleSpeed = kCatchSettleSpeed);
+
 // Catch drill spawn, deterministic from a seed. The ball either falls from the sky or comes off a side wall.
 struct CatchPlan {
     Vec3 carPos;
@@ -68,11 +89,17 @@ struct CatchPlan {
     Vec3 ballVel;
     Vec3 landing;          // where the ball centre reaches roof height (no drag, no bounce)
     float fallTime = 0.f;  // seconds until it reaches roof height
-    float timeLimit = 0.f; // seconds to get it on the roof
+    float apex = 0.f;      // highest ball centre height of the flight
+    float impactSpeed = 0.f;  // vertical speed at roof height
+    float settleTime = 0.f;   // hops expected on a still roof (catchSettleTime)
+    float timeLimit = 0.f; // seconds to have held it: fall + hops + hold + kCatchMargin
     bool fromWall = false;
 };
-// variant: 0 mix, 1 drop from the sky, 2 off a side wall. d: difficulty 0..1.
-CatchPlan planCatch(uint64_t seed, double d, int variant);
+// variant: 0 mix, 1 drop from the sky, 2 off a side wall. d: difficulty 0..1. catchHold: seconds the ball must stay on
+// the roof (part of the time limit).
+// Niveau 1 (d 0): a ball tossed a little up (apex 350..450, one or two small hops) landing 180..300 uu in front of
+// the car, or off the wall from 450..500 high; the toss gives 1.5 s to get under it with a 0.4 s reaction.
+CatchPlan planCatch(uint64_t seed, double d, int variant, float catchHold = 1.f);
 
 // Ballistic prediction with the game's ball drag (no bounces): first point where the ball centre goes down
 // through z = planeZ. Returns false if it never does within maxT seconds.

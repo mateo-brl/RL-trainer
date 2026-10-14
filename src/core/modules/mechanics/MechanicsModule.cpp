@@ -214,31 +214,52 @@ void MechanicsModule::onTick(const TickContext& ctx, Actions& out) {
     if (s.paused) return;
     if (!s.car.valid) {
         coach_.reset();
+        hasPrevSnap_ = false;
         return;
     }
     if (drill_.active || focusSpeedOwned_) runWorld(ctx, out);
 
-    if (resetTicks_ > 0) {
+    // While the drill holds its start pose the detectors see nothing (the player may press anything, the car is held).
+    const bool holding = drill_.active && (drill_.phase == Phase::Setup || drill_.phase == Phase::Countdown);
+    const bool fullRunning = drill_.active && drill_.full && drill_.phase == Phase::Running && live_;
+    if (holding) {
+        coach_.reset();
+    } else if (resetTicks_ > 0) {
         --resetTicks_;
         coach_.reset();
     } else {
         grades_.clear();
         coach_.step(s, grades_);
         if (drill_.active && drill_.phase == Phase::Running) trackCues(s);
+        if (fullRunning) {
+            live_->newGrades = live_->grades.size();
+            for (const MechGrade& g : grades_) live_->grades.push_back(g);
+        }
         for (MechGrade& g : grades_) handleGrade(g, ctx, out);
     }
     if (drill_.active) afterDetection(ctx, out);
+    prevSnap_ = s;
+    hasPrevSnap_ = true;
 }
 
 void MechanicsModule::onTouch(const TouchEvent& touch, const TickContext& ctx, Actions& out) {
     if (!cfg_.enabled) return;
     coach_.onBallTouch(touch.pre.time);
     if (!drill_.active || drill_.phase != Phase::Running) return;
-    if (drill_.touchTime < 0.f) drill_.touchTime = touch.pre.time;
-    if (held_) {
+    if (drill_.touchTime < 0.f) {
+        drill_.touchTime = touch.pre.time;
+        drill_.touchBallZ = touch.pre.ball.pos.z;
+        if (live_) {
+            live_->touchTime = touch.pre.time;
+            live_->touchBallZ = touch.pre.ball.pos.z;
+        }
+    }
+    if (held_ && heldFor_ == HeldFor::Touch) {
         MechGrade g = std::move(*held_);
         held_.reset();
-        g.add("timeToBall", std::max(0.f, touch.pre.time - drill_.startTime));
+        heldFor_ = HeldFor::None;
+        g.add("timeToBall", std::max(0.f, drill_.touchTime - drill_.startTime));
+        g.add("ballZAtTouch", drill_.touchBallZ);
         emitAttempt(g, ctx, out, true);
     }
 }
@@ -267,6 +288,7 @@ void MechanicsModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, A
         if (drill_.active) {
             if (drill_.phase == Phase::Showing) drill_.attempt++;  // manual reset after a result: next variant
             drill_.phase = Phase::Setup;                           // placed again on the next tick
+            drill_.nextStart = Start::Manual;
         }
         break;
     case GameEventKind::MapUnloaded:
@@ -282,6 +304,7 @@ void MechanicsModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, A
 // ---- Commands ------------------------------------------------------------------------------------------
 void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Actions& out) {
     const std::string arg = cmd.args.empty() ? std::string() : cmd.args[0];
+    const std::string arg2 = cmd.args.size() > 1 ? cmd.args[1] : std::string();
     if (cmd.name == "stop") {
         const bool wasRunning = drill_.active || focus_ != Focus::None;
         stopWorld(ctx, out);
@@ -300,17 +323,40 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
         if (f == Focus::None) {
             stats_.reset();
             levels_ = freshLevels();
+            fullLevels_ = freshLevels();
         } else {
             stats_.reset(f);
             levels_[static_cast<size_t>(mech::index(f))] = freshLevel();
+            fullLevels_[static_cast<size_t>(mech::index(f))] = freshLevel();
         }
         out.requestSave = true;
         toast(out, "Mécas mouvement", f == Focus::None ? "Toutes les stats sont remises à zéro." : "Stats remises à zéro : " + focusTitle(f) + ".",
               ToastKind::Info);
         return;
     }
+    if (cmd.name == "reset_level") {
+        // "Revenir au niveau 1": the exercise (or its "parcours complet") starts again from the first level.
+        const Focus f = mech::focusFromId(arg);
+        if (f == Focus::None) {
+            toast(out, "Mécas mouvement", "Méca inconnue : " + arg + ". Choix : " + mech::focusIdList() + ".", ToastKind::Warning);
+            return;
+        }
+        // "full": the "parcours complet" only; "all": both; nothing: the exercise only.
+        const bool full = arg2 == "full", all = arg2 == "all";
+        if (!full || all) staircase(f, false) = freshLevel();
+        if (full || all) staircase(f, true) = freshLevel();
+        out.requestSave = true;
+        toast(out, "Mécas mouvement",
+              std::string(all ? "Exercice et parcours complet " : (full ? "Parcours complet " : "Exercice ")) + focusTitle(f) +
+                  " : retour au niveau 1.",
+              ToastKind::Info);
+        return;
+    }
     if (cmd.name == "retry") {
-        if (drill_.active) drill_.phase = Phase::Setup;
+        if (drill_.active) {
+            drill_.phase = Phase::Setup;
+            drill_.nextStart = Start::Manual;
+        }
         return;
     }
     if (cmd.name == "restore_speed") {
@@ -319,7 +365,7 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
     }
     if (cmd.name != "focus" && cmd.name != "drill") {
         toast(out, "Mécas mouvement",
-              "Commande inconnue : " + cmd.name + " (focus, drill, stop, retry, reset_stats, restore_speed).",
+              "Commande inconnue : " + cmd.name + " (focus, drill, stop, retry, reset_level, reset_stats, restore_speed).",
               ToastKind::Warning);
         return;
     }
@@ -336,8 +382,14 @@ void MechanicsModule::onCommand(const Command& cmd, const TickContext& ctx, Acti
         toast(out, "Mécas mouvement", "Méca inconnue : " + arg + ". Choix : " + mech::focusIdList() + ".", ToastKind::Warning);
         return;
     }
-    if (cmd.name == "focus") setFocus(f, ctx, out);
-    else startDrill(f, ctx, out);
+    if (cmd.name == "focus") {
+        setFocus(f, ctx, out);
+        return;
+    }
+    // "drill speedflip kickoff": straight to the kickoff step (niveau 4) for a player who already has the flip.
+    if (arg2 == "kickoff" && f == Focus::SpeedFlip && level(f) < mech::levelOf(4))
+        staircase(f, false).setLevel(mech::levelOf(4));
+    startDrill(f, ctx, out, arg2 == "full");
 }
 
 void MechanicsModule::setFocus(Focus f, const TickContext& ctx, Actions& out) {
@@ -363,7 +415,7 @@ void MechanicsModule::setFocus(Focus f, const TickContext& ctx, Actions& out) {
           ToastKind::Info);
 }
 
-void MechanicsModule::startDrill(Focus f, const TickContext& ctx, Actions& out) {
+void MechanicsModule::startDrill(Focus f, const TickContext& ctx, Actions& out, bool full) {
     if (!ctx.worldControlAllowed) {
         toast(out, "Mécas mouvement", "Exercices disponibles en freeplay uniquement (ici : analyse seulement).",
               ToastKind::Warning);
@@ -379,13 +431,17 @@ void MechanicsModule::startDrill(Focus f, const TickContext& ctx, Actions& out) 
     restoreWanted_ = false;
     drill_ = Drill{};
     drill_.active = true;
+    drill_.full = full;
     drill_.focus = f;
     drill_.phase = Phase::Setup;
+    drill_.nextStart = Start::First;
     held_.reset();
+    heldFor_ = HeldFor::None;
     focusFromDrill_ = focus_ != f;  // a focus chosen before the drill survives it
     focus_ = f;
     applyDetectConfig();
-    toast(out, "Exercice : " + focusTitle(f), mech::focusInfo(f).memo, ToastKind::Info);
+    toast(out, (full ? "Parcours complet : " : "Exercice : ") + focusTitle(f),
+          "Appuie sur accélérer quand tu es prêt. " + std::string(mech::focusInfo(f).memo), ToastKind::Info);
 }
 
 void MechanicsModule::emitSpeed(float speed, Actions& out) {
@@ -426,8 +482,13 @@ void MechanicsModule::stopWorld(const TickContext& ctx, Actions& out) {
     focusFromDrill_ = false;
     drill_ = Drill{};
     setup_ = mech::DrillSetup{};
+    ready_.stop();
+    hanging_.stop();
+    tracker_.clear();
+    live_.reset();
     focusSpeedOwned_ = false;
     held_.reset();
+    heldFor_ = HeldFor::None;
     resetTicks_ = 0;
     coach_.kickoff().setManual(false);
     applyDetectConfig();
@@ -442,15 +503,49 @@ void MechanicsModule::onActivityStopped() {
     focusFromDrill_ = false;
     drill_ = Drill{};
     setup_ = mech::DrillSetup{};
+    ready_.stop();
+    hanging_.stop();
+    tracker_.clear();
+    live_.reset();
     focusSpeedOwned_ = false;
     pendingRelease_ = false;
     held_.reset();
+    heldFor_ = HeldFor::None;
     resetTicks_ = 0;
     coach_.kickoff().setManual(false);
     applyDetectConfig();
 }
 
 // ---- Drill state machine -------------------------------------------------------------------------------
+Staircase& MechanicsModule::staircase(Focus f, bool full) {
+    const size_t i = static_cast<size_t>(std::max(0, std::min(mech::kFocusCount - 1, mech::index(f))));
+    return full ? fullLevels_[i] : levels_[i];
+}
+
+float MechanicsModule::fullLevel(Focus f) const {
+    const int i = mech::index(f);
+    return (i >= 0 && i < mech::kFocusCount) ? fullLevels_[static_cast<size_t>(i)].level() : 0.f;
+}
+
+const char* MechanicsModule::defaultMiss(Focus f) {
+    switch (f) {
+    case Focus::SpeedFlip: return "SF_NO_FLIP";
+    case Focus::HalfFlip: return "HF_NO_FLIP";
+    case Focus::FlipCancel: return "FC_NO_FLIP";
+    case Focus::Wavedash: return "WD_NO_FLIP";
+    case Focus::ChainDash: return "DRILL_CHAIN_SHORT";
+    case Focus::ZapDash: return "ZAP_NO_FLIP";
+    case Focus::WallDash: return "WALL_NO_DASH";
+    case Focus::FastAerial: return "FA_NO_JUMP";
+    case Focus::Stall: return "ST_NO_STALL";
+    case Focus::Helicopter: return "AS_NO_SPIN";
+    case Focus::Recovery: return "RC_TILTED";
+    case Focus::Powerslide: return "PS_NO_SLIDE";
+    case Focus::Boost: return "SM_SLOW_TO_SUPERSONIC";
+    default: return "DRILL_NO_TOUCH";
+    }
+}
+
 void MechanicsModule::runWorld(const TickContext& ctx, Actions& out) {
     // Live query: ctx.ownsActivity was taken before this callback, the activity may have been granted during it.
     if (!ownsActivity() || !ctx.worldControlAllowed) {
@@ -469,59 +564,137 @@ void MechanicsModule::runWorld(const TickContext& ctx, Actions& out) {
     if (!drill_.active) return;
     const Snapshot& s = ctx.snap;
     switch (drill_.phase) {
-    case Phase::Setup: beginAttempt(ctx, out); break;
+    case Phase::Setup: beginAttempt(ctx, out, drill_.nextStart); break;
     case Phase::Countdown:
-        out.freezeCar = true;
-        if (s.time >= drill_.phaseEnd) {
-            out.freezeCar = false;
-            out.goMessage = true;
-            drill_.phase = Phase::Running;
-            drill_.startTime = s.time;
-            drill_.message = "GO !";
-            if (setup_.kickoff) coach_.kickoff().go(s);
-        }
+        // GO: launch without holding (freezeCar would swallow the inputs the player already holds).
+        if (ready_.update(s, out)) launch(ctx, out);
+        else applyHold(hold_, &s, out);
         break;
-    case Phase::Running: break;
+    case Phase::Running: runAttempt(ctx, out); break;
     case Phase::Showing:
         if (cfg_.drillAutoReset && s.time >= drill_.showUntil) {
             drill_.attempt++;
-            beginAttempt(ctx, out);
+            beginAttempt(ctx, out, drill_.nextStart);
         }
         break;
     }
 }
 
-void MechanicsModule::beginAttempt(const TickContext& ctx, Actions& out) {
+void MechanicsModule::beginAttempt(const TickContext& ctx, Actions& out, Start start) {
     const Snapshot& s = ctx.snap;
     const int oldStage = setup_.stage;
-    setup_ = mech::makeDrill(drill_.focus, level(drill_.focus), drill_.attempt, s.car.team, rng_);
+    setup_ = mech::makeDrill(drill_.focus, levelFor(drill_.focus, drill_.full), drill_.attempt, s.car.team, rng_, drill_.full);
     // The level crossed a step of the progression (speedflip): say what changes before the attempt starts.
-    drill_.newStage = drill_.attempts > 0 && setup_.stage != oldStage;
+    drill_.newStage = !drill_.full && drill_.attempts > 0 && setup_.stage != oldStage;
     if (drill_.newStage)
         toast(out, setup_.stage > oldStage ? "Étape suivante" : "Retour à l'étape précédente", setup_.goal,
               setup_.stage > oldStage ? ToastKind::Ok : ToastKind::Info);
-    out.setCar = setup_.car;
-    out.setBall = setup_.ball;  // the drill ball, or the ball parked out of the way
+    // Start pose, held on every tick of the get-ready phase (zero velocity, boost re-sent).
+    hold_ = HoldPose{};
+    hold_.car = setup_.car;
+    hold_.ball = setup_.ball;  // the drill ball, or the ball parked out of the way
+    hold_.boost = setup_.car.boost;
+    applyHold(hold_, nullptr, out);
+    if (setup_.kickoffRules) {
+        // Match conditions: limited boost (the freeplay unlimited boost would falsify the times; the engine puts the
+        // player's rules back when the activity ends) and every boost pad respawned.
+        out.boostRules = BoostRules{false, false};
+        out.resetPickups = true;
+    }
     coach_.kickoff().setManual(setup_.kickoff);
     coach_.reset();
-    resetTicks_ = 2;  // the teleport shows up on the next snapshots
+    resetTicks_ = 0;
     held_.reset();
+    heldFor_ = HeldFor::None;
+    hanging_.stop();
     drill_.touchTime = -1.f;
+    drill_.touchBallZ = 0.f;
+    drill_.minGap = 1e9f;
+    drill_.reached = false;
+    drill_.anyInput = false;
     drill_.floorTicks = 0;
+    drill_.runOk = 0;
     drill_.cues = 0;
     drill_.timedOut = false;
+    drill_.missing.clear();
     applyDetectConfig();
-    if (setup_.countdown > 0.f) {
-        drill_.phase = Phase::Countdown;
-        drill_.phaseEnd = s.time + setup_.countdown;
-        drill_.message = "Prêt ?";
-        out.countdownMessage = std::max(1, static_cast<int>(std::ceil(setup_.countdown)));
-        out.freezeCar = true;
-        if (setup_.kickoff) coach_.kickoff().countdown();
-    } else {
-        drill_.phase = Phase::Running;
-        drill_.startTime = s.time;
-        drill_.message.clear();
+    ReadyPhase::Options opt;
+    switch (start) {
+    case Start::First: opt = ReadyPhase::firstAttempt(); break;
+    case Start::Manual: opt = ReadyPhase::manualRetry(); break;
+    case Start::Auto: opt = ReadyPhase::Options{false, std::max(0.5f, setup_.countdown), true, false}; break;
+    }
+    ready_.start(s.time, opt);
+    drill_.nextStart = Start::Auto;
+    drill_.phase = Phase::Countdown;
+    drill_.message = "Prêt ?";
+    if (setup_.kickoff) coach_.kickoff().countdown();
+    tracker_.clear();
+    live_.reset();
+    if (drill_.full) {
+        live_ = std::make_shared<mech::FullLive>();
+        live_->coach = &coach_;
+        live_->mirrored = setup_.mirrored;
+        live_->side = setup_.side;
+        live_->spotKind = setup_.spotKind;
+        tracker_.setSteps(mech::fullSteps(drill_.focus, levelFor(drill_.focus, true), setup_, live_));
+    }
+}
+
+void MechanicsModule::launch(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
+    // Launch velocity (a car held still, like the kickoff, needs nothing: its inputs simply start to count).
+    if (length(setup_.car.vel) > 1e-3f || length(setup_.car.angVel) > 1e-3f) {
+        CarPlacement c = setup_.car;
+        c.boost.reset();
+        // A floor car keeps the height its suspension settled at during the hold.
+        if (c.pos.z <= kSettleMaxZ && s.car.valid && length2D(s.car.pos - c.pos) <= 30.f)
+            c.pos.z = clampf(s.car.pos.z, c.pos.z - kSettleBand, c.pos.z + kSettleBand);
+        out.setCar = c;
+        resetTicks_ = 1;  // the launch shows up on the next snapshot
+    }
+    if (setup_.hangBall) {
+        hanging_.hang(setup_.ball.pos);
+        hanging_.update(s, out);
+    } else if (setup_.placeBall && (length(setup_.ball.vel) > 1e-3f || length(setup_.ball.angVel) > 1e-3f)) {
+        out.setBall = setup_.ball;
+    }
+    drill_.phase = Phase::Running;
+    drill_.startTime = s.time;
+    drill_.goFrame = s.frame;
+    drill_.message = "GO !";
+    coach_.reset();
+    if (setup_.kickoff) coach_.kickoff().go(s);
+    if (drill_.full && live_) {
+        live_->goFrame = s.frame;
+        live_->goTime = s.time;
+        live_->s = s;
+        live_->p = s;
+        tracker_.start(s.time);
+    }
+}
+
+void MechanicsModule::runAttempt(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
+    const Inputs& in = s.in;
+    if (std::fabs(in.throttle) > 0.2f || std::fabs(in.steer) > 0.3f || in.jump || in.boost || in.handbrake ||
+        std::fabs(in.pitch) > 0.3f || std::fabs(in.yaw) > 0.3f || std::fabs(in.roll) > 0.3f)
+        drill_.anyInput = true;
+    // Fast aerial: the ball waits in the air until the car touches it (never re-sent on a tick that shows a touch).
+    if (setup_.hangBall) hanging_.update(s, out, drill_.touchTime >= 0.f);
+    // Hitbox to ball distance: near-miss levels count a pass close enough as the touch.
+    if (setup_.placeBall && s.ball.valid) {
+        const Vec3 half = ctx.profile.hitboxExtent * 0.5f;
+        const float gap = mech::hitboxGap(s.car, s.ball.pos, half, ctx.profile.hitboxOffset);
+        drill_.minGap = std::min(drill_.minGap, gap);
+        if (setup_.reachGap > 0.f && !drill_.reached && gap <= setup_.reachGap) {
+            drill_.reached = true;
+            if (setup_.kickoff) coach_.onBallTouch(s.time);  // the kickoff speedflip gets its "time to ball"
+            if (drill_.touchTime < 0.f) {
+                drill_.touchTime = s.time;
+                drill_.touchBallZ = s.ball.pos.z;
+            }
+        }
     }
 }
 
@@ -530,9 +703,10 @@ void MechanicsModule::trackCues(const Snapshot& s) {
     auto see = [this](Cue c) { drill_.cues |= 1u << static_cast<unsigned>(c); };
     const CarState& car = s.car;
     if (s.in.boost) see(Cue::Boost);
+    if (s.in.throttle >= 0.5f) see(Cue::Throttle);
     if (s.in.handbrake) see(Cue::Slide);
-    if (std::fabs(s.in.steer) >= 0.5f) see(Cue::Steer);
-    if (s.in.pitch >= 0.5f) see(Cue::PitchBack);
+    if (std::fabs(s.in.steer) >= 0.15f) see(Cue::Steer);
+    if (s.in.pitch >= 0.3f) see(Cue::PitchBack);
     if (std::fabs(s.in.roll) >= 0.5f) see(Cue::Roll);
     if (std::fabs(s.in.yaw) >= 0.5f) see(Cue::Yaw);
     if (car.jumped) see(Cue::Jump);
@@ -541,7 +715,7 @@ void MechanicsModule::trackCues(const Snapshot& s) {
     const mech::DodgeRecord* d = coach_.dodges().active();
     if (d && d->cancelTicks >= 0) see(Cue::Cancel);
     if (car.wheelContacts == 0) see(Cue::Air);
-    else if (cueSeen(Cue::Air) && mech::grounded(car)) see(Cue::Land);
+    else if (cueSeen(Cue::Air) && (mech::grounded(car) || car.wheelContacts > 0)) see(Cue::Land);
     if (drill_.touchTime >= 0.f) see(Cue::Touch);
 }
 
@@ -555,7 +729,7 @@ int MechanicsModule::currentStep() const {
     for (size_t i = 0; i < setup_.steps.size(); ++i) {
         const Cue c = setup_.steps[i].done;
         const bool input = c == Cue::Boost || c == Cue::Steer || c == Cue::Slide || c == Cue::PitchBack ||
-                           c == Cue::Roll || c == Cue::Yaw;
+                           c == Cue::Roll || c == Cue::Yaw || c == Cue::Throttle;
         const bool done = c != Cue::None && cueSeen(c) && (input || chain);
         if (done) next = static_cast<int>(i) + 1;
         else if (!input) chain = false;
@@ -566,35 +740,48 @@ int MechanicsModule::currentStep() const {
 void MechanicsModule::afterDetection(const TickContext& ctx, Actions& out) {
     if (!drill_.active || drill_.phase != Phase::Running) return;
     const Snapshot& s = ctx.snap;
-    const float elapsed = s.time - drill_.startTime;
-    if (held_ && s.time - heldTime_ > 2.5f) {
-        releaseHeld(ctx, out);
+    if (drill_.full) {
+        runFull(ctx, out);
         return;
     }
-    if (!setup_.endOnResult) {
-        // Wall dash runs: over once the car is back on the floor, or at the time limit.
+    const float elapsed = s.time - drill_.startTime;
+    if (held_) {
+        if (heldFor_ == HeldFor::Landing && (mech::grounded(s.car) || s.time - heldTime_ > 2.5f)) {
+            // Helicopter top levels: the spin counts once the car is back on its wheels.
+            MechGrade g = std::move(*held_);
+            held_.reset();
+            heldFor_ = HeldFor::None;
+            g.add("landedOnWheels", mech::grounded(s.car) && dot(s.car.basis.up, mech::contactNormal(s.car)) > 0.8f ? 1.f : 0.f);
+            emitAttempt(g, ctx, out, true);
+            return;
+        }
+        if (heldFor_ == HeldFor::Touch && s.time - heldTime_ > setup_.touchWindow) {
+            releaseHeld(ctx, out);
+            return;
+        }
+    }
+    // Chain lane: the attempt ends at the end of the lane (the back wall is close after it).
+    const float yBlue = setup_.mirrored ? -s.car.pos.y : s.car.pos.y;
+    const bool laneEnd = setup_.endY > 0.f && yBlue >= setup_.endY;
+    if (setup_.runDashes > 0) {
+        // Wall dash runs: over once the car is back on the floor.
         const bool onFloor = mech::grounded(s.car) && mech::contactNormal(s.car).z > 0.7f;
         drill_.floorTicks = onFloor ? drill_.floorTicks + 1 : 0;
-        if ((elapsed > 0.5f && drill_.floorTicks > 30) || elapsed > setup_.timeLimit) {
-            drill_.phase = Phase::Showing;
-            drill_.showUntil = s.time + cfg_.drillDelay;
-            if (drill_.message.empty()) drill_.message = "Course terminée : on recommence.";
+        if (elapsed > 0.5f && drill_.floorTicks > 30 && !held_) {
+            grades_.clear();
+            coach_.flushPending(s, grades_, false);
+            for (MechGrade& g : grades_) handleGrade(g, ctx, out);
+            if (drill_.phase == Phase::Running) recordMiss(drill_.runOk > 0 ? "WALL_FELL_OFF" : nullptr, ctx, out);
+            return;
         }
-        return;
     }
-    if (elapsed > setup_.timeLimit && !held_) {
+    // A flip still in the air at the time limit: its grade comes at the landing (at most 2 s later).
+    const bool inFlight = coach_.dodges().active() != nullptr && elapsed < setup_.timeLimit + 2.f;
+    if ((elapsed > setup_.timeLimit && !held_ && !inFlight) || laneEnd) {
         grades_.clear();
         coach_.flushPending(s, grades_, setup_.boostWindow);
         for (MechGrade& g : grades_) handleGrade(g, ctx, out);
-        if (drill_.phase == Phase::Running) {
-            drill_.phase = Phase::Showing;
-            drill_.showUntil = s.time + std::max(1.f, cfg_.drillDelay);
-            drill_.timedOut = true;
-            const int step = currentStep();
-            drill_.message = step < static_cast<int>(setup_.steps.size())
-                                 ? "Temps écoulé. Il manquait : " + setup_.steps[static_cast<size_t>(step)].text + "."
-                                 : "Temps écoulé : on recommence.";
-        }
+        if (drill_.phase == Phase::Running && !held_) recordMiss(nullptr, ctx, out);
     }
 }
 
@@ -602,6 +789,13 @@ void MechanicsModule::releaseHeld(const TickContext& ctx, Actions& out) {
     if (!held_) return;
     MechGrade g = std::move(*held_);
     held_.reset();
+    const HeldFor why = heldFor_;
+    heldFor_ = HeldFor::None;
+    if (why == HeldFor::Landing) {
+        g.add("landedOnWheels", 0.f);
+        emitAttempt(g, ctx, out, drill_.active && drill_.phase == Phase::Running);
+        return;
+    }
     g.err("DRILL_NO_TOUCH", 30.f);
     mech::finalizeGrade(g, std::min(g.score, 40.f));
     g.success = false;
@@ -639,6 +833,75 @@ void MechanicsModule::restoreSpeed(const TickContext& ctx, Actions& out) {
     toast(out, "Mécas mouvement", "Vitesse du jeu remise à 1.", ToastKind::Ok);
 }
 
+// ---- "Parcours complet" ----------------------------------------------------------------------------------
+void MechanicsModule::runFull(const TickContext& ctx, Actions& out) {
+    if (!live_) return;
+    const Snapshot& s = ctx.snap;
+    live_->p = hasPrevSnap_ ? prevSnap_ : s;
+    live_->s = s;
+    if (tracker_.running()) tracker_.update(s, &ctx);
+    const float elapsed = s.time - drill_.startTime;
+    const float yBlue = setup_.mirrored ? -s.car.pos.y : s.car.pos.y;
+    const bool laneEnd = setup_.endY > 0.f && yBlue >= setup_.endY;
+    if (tracker_.running() && (elapsed > setup_.timeLimit || laneEnd)) tracker_.failOnTimeout(s.time);
+    if (tracker_.finished()) finishFull(ctx, out);
+}
+
+void MechanicsModule::finishFull(const TickContext& ctx, Actions& out) {
+    const float t = ctx.hasSnapshot ? ctx.snap.time : nowTime_;
+    const bool ok = tracker_.isComplete();
+    const mech::FocusInfo& fi = mech::focusInfo(drill_.focus);
+    AttemptResult r;
+    r.module = "mechanics";
+    r.skill = std::string("mech.") + mech::mechInfo(fi.primary).key;
+    r.title = std::string(fi.title) + " (parcours complet)";
+    int required = 0, reached = 0;
+    for (int i = 0; i < tracker_.size(); ++i) {
+        if (tracker_.steps()[static_cast<size_t>(i)].optional) continue;
+        ++required;
+        reached += tracker_.state(i) == StepState::Done ? 1 : 0;
+    }
+    r.score = ok ? 100.f : std::round(100.f * static_cast<float>(reached) / static_cast<float>(std::max(1, required)));
+    r.success = ok;
+    r.verdict = ok ? Verdict::Good : Verdict::Fail;
+    r.time = t;
+    Metric m;
+    m.key = "stepsDone";
+    m.label = "Étapes réussies";
+    m.value = static_cast<float>(reached);
+    m.ideal = static_cast<float>(required);
+    m.hasIdeal = true;
+    r.metrics.push_back(m);
+    drill_.missing.clear();
+    if (!ok) {
+        const StepTracker::Failure& f = tracker_.failure();
+        const std::string code = f.code.empty() ? std::string(defaultMiss(drill_.focus)) : f.code;
+        MechGrade why;
+        why.mech = fi.primary;
+        why.add("targetAngleDeg", cfg_.speedflipAngle);
+        r.tips.push_back(Tip{mech::tipCode(code), mech::tipText(code, why, ctx.profile, deadzone_, keyStyle_), 50.f});
+        drill_.missing = f.label;
+        drill_.timedOut = f.timedOut;
+    }
+    if (cfg_.drillAdaptive) staircase(drill_.focus, true).record(ok);
+    closeDrillAttempt(ok, t);
+    drill_.message = ok ? "Parcours réussi !" : "Raté : il manquait " + drill_.missing + ".";
+    last_.valid = true;
+    last_.result = r;
+    last_.variant = setup_.variant;
+    last_.lines.clear();
+    last_.headline = ok ? std::string("Parcours réussi : toutes les étapes sont faites.") : r.tips.front().text;
+    last_.drillAttempt = true;
+    last_.time = t;
+    if (cfg_.chatSummary) {
+        std::string line = "[Mécas] " + r.title + " : " + (ok ? "réussi" : "raté");
+        if (!r.tips.empty()) line += ". " + r.tips.front().text;
+        out.chat.push_back({line, "RL Trainer"});
+    }
+    out.requestSave = true;
+    out.results.push_back(std::move(r));
+}
+
 // ---- Results -------------------------------------------------------------------------------------------
 void MechanicsModule::handleGrade(MechGrade& g, const TickContext& ctx, Actions& out) {
     const Focus fam = mech::familyOf(g.mech);
@@ -646,24 +909,101 @@ void MechanicsModule::handleGrade(MechGrade& g, const TickContext& ctx, Actions&
     if (!asked && !familyEnabled(fam)) return;
     if (!asked && !categoryAllows(g.mech, ctx.game.category)) return;
     if (focus_ != Focus::None && fam != focus_) return;
-    const bool drillAttempt = drill_.active && drill_.phase == Phase::Running && fam == drill_.focus;
+    // "Parcours complet": the family's grades feed the step checks, the sequence makes the single result.
+    if (drill_.active && drill_.full && fam == drill_.focus) return;
+    bool drillAttempt = drill_.active && drill_.phase == Phase::Running && fam == drill_.focus;
     // Kickoff drill: the speedflip has to reach the ball (time to ball measured at the touch).
     if (drillAttempt && setup_.kickoff && g.mech == Mech::SpeedFlip && g.metric("timeToBall", -1.f) < 0.f &&
-        !g.hasError("DRILL_NO_TOUCH")) {
+        !g.hasError("DRILL_NO_TOUCH") && !g.hasError("SF_SIDE_FLIP") && !g.hasError("SF_BACK_FLIP")) {
         g.err("DRILL_NO_TOUCH", 30.f);
         mech::finalizeGrade(g, g.score);
         g.success = false;
     }
+    // Wall dash run: a chain grade is a summary, each wall dash decides; the run needs `runDashes` good ones.
+    if (drillAttempt && g.mech == Mech::WallChain) drillAttempt = false;
+    if (drillAttempt && setup_.runDashes > 1 && g.mech == Mech::WallDash) {
+        const mech::DrillJudgement j = mech::judgeDrill(setup_, g);
+        if (j.pass && ++drill_.runOk < setup_.runDashes) {
+            drill_.message = "Wall dash " + std::to_string(drill_.runOk) + " sur " + std::to_string(setup_.runDashes) + " : continue !";
+            drillAttempt = false;  // shown, not the end of the run
+        }
+    }
     if (drillAttempt && setup_.needTouch && !held_) {
         if (drill_.touchTime >= 0.f) {
             g.add("timeToBall", std::max(0.f, drill_.touchTime - drill_.startTime));
+            g.add("ballZAtTouch", drill_.touchBallZ);
         } else {
             held_ = std::move(g);
+            heldFor_ = HeldFor::Touch;
             heldTime_ = ctx.snap.time;
             return;
         }
     }
+    if (drillAttempt && setup_.needLanding && !held_ && g.mech == Mech::AirSpin) {
+        if (!mech::grounded(ctx.snap.car)) {
+            held_ = std::move(g);
+            heldFor_ = HeldFor::Landing;
+            heldTime_ = ctx.snap.time;
+            return;
+        }
+        g.add("landedOnWheels", dot(ctx.snap.car.basis.up, mech::contactNormal(ctx.snap.car)) > 0.8f ? 1.f : 0.f);
+    }
     emitAttempt(g, ctx, out, drillAttempt);
+}
+
+void MechanicsModule::closeDrillAttempt(bool ok, float t) {
+    drill_.attempts++;
+    drill_.newStage = false;
+    if (ok) {
+        drill_.successes++;
+        drill_.failStreak = 0;
+    } else {
+        drill_.failStreak++;
+    }
+    drill_.phase = Phase::Showing;
+    drill_.showUntil = t + std::max(drill_.timedOut ? 1.f : 0.f, cfg_.drillDelay);
+    // The player did nothing at all: he may be in the menu, the next attempt waits for the throttle again.
+    drill_.nextStart = drill_.anyInput ? Start::Auto : Start::First;
+}
+
+void MechanicsModule::recordMiss(const char* code, const TickContext& ctx, Actions& out) {
+    const float t = ctx.hasSnapshot ? ctx.snap.time : nowTime_;
+    const int step = currentStep();
+    const bool stepLeft = step < static_cast<int>(setup_.steps.size());
+    if (!code || !*code) code = stepLeft ? setup_.steps[static_cast<size_t>(step)].miss : "";
+    if (!code || !*code) code = defaultMiss(drill_.focus);
+    const mech::FocusInfo& fi = mech::focusInfo(drill_.focus);
+    MechGrade g;
+    g.mech = fi.primary;
+    g.variant = "drill";
+    g.add("targetAngleDeg", cfg_.speedflipAngle);
+    g.err(code, 50.f);
+    mech::finalizeGrade(g, 0.f);
+    g.success = false;
+    AttemptResult r = mech::buildResult(g, ctx.profile, coach_.cfg, t, keyStyle_);
+    r.success = false;
+    r.verdict = Verdict::Fail;
+    r.hasRecordValue = false;
+    drill_.timedOut = true;
+    drill_.missing = stepLeft ? setup_.steps[static_cast<size_t>(step)].text : std::string();
+    if (cfg_.drillAdaptive) staircase(drill_.focus, false).record(false);
+    closeDrillAttempt(false, t);
+    drill_.message = drill_.missing.empty() ? std::string("Temps écoulé : on recommence.")
+                                            : "Temps écoulé. Il manquait : " + drill_.missing + ".";
+    stats_.record(g.mech, r);
+    last_.valid = true;
+    last_.result = r;
+    last_.variant = setup_.variant;
+    last_.lines.clear();
+    last_.headline = r.tips.empty() ? drill_.message : r.tips.front().text;
+    last_.drillAttempt = true;
+    last_.time = t;
+    if (cfg_.chatSummary) out.chat.push_back({"[Mécas] " + r.title + " : temps écoulé. " + last_.headline, "RL Trainer"});
+    if (++resultsSinceSave_ >= 10) {
+        out.requestSave = true;
+        resultsSinceSave_ = 0;
+    }
+    out.results.push_back(std::move(r));
 }
 
 void MechanicsModule::emitAttempt(const MechGrade& g, const TickContext& ctx, Actions& out, bool drillAttempt) {
@@ -702,15 +1042,11 @@ void MechanicsModule::emitAttempt(const MechGrade& g, const TickContext& ctx, Ac
         }
         if (!ok && (r.verdict == Verdict::Good || r.verdict == Verdict::Perfect)) r.verdict = Verdict::Ok;
         if (ok && r.verdict == Verdict::Fail) r.verdict = Verdict::Ok;
-        if (cfg_.drillAdaptive) levels_[static_cast<size_t>(mech::index(drill_.focus))].record(ok);
-        drill_.attempts++;
-        drill_.newStage = false;
-        if (ok) drill_.successes++;
+        if (cfg_.drillAdaptive) staircase(drill_.focus, false).record(ok);
+        drill_.timedOut = false;
+        drill_.missing.clear();
+        closeDrillAttempt(ok, t);
         drill_.message = ok ? "Réussi !" : "Raté : lis le conseil et recommence.";
-        if (setup_.endOnResult) {
-            drill_.phase = Phase::Showing;
-            drill_.showUntil = t + cfg_.drillDelay;
-        }
     }
     const bool newPb = stats_.record(g.mech, r);
 
@@ -758,7 +1094,7 @@ void MechanicsModule::draw(const ViewContext& view, const DrawContext& ctx, Draw
     p.scale = std::max(0.2f, cfg_.hudScale * ctx.hudScale);
     p.minWidth = 300.f * p.scale;
     const Color white = colors::White, yellow(255, 210, 60, 255), green(80, 230, 80, 255), red(255, 80, 60, 255),
-                cyan(0, 220, 255, 255), light(215, 215, 215, 255);
+                cyan(0, 220, 255, 255), light(215, 215, 215, 255), accent(255, 199, 64, 255);
     auto line = [&p](std::string text, Color c) { p.lines.push_back({std::move(text), c}); };
     auto detail = [&p, &light](std::string text) {
         PanelLine l;
@@ -783,6 +1119,9 @@ void MechanicsModule::draw(const ViewContext& view, const DrawContext& ctx, Draw
         const bool praise = last_.result.tips.empty();
         line(last_.headline, praise ? green : yellow);
     };
+    auto mainCount = [&p]() {
+        return static_cast<int>(std::count_if(p.lines.begin(), p.lines.end(), [](const PanelLine& l) { return !l.detail; }));
+    };
 
     const float age = now - last_.time;
     const bool persistent = focus_ != Focus::None || drill_.active || cfg_.hudSeconds <= 0.f;
@@ -790,55 +1129,118 @@ void MechanicsModule::draw(const ViewContext& view, const DrawContext& ctx, Draw
     const AttemptResult& r = last_.result;
 
     if (drill_.active) {
-        const int lvl = mech::displayLevel(level(drill_.focus));
-        p.title = "Exercice " + focusTitle(drill_.focus) + " : niveau " + std::to_string(lvl) + "/10";
+        const int lvl = mech::displayLevel(levelFor(drill_.focus, drill_.full));
+        p.title = std::string(drill_.full ? "Parcours complet " : "Exercice ") + focusTitle(drill_.focus) + " : niveau " +
+                  std::to_string(lvl) + "/10";
         p.titleColor = cyan;
         showResult = showResult && last_.drillAttempt && drill_.attempts > 0;
-        const bool timedOut = drill_.phase == Phase::Showing && drill_.timedOut;
+        const bool showing = drill_.phase == Phase::Showing;
+        const bool failedFull = showing && drill_.full && !r.success && showResult;
+        const bool timedOut = showing && !drill_.full && drill_.timedOut;
         const int step = currentStep();
-        const bool stepLeft = step < static_cast<int>(setup_.steps.size());
-        // 1. Result of the last attempt (or what this level asks before the first one).
-        if (timedOut) {
-            line("Temps écoulé", red);
-        } else if (showResult) {
-            const Color c = r.success ? green : red;
-            p.lines.push_back({std::string(r.success ? "Réussi ! " : "Raté : ") + formatNumber(r.score, 0) + "/100  (" +
-                                   std::to_string(drill_.successes) + " sur " + std::to_string(drill_.attempts) + ")",
-                               c, clamp01(r.score / 100.f), c});
-        } else if (!setup_.goal.empty()) {
-            line(setup_.goal, white);
-        }
-        // 2. One tip in words (or the new goal when the level just reached another step of the progression).
-        if (timedOut) {
-            if (stepLeft) line("Il manquait : " + setup_.steps[static_cast<size_t>(step)].text, yellow);
-        } else if (drill_.newStage && drill_.phase != Phase::Showing) {
-            line(setup_.goal, cyan);
-        } else if (showResult) {
-            tipLine();
-        } else if (!setup_.memo.empty()) {
-            line(setup_.memo, white);
-        }
-        // 3. What to do now.
-        std::string action;
-        if (drill_.phase == Phase::Countdown) {
-            action = "GO dans " + seconds1(drill_.phaseEnd - now);
-        } else if (drill_.phase == Phase::Running) {
+        const int nSteps = static_cast<int>(setup_.steps.size());
+        const bool stepLeft = step < nSteps;
+        const std::string counts = "(" + std::to_string(drill_.successes) + " sur " + std::to_string(drill_.attempts) + ")";
+        bool tipShown = false;
+        if (drill_.phase == Phase::Countdown || drill_.phase == Phase::Setup) {
+            // Get ready: the goal, what to remember, then "press the throttle" / the countdown.
+            line(setup_.goal, drill_.newStage ? cyan : white);
+            if (drill_.failStreak >= 3 && cfg_.slowMotion >= 0.999f && !drill_.newStage)
+                line("Trop dur ? Essaie le ralenti 0,75 (menu, Mécas mouvement)", yellow);
+            else if (drill_.full && tracker_.size() > 0)
+                line(tracker_.number(0) + tracker_.steps()[0].label, accent);
+            else if (!setup_.memo.empty())
+                line(setup_.memo, white);
+            const std::string ready = ready_.hudLine(now);
+            if (!ready.empty()) line(ready, cyan);
+        } else if (drill_.phase == Phase::Running && drill_.full) {
+            StepHudStyle style;
+            style.showDone = !ctx.compactHud;
+            style.showUpcoming = !ctx.compactHud;
+            appendStepLines(p.lines, tracker_, now, style);
             const float left = setup_.timeLimit - (now - drill_.startTime);
-            if (setup_.timed || !stepLeft) action = "Temps restant : " + seconds1(left);
-            else action = std::to_string(step + 1) + ". " + setup_.steps[static_cast<size_t>(step)].text;
-        } else if (drill_.phase == Phase::Showing) {
-            action = cfg_.drillAutoReset ? "Essai suivant dans " + seconds1(drill_.showUntil - now)
-                                         : "Fais un reset pour recommencer";
+            if (mainCount() < 3) line("Temps restant : " + seconds1(left), white);
+            else detail("Temps restant : " + seconds1(left));
+        } else if (drill_.phase == Phase::Running) {
+            // 1. Result of the last attempt (or what this level asks), 2. one tip in words, 3. what to do now.
+            if (showResult) {
+                const Color c = r.success ? green : red;
+                p.lines.push_back({std::string(r.success ? "Réussi ! " : "Raté : ") + formatNumber(r.score, 0) + "/100  " + counts,
+                                   c, clamp01(r.score / 100.f), c});
+                tipLine();
+                tipShown = true;
+            } else {
+                line(setup_.goal, white);
+                if (!setup_.memo.empty()) line(setup_.memo, white);
+            }
+            std::string action;
+            Color ac = white;
+            const float left = setup_.timeLimit - (now - drill_.startTime);
+            const bool cue = setup_.nowCue > 0.f && ctx.hasSnapshot && !cueSeen(mech::Cue::Dodge) &&
+                             ctx.snap.car.wheelContacts == 0 && mech::rearWheelTimeToFloor(ctx.snap.car) <= setup_.nowCue;
+            if (cue) {
+                action = "Maintenant !";
+                ac = green;
+            } else if (setup_.timed || !stepLeft) {
+                action = "Temps restant : " + seconds1(left);
+            } else {
+                action = std::to_string(step + 1) + "/" + std::to_string(nSteps) + " " + setup_.steps[static_cast<size_t>(step)].text;
+                ac = accent;
+            }
+            line(action, ac);
+        } else if (showing) {
+            if (timedOut) {
+                line("Temps écoulé", red);
+                if (!drill_.missing.empty()) line("Il manquait : " + drill_.missing, yellow);
+                else tipLine(), tipShown = true;
+            } else if (failedFull) {
+                line("Raté " + counts, red);
+                if (drill_.timedOut && !drill_.missing.empty()) {
+                    line("Il manquait : " + drill_.missing, yellow);
+                } else {
+                    tipLine();
+                    tipShown = true;
+                }
+            } else if (showResult) {
+                const Color c = r.success ? green : red;
+                const std::string score = drill_.full ? std::string() : formatNumber(r.score, 0) + "/100  ";
+                p.lines.push_back({std::string(r.success ? "Réussi ! " : "Raté : ") + score + counts, c,
+                                   drill_.full ? -1.f : clamp01(r.score / 100.f), c});
+                tipLine();
+                tipShown = true;
+            } else {
+                line(drill_.message.empty() ? setup_.goal : drill_.message, white);
+            }
+            line(cfg_.drillAutoReset ? "Essai suivant dans " + seconds1(drill_.showUntil - now) : "Fais un reset pour recommencer",
+                 white);
         }
-        if (!action.empty()) line(action, drill_.phase == Phase::Countdown ? cyan : white);
 
         std::string st = "Niveau " + std::to_string(lvl) + "/10";
         if (drill_.attempts > 0) st += " | réussis " + std::to_string(drill_.successes) + "/" + std::to_string(drill_.attempts);
         if (!setup_.variant.empty()) st += " | " + setup_.variant;
         detail(std::move(st));
-        if (showResult || timedOut) detail(setup_.goal);
-        for (size_t i = 0; i < setup_.steps.size(); ++i) detail(std::to_string(i + 1) + ". " + setup_.steps[i].text);
-        if (showResult) metricDetails();
+        if (showing || drill_.phase == Phase::Running) detail(setup_.goal);
+        if (!tipShown && showResult && !last_.headline.empty() && (timedOut || failedFull)) detail(last_.headline);
+        if (drill_.full) {
+            if (drill_.phase != Phase::Running) {
+                StepHudStyle style;
+                style.flashSeconds = 0.f;
+                std::vector<PanelLine> steps;
+                appendStepLines(steps, tracker_, now, style);
+                for (PanelLine& l : steps) {
+                    l.detail = true;
+                    l.bar = -1.f;
+                    l.scale = 0.85f;
+                    p.lines.push_back(std::move(l));
+                }
+                if (tracker_.idle())
+                    for (int i = 0; i < tracker_.size(); ++i) detail(tracker_.number(i) + tracker_.steps()[static_cast<size_t>(i)].label);
+            }
+        } else {
+            for (int i = 0; i < nSteps; ++i)
+                detail(std::to_string(i + 1) + "/" + std::to_string(nSteps) + " " + setup_.steps[static_cast<size_t>(i)].text);
+        }
+        if (showResult && !drill_.full) metricDetails();
     } else {
         if (focus_ != Focus::None) {
             p.title = "Focus : " + focusTitle(focus_);
@@ -891,7 +1293,11 @@ void MechanicsModule::draw(const ViewContext& view, const DrawContext& ctx, Draw
     const Color guide(0, 220, 255, 170);
     for (size_t i = 0; i + 1 < setup_.guide.size() && i < 16; ++i) out.line3D(setup_.guide[i], setup_.guide[i + 1], guide, 2.f, occ);
     for (size_t i = 0; i + 1 < setup_.ticks.size() && i < 32; i += 2) out.line3D(setup_.ticks[i], setup_.ticks[i + 1], guide, 2.f, occ);
-    if (setup_.hasTarget) out.circle3D(setup_.target, {0.f, 0.f, 1.f}, 160.f, Color(255, 210, 60, 200), 2.f, 24);
+    if (setup_.hasTarget) {
+        // The ring follows the ball once it moves (kickoff ball, lob); a fixed target stays where it is.
+        const Vec3 at = (setup_.placeBall && view.ballValid && !setup_.full) ? view.ballVisualPos : setup_.target;
+        out.circle3D(at, {0.f, 0.f, 1.f}, 160.f, Color(255, 210, 60, 200), 2.f, 24);
+    }
 }
 
 // ---- UI read models ------------------------------------------------------------------------------------
@@ -906,16 +1312,25 @@ MechanicsModule::Status MechanicsModule::status() const {
     s.chainDashes = coach_.chainCount();
     s.sessionAttempts = stats_.sessionTotal();
     if (drill_.active) {
-        s.level = level(drill_.focus);
+        s.full = drill_.full;
+        s.level = levelFor(drill_.focus, drill_.full);
         s.levelNumber = mech::displayLevel(s.level);
         s.drillAttempts = drill_.attempts;
         s.drillSuccesses = drill_.successes;
+        s.failStreak = drill_.failStreak;
         s.goal = setup_.goal;
         s.variant = setup_.variant;
         s.message = drill_.message;
-        for (const mech::DrillStep& st : setup_.steps) s.steps.push_back(st.text);
-        if (drill_.phase == Phase::Running || drill_.phase == Phase::Countdown) s.currentStep = currentStep();
-        s.checks = mech::drillCheckLines(setup_, coach_.cfg, speedUnit());
+        s.waitingForThrottle = drill_.phase == Phase::Countdown && ready_.waiting();
+        if (drill_.full) {
+            for (const Step& st : tracker_.steps()) s.steps.push_back(st.label);
+            if (drill_.phase == Phase::Running) s.currentStep = tracker_.current();
+            else if (drill_.phase == Phase::Countdown) s.currentStep = 0;
+        } else {
+            for (const mech::DrillStep& st : setup_.steps) s.steps.push_back(st.text);
+            if (drill_.phase == Phase::Running || drill_.phase == Phase::Countdown) s.currentStep = currentStep();
+            s.checks = mech::drillCheckLines(setup_, coach_.cfg, speedUnit());
+        }
         switch (drill_.phase) {
         case Phase::Setup: s.phase = "Placement"; break;
         case Phase::Countdown: s.phase = "Compte à rebours"; break;
@@ -949,6 +1364,15 @@ std::vector<MechanicsModule::StatRow> MechanicsModule::statRows() const {
         r.progression = fi.progression;
         for (const char* step : fi.steps)
             if (step) r.steps.push_back(step);
+        const mech::Tutorial& tu = mech::tutorial(f);
+        auto fill = [this](const char* t) { return t ? mech::fillButtons(t, profile_, keyStyle_) : std::string(); };
+        r.intro = fill(tu.intro);
+        r.full = fill(tu.full);
+        r.level1 = fill(tu.level1);
+        for (const mech::TutorialStep& ts : tu.steps)
+            if (ts.action) r.tutorial.push_back({fill(ts.action), fill(ts.why), fill(ts.ok)});
+        for (const char* l : tu.panel)
+            if (l) r.panel.push_back(l);
         r.enabled = familyEnabled(f);
         r.attempts = st.attempts;
         r.successes = st.successes;
@@ -969,6 +1393,8 @@ std::vector<MechanicsModule::StatRow> MechanicsModule::statRows() const {
         r.recent.assign(st.recent.begin(), st.recent.end());
         r.level = level(f);
         r.levelNumber = mech::displayLevel(r.level);
+        r.fullLevel = fullLevel(f);
+        r.fullLevelNumber = mech::displayLevel(r.fullLevel);
         Rng rng(1);  // only the recovery throw uses it, not the pass conditions
         r.checksFirst = mech::drillCheckLines(mech::makeDrill(f, 0.f, 0, 0, rng), coach_.cfg, speedUnit());
         r.checksLast = mech::drillCheckLines(mech::makeDrill(f, 1.f, 0, 0, rng), coach_.cfg, speedUnit());
@@ -982,19 +1408,25 @@ std::vector<MechanicsModule::StatRow> MechanicsModule::statRows() const {
 void MechanicsModule::save(Store& store) const {
     store.setInt("mechanics.version", 1);
     stats_.save(store);
-    for (int i = 0; i < mech::kFocusCount; ++i)
-        levels_[static_cast<size_t>(i)].save(store, std::string("mechanics.level.") + mech::focusInfo(static_cast<Focus>(i)).id);
+    for (int i = 0; i < mech::kFocusCount; ++i) {
+        const std::string id = mech::focusInfo(static_cast<Focus>(i)).id;
+        levels_[static_cast<size_t>(i)].save(store, "mechanics.level." + id);
+        fullLevels_[static_cast<size_t>(i)].save(store, "mechanics.full." + id);
+    }
 }
 
 void MechanicsModule::load(const Store& store) {
     stats_.load(store);
     for (int i = 0; i < mech::kFocusCount; ++i) {
-        Staircase s = freshLevel();
+        const std::string id = mech::focusInfo(static_cast<Focus>(i)).id;
         // The previous version saved every level, played or not, at its old start value: only a played level is
         // kept, so a drill never tried starts at niveau 1.
-        const std::string key = std::string("mechanics.level.") + mech::focusInfo(static_cast<Focus>(i)).id;
-        if (store.getInt(key + ".attempts", 0) > 0) s.load(store, key);
+        Staircase s = freshLevel();
+        if (store.getInt("mechanics.level." + id + ".attempts", 0) > 0) s.load(store, "mechanics.level." + id);
         levels_[static_cast<size_t>(i)] = s;
+        Staircase full = freshLevel();
+        if (store.getInt("mechanics.full." + id + ".attempts", 0) > 0) full.load(store, "mechanics.full." + id);
+        fullLevels_[static_cast<size_t>(i)] = full;
     }
 }
 

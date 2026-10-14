@@ -102,7 +102,39 @@ ShootingModule::ShootingModule() {
 void ShootingModule::resetStaircases() {
     flickStair_ = Staircase(0.75f, 0.03f, kShootStartLevel);
     for (auto& st : targetStairs_) st = Staircase(0.75f, 0.03f, kShootStartLevel);
+    powerStair_ = Staircase(0.75f, kPowerStep, kShootStartLevel);
+    for (auto& st : fullStairs_) st = Staircase(0.75f, 0.03f, kShootStartLevel);
+    pickup_.reset(kShootStartLevel);
 }
+
+void ShootingModule::resetLevel(ShootDrill d) {
+    switch (d) {
+    case ShootDrill::Flick: flickStair_ = Staircase(0.75f, 0.03f, kShootStartLevel); break;
+    case ShootDrill::Roof:
+        targetStairs_[static_cast<size_t>(TargetSetup::Roof)] = Staircase(0.75f, 0.03f, kShootStartLevel);
+        break;
+    case ShootDrill::Rolling:
+        targetStairs_[static_cast<size_t>(TargetSetup::Rolling)] = Staircase(0.75f, 0.03f, kShootStartLevel);
+        break;
+    case ShootDrill::Bouncing:
+        targetStairs_[static_cast<size_t>(TargetSetup::Bouncing)] = Staircase(0.75f, 0.03f, kShootStartLevel);
+        break;
+    case ShootDrill::Pass:
+        targetStairs_[static_cast<size_t>(TargetSetup::Pass)] = Staircase(0.75f, 0.03f, kShootStartLevel);
+        break;
+    case ShootDrill::Power: powerStair_ = Staircase(0.75f, kPowerStep, kShootStartLevel); break;
+    default: break;
+    }
+    fullStairs_[static_cast<size_t>(d)] = Staircase(0.75f, 0.03f, kShootStartLevel);
+}
+
+float ShootingModule::powerGoal() const {
+    return (cfg_.powerAdaptive ? powerGoalKph(full_ && fullKind_ == ShootDrill::Power ? fullLevel() : powerStair_.level())
+                               : cfg_.powerGoalKph) /
+           kUusToKph;
+}
+
+float ShootingModule::fullLevel() const { return fullStairs_[static_cast<size_t>(fullKind_)].level(); }
 
 void ShootingModule::describeSettings(SettingsSchema& schema) {
     auto g = schema.section(&Settings::shooting, "shooting", "Exercices");
@@ -165,8 +197,10 @@ void ShootingModule::describeSettings(SettingsSchema& schema) {
     auto p = schema.section(&Settings::shooting, "shooting", "Puissance");
     p.number("rlt_sh_power_ball_speed", &ShootingConfig::powerBallSpeedKph, 25.f, 0.f, 80.f,
              "Vitesse de la balle (km/h)", "Vitesse de la balle qui roule vers toi.", 0);
-    p.number("rlt_sh_power_goal", &ShootingConfig::powerGoalKph, 90.f, 40.f, 180.f, "Objectif (km/h)",
-             "Vitesse du tir à atteindre pour réussir l'essai.", 0);
+    p.toggle("rlt_sh_power_adaptive", &ShootingConfig::powerAdaptive, true, "Objectif adaptatif",
+             "L'objectif part de 70 km/h au niveau 1 et monte avec tes réussites (110 km/h au niveau 10).");
+    p.number("rlt_sh_power_goal", &ShootingConfig::powerGoalKph, 90.f, 40.f, 180.f, "Objectif fixe (km/h)",
+             "Vitesse du tir à atteindre quand l'objectif adaptatif est coupé.", 0);
 
     auto h = schema.section(&Settings::shooting, "shooting", "Affichage");
     h.choice("rlt_sh_hud_mode", &ShootingConfig::hudMode, 0, {"Pendant les exercices", "Toujours", "Jamais"}, "Panneau",
@@ -263,6 +297,28 @@ ShootingStatus ShootingModule::status() const {
     st.attempts = attempts_;
     st.settled = flick_.phase() == FlickPhase::Carry;
     st.settledTime = flick_.settledTime(prev_.frame);
+    st.readyLine = phase_ == ShootPhase::Countdown ? ready_.hudLine(prev_.time) : std::string();
+    st.movingStart = movingStart_;
+    st.full = full_;
+    st.fullKind = static_cast<int>(fullKind_);
+    if (full_) {
+        if (!steps_.idle()) {
+            std::vector<PanelLine> lines;
+            StepHudStyle hs;
+            hs.flashSeconds = 0.f;
+            appendStepLines(lines, steps_, prev_.time, hs);
+            for (const auto& l : lines) st.steps.push_back(l.text);
+        } else {
+            st.steps = shoot::fullLabels(fullKind_, shootPlayerLevel(fullLevel()));
+        }
+    }
+    st.powerLevel = powerStair_.level();
+    st.powerGoalKph = powerGoal() * kUusToKph;
+    for (int i = 0; i < kShootDrillCount; ++i) {
+        st.fullLevels[static_cast<size_t>(i)] = fullStairs_[static_cast<size_t>(i)].level();
+        st.fullAttempts[static_cast<size_t>(i)] = fullStairs_[static_cast<size_t>(i)].attempts();
+    }
+    st.pickupLevel = pickup_.staircase().level();
     return st;
 }
 
@@ -298,28 +354,49 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
         warn("Active d'abord le module Tirs & flicks.");
         return;
     }
+    auto isFull = [](const std::string& a) { return a == "full" || a == "parcours" || a == "complet"; };
+    if (n == "reset_level") {
+        // "Revenir au niveau 1": one drill and its parcours complet start again from the first level.
+        ShootDrill d = ShootDrill::Flick;
+        if (cmd.args.empty() || !parseShootDrill(cmd.args[0], d)) {
+            warn("Exercice inconnu. Choix : flick, roof, rolling, bouncing, pass, power.");
+            return;
+        }
+        resetLevel(d);
+        out.requestSave = true;
+        out.toasts.push_back(ToastMessage{kToastTitle, std::string(shootDrillTitle(d)) + " : retour au niveau 1.",
+                                          ToastKind::Info, 3.f});
+        return;
+    }
     if (n == "flick" || n == "flicks") {
         int req = cfg_.flickRequested - 1;
-        if (!cmd.args.empty()) {
+        bool full = false;
+        for (size_t i = 0; i < cmd.args.size(); ++i) {
+            if (isFull(cmd.args[i])) {
+                full = true;
+                continue;
+            }
             int t = -1;
             // Diagonal / side are recognised flicks but not drills: refuse them rather than grade anything.
-            if (!parseFlickType(cmd.args[0], t) || t >= kRequestableFlickCount) {
-                warn("Flick inconnu : " + cmd.args[0] +
+            if (i > 0 || !parseFlickType(cmd.args[i], t) || t >= kRequestableFlickCount) {
+                warn("Flick inconnu : " + cmd.args[i] +
                      ". Choix : front, 45, 90, backflip, delayed, musty, breezi, reverse, any.");
                 return;
             }
             req = t;
         }
         requested_ = std::clamp(req, -1, kRequestableFlickCount - 1);
-        startDrill(ShootMode::Flick, ctx, out);
+        startDrill(ShootMode::Flick, ctx, out, full);
         return;
     }
     if (n == "targets" || n == "target" || n == "cibles") {
         int zsel = zoneSel_, ssel = setupSel_;
-        bool zoneGiven = false, setupGiven = false;
+        bool zoneGiven = false, setupGiven = false, full = false;
         for (const auto& arg : cmd.args) {
             int v = 0;
-            if (parseZone(arg, v)) {
+            if (isFull(arg)) {
+                full = true;
+            } else if (parseZone(arg, v)) {
                 zsel = v;
                 zoneGiven = true;
             } else if (parseSetup(arg, v)) {
@@ -335,11 +412,11 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
         // Saved even when the drill cannot start here, like the tab's zone buttons.
         if (zoneGiven) persistZone(out, zoneSel_);
         if (setupGiven) persistSetup(out, setupSel_);
-        startDrill(ShootMode::Targets, ctx, out);
+        startDrill(ShootMode::Targets, ctx, out, full);
         return;
     }
     if (n == "power" || n == "puissance") {
-        startDrill(ShootMode::Power, ctx, out);
+        startDrill(ShootMode::Power, ctx, out, !cmd.args.empty() && isFull(cmd.args[0]));
         return;
     }
     if (n == "next") {
@@ -382,19 +459,23 @@ void ShootingModule::onCommand(const Command& cmd, const TickContext& ctx, Actio
         }
         return;
     }
-    warn("Commande inconnue : " + n + ". Essaie flick, targets, power, stop ou reset_stats.");
+    warn("Commande inconnue : " + n + ". Essaie flick, targets, power, stop, reset_level ou reset_stats.");
 }
 
-bool ShootingModule::startDrill(ShootMode m, const TickContext& ctx, Actions& out) {
+bool ShootingModule::startDrill(ShootMode m, const TickContext& ctx, Actions& out, bool full) {
     const char* unavailable =
         "Exercice indisponible ici : lance le freeplay (ou autorise les maps workshop dans Réglages, Avancé).";
-    if (!ctx.worldControlAllowed || !requestActivity(activityName(m))) {
+    const std::string activity = std::string(activityName(m)) + (full ? " (parcours complet)" : "");
+    if (!ctx.worldControlAllowed || !requestActivity(activity)) {
         out.toasts.push_back(ToastMessage{kToastTitle, unavailable, ToastKind::Warning, 4.5f});
         message_ = "Exercice indisponible ici.";
         return false;
     }
-    const bool sameMode = mode_ == m;
+    const bool sameMode = mode_ == m && full_ == full;
     mode_ = m;
+    full_ = full;
+    firstAttempt_ = true;  // the first attempt waits for the throttle
+    steps_.clear();
     phase_ = ShootPhase::Setup;
     phaseStart_ = ctx.snap.frame;
     if (!fixedSeed_) rng_.reseed(mix64(static_cast<uint64_t>(ctx.snap.frame) + 0x9E3779B97F4A7C15ULL * ++seedCounter_));
@@ -416,6 +497,7 @@ bool ShootingModule::startDrill(ShootMode m, const TickContext& ctx, Actions& ou
         break;
     default: message_ = "Puissance : frappe le plus fort possible"; break;
     }
+    if (full) message_ = "Parcours complet : " + message_;
     return true;
 }
 
@@ -429,6 +511,13 @@ void ShootingModule::stopDrill(bool release) {
     lastFlickReport_.reset();
     hasLastHit_ = false;
     expectJumpUntil_ = -1;
+    full_ = false;
+    steps_.clear();
+    ready_.stop();
+    movingStart_ = assistActive_ = false;
+    offRoof_ = leftRoofEarly_ = false;
+    bounceMarks_.clear();
+    showMeet_ = showRunUp_ = false;
     if (release && wasActive) releaseActivity();
 }
 
@@ -439,6 +528,9 @@ void ShootingModule::newAttemptLater(const std::string& message) {
     phase_ = ShootPhase::Setup;
     flick_.reset();
     shot_.reset();
+    steps_.reset();
+    ready_.stop();
+    assistActive_ = false;
 }
 
 // ---- Tick -------------------------------------------------------------------------------------------------
@@ -482,42 +574,69 @@ void ShootingModule::tickDrill(const TickContext& ctx, Actions& out, bool telepo
     const Snapshot& s = ctx.snap;
     switch (phase_) {
     case ShootPhase::Idle: phase_ = ShootPhase::Setup; return;
-    case ShootPhase::Setup:
+    case ShootPhase::Setup: {
         if (!s.car.valid) return; // spectating / respawning: wait
         prepareAttempt(ctx);
-        applyHeld(out, s.frame);
         phase_ = ShootPhase::Countdown;
         phaseStart_ = s.frame;
         lastCountdownShown_ = -1;
-        if (cfg_.countdown <= 0.f) release(out, s.frame);
-        return;
-    case ShootPhase::Countdown: {
-        const float remaining = cfg_.countdown - elapsed(s.frame);
-        if (remaining > 1e-4f) {
-            applyHeld(out, s.frame);
-            out.freezeCar = true;
-            const int n = static_cast<int>(std::ceil(remaining - 1e-4f));
-            if (cfg_.nativeCountdown && n >= 1 && n <= 3 && n != lastCountdownShown_) {
-                out.countdownMessage = n;
-                lastCountdownShown_ = n;
-            }
-        } else {
+        // Get-ready (fix 1): the first attempt of a drill waits for the throttle, then 3 s; then the countdown setting.
+        ReadyPhase::Options o = firstAttempt_ ? ReadyPhase::firstAttempt()
+                                              : ReadyPhase::Options{false, std::max(0.f, cfg_.countdown), true, false};
+        o.nativeMessages = cfg_.nativeCountdown;
+        // Ball balanced on a stopped car: a throttle still held at GO would throw it off the roof (the kickoff habit),
+        // so GO waits until the throttle is let go.
+        o.waitThrottleRelease = !full_ && spawn_.ballOnRoof && !movingStart_;
+        ready_.start(s.time, o);
+        if (ready_.update(s, out)) {
             release(out, s.frame);
+            return;
         }
+        applyHeld(out, s.frame);
+        out.freezeCar = true;
         return;
     }
+    case ShootPhase::Countdown:
+        // Car and ball held still every tick (gravity would make a ball placed once fall); GO releases them.
+        if (ready_.update(s, out)) {
+            release(out, s.frame);
+        } else {
+            applyHeld(out, s.frame);
+            out.freezeCar = true;
+        }
+        return;
     case ShootPhase::Live:
         if (teleported) {
             newAttemptLater("Position changée : nouvel essai.");
             return;
         }
         if (std::fabs(s.in.throttle) > 0.2f || s.in.jump || s.in.boost) playerMoved_ = true;
+        if (s.ball.valid) {
+            // Floor bounces (cue "tire quand elle remonte", parcours complet).
+            if (prevBallVz_ < -20.f && s.ball.vel.z > prevBallVz_ + 40.f && s.ball.vel.z >= -5.f &&
+                s.ball.pos.z < kBallRestZ + 40.f)
+                lastFloorBounce_ = s.time;
+            prevBallVz_ = s.ball.vel.z;
+        }
+        tickAssist(s, out);
+        if (earlyLossReplay(s)) return;
+        if (full_) {
+            fullTick(fullState_, s);
+            steps_.update(s, &ctx);
+            if (fullState_.setup.pickup) pickup_.update(steps_);
+            if (steps_.running() && elapsed(s.frame) > fullSetup_.timeLimit) steps_.failOnTimeout(s.time);
+            if (steps_.finished()) {
+                finishFull(ctx, out);
+                return;
+            }
+        }
         if (mode_ == ShootMode::Flick)
             tickFlick(ctx, out);
         else if (mode_ == ShootMode::Targets)
             tickTargets(ctx, out);
         else
             tickPower(ctx, out);
+        if (full_ && phase_ == ShootPhase::Live && steps_.finished()) finishFull(ctx, out);
         return;
     case ShootPhase::Result:
         if (shot_.active()) {
@@ -539,12 +658,51 @@ void ShootingModule::tickDrill(const TickContext& ctx, Actions& out, bool telepo
     }
 }
 
-Zone ShootingModule::pickZone(int selection) {
-    if (selection >= 0 && selection < kZoneCount) return static_cast<Zone>(selection);
-    int z = rng_.rangeInt(0, kZoneCount - 1);
-    if (z == static_cast<int>(zone_)) z = rng_.rangeInt(0, kZoneCount - 1); // fewer repeats
-    return static_cast<Zone>(z);
+// Moving roof start: for kRoofAssistSeconds after the release (levels up to kRoofAssistMaxLevel), the ball is put back
+// on its resting point with the car's velocity while it has not slid more than kRoofAssistRadius: the player has the
+// time to react.
+void ShootingModule::tickAssist(const Snapshot& s, Actions& out) {
+    if (!assistActive_) return;
+    const bool flying = flick_.phase() == FlickPhase::Air || flick_.phase() == FlickPhase::Dodged;
+    if (elapsed(s.frame) > kRoofAssistSeconds || !s.car.valid || !s.ball.valid || !s.car.onGround || flying || s.in.jump) {
+        assistActive_ = false;
+        return;
+    }
+    const float r = s.ball.radius > 10.f ? s.ball.radius : kBallRadius;
+    const Vec3 rest = roofSpawn(s.car.pos, s.car.basis, hitboxOf(s.car), r, cfg_.roofGap);
+    if (distance(s.ball.pos, rest) > kRoofAssistRadius) {
+        assistActive_ = false;
+        return;
+    }
+    BallPlacement b;
+    b.pos = rest;
+    b.vel = s.car.vel;
+    out.setBall = b;
+    expectJumpUntil_ = s.frame + 3; // our own placement is not a teleport
 }
+
+// A ball that falls off the roof in the first second of a moving roof start is replayed: the player could not read
+// that setup. The fall starts on the roof edge and ends on the floor a few tenths later, so the moment the ball left
+// the roof is what counts (the last time, a ball back on the roof is carried again).
+bool ShootingModule::earlyLossReplay(const Snapshot& s) {
+    if (!movingStart_ || !s.ball.valid || !s.car.valid) return false;
+    const FlickPhase ph = flick_.phase();
+    if (ph == FlickPhase::Air || ph == FlickPhase::Dodged || touched_) return false;
+    const bool onRoof = shootBallOnRoof(s);
+    if (onRoof) {
+        offRoof_ = false;
+    } else if (!offRoof_) {
+        offRoof_ = true;
+        leftRoofEarly_ = elapsed(s.frame) <= kEarlyLossReplay;
+    }
+    if (onRoof || !leftRoofEarly_) return false;
+    const bool onFloor = s.ball.pos.z < kBallRestZ + 25.f;
+    const bool away = distance(s.ball.pos, hitboxCenter(s.car)) > 250.f;
+    if (!(onFloor && away)) return false;
+    newAttemptLater("Balle tombée au départ : essai rejoué, sans compter.");
+    return true;
+}
+
 
 ZoneRect ShootingModule::flickTargetRect() const {
     return flickZoneActive_ ? zoneRect(flickZone_, attemptLevel_) : goalMouthRect();
@@ -557,6 +715,21 @@ void ShootingModule::prepareAttempt(const TickContext& ctx) {
     roof.hb = hitboxOf(s.car);
     roof.ballRadius = s.ball.valid && s.ball.radius > 10.f ? s.ball.radius : kBallRadius;
     roof.gap = cfg_.roofGap;
+    touched_ = playerMoved_ = powerTouched_ = false;
+    powerShot_ = PowerShot{};
+    lastFlickReport_.reset();
+    flick_.reset();
+    shot_.reset();
+    hasLastHit_ = false;
+    movingStart_ = assistActive_ = false;
+    bounceMarks_.clear();
+    showMeet_ = showRunUp_ = false;
+    lastFloorBounce_ = -1.f;
+    prevBallVz_ = 0.f;
+    if (full_) {
+        prepareFull(ctx);
+        return;
+    }
     switch (mode_) {
     case ShootMode::Flick: {
         attemptLevel_ = flickLevel();
@@ -564,32 +737,100 @@ void ShootingModule::prepareAttempt(const TickContext& ctx) {
         spawn_ = flickSpawn(attemptLevel_, moving, cfg_.flickAdaptive ? -1.f : cfg_.flickCarSpeed, goal_, roof, rng_);
         flickZoneActive_ = cfg_.flickTarget != 0;
         if (cfg_.flickTarget == 1)
-            flickZone_ = pickZone(zoneSel_);
+            flickZone_ = pickTargetZone(zoneSel_, attemptLevel_, flickZone_, rng_);
         else if (cfg_.flickTarget == 2)
-            flickZone_ = pickZone(kZoneRandom);
+            flickZone_ = pickTargetZone(kZoneRandom, attemptLevel_, flickZone_, rng_);
         break;
     }
     case ShootMode::Targets: {
-        zone_ = pickZone(zoneSel_);
         setup_ = setupSel_ >= 1 && setupSel_ < kTargetSetupCount
                      ? static_cast<TargetSetup>(setupSel_)
                      : static_cast<TargetSetup>(rng_.rangeInt(1, kTargetSetupCount - 1));
         attemptLevel_ = targetLevel(setup_);
-        spawn_ = targetSpawn(setup_, attemptLevel_, goal_, roof, rng_);
+        zone_ = pickTargetZone(zoneSel_, attemptLevel_, zone_, rng_);  // low and centre zones only at niveaux 1-3
+        TargetOptions opt;
+        // Moving roof starts only once the stationary flick reached niveau 3.
+        opt.roofMovingAllowed = shootPlayerLevel(flickLevel()) >= kRoofMovingFlickNiveau;
+        spawn_ = targetSpawn(setup_, attemptLevel_, goal_, roof, rng_, opt);
         break;
     }
     case ShootMode::Power:
-        attemptLevel_ = 0.f;
+        attemptLevel_ = powerStair_.level();
         spawn_ = powerSpawn(cfg_.powerBallSpeedKph / kUusToKph, goal_, rng_);
         break;
     default: break;
     }
-    touched_ = playerMoved_ = powerTouched_ = false;
-    powerShot_ = PowerShot{};
-    lastFlickReport_.reset();
-    flick_.reset();
-    shot_.reset();
-    hasLastHit_ = false;
+    movingStart_ = spawn_.ballOnRoof && length2D(spawn_.carReleaseVel) > 1.f;
+    // Circles on the floor, shown from the countdown: the next bounces, the meeting point, the run-up point.
+    const Vec3& bp = spawn_.ball.pos;
+    if (mode_ == ShootMode::Targets && setup_ == TargetSetup::Bouncing) {
+        bounceMarks_ = predictFloorBounces(bp, spawn_.ballReleaseVel, spawn_.ballReleaseAngVel, 3);
+    } else if (mode_ == ShootMode::Targets && setup_ == TargetSetup::Pass) {
+        meet_ = crossMeetingPoint(bp, spawn_.ballReleaseVel, spawn_.ballReleaseAngVel, spawn_.car.pos).pos;
+        showMeet_ = true;
+    } else if (mode_ == ShootMode::Power) {
+        runUp_ = powerRunUpPoint(spawn_.car.pos, powerMeetingPoint(spawn_.car.pos, bp, spawn_.ballReleaseVel));
+        showRunUp_ = true;
+    }
+}
+
+// Parcours complet: the setup of its kind at its own level (the pickup start at the pickup's level).
+void ShootingModule::prepareFull(const TickContext& ctx) {
+    const Snapshot& s = ctx.snap;
+    RoofParams roof;
+    roof.hb = hitboxOf(s.car);
+    roof.ballRadius = s.ball.valid && s.ball.radius > 10.f ? s.ball.radius : kBallRadius;
+    roof.gap = cfg_.roofGap;
+    switch (mode_) {
+    case ShootMode::Flick: fullKind_ = ShootDrill::Flick; break;
+    case ShootMode::Power: fullKind_ = ShootDrill::Power; break;
+    default: {
+        setup_ = setupSel_ >= 1 && setupSel_ < kTargetSetupCount
+                     ? static_cast<TargetSetup>(setupSel_)
+                     : static_cast<TargetSetup>(rng_.rangeInt(1, kTargetSetupCount - 1));
+        switch (setup_) {
+        case TargetSetup::Roof: fullKind_ = ShootDrill::Roof; break;
+        case TargetSetup::Bouncing: fullKind_ = ShootDrill::Bouncing; break;
+        case TargetSetup::Pass: fullKind_ = ShootDrill::Pass; break;
+        default: fullKind_ = ShootDrill::Rolling; break;
+        }
+        break;
+    }
+    }
+    attemptLevel_ = fullLevel();
+    if (mode_ == ShootMode::Targets) zone_ = pickTargetZone(zoneSel_, attemptLevel_, zone_, rng_);
+    if (mode_ == ShootMode::Flick) flickZoneActive_ = false;  // the whole goal
+    fullSetup_ = makeFullSetup(fullKind_, attemptLevel_, pickup_.niveau(), goal_, roof, rng_);
+    spawn_ = Spawn{};
+    spawn_.goal = goal_;
+    spawn_.car = fullSetup_.car;
+    spawn_.ball.pos = fullSetup_.ball.pos;
+    spawn_.ballReleaseVel = fullSetup_.ball.vel;
+    spawn_.ballReleaseAngVel = fullSetup_.ball.angVel;
+    steps_.clear();
+    fullRecorded_ = false;
+    switch (fullKind_) {
+    case ShootDrill::Bouncing: bounceMarks_ = fullSetup_.bounces; break;
+    case ShootDrill::Pass:
+        showMeet_ = true;
+        meet_ = fullSetup_.target;
+        break;
+    case ShootDrill::Power:
+        showRunUp_ = true;
+        runUp_ = powerRunUpPoint(fullSetup_.car.pos, fullSetup_.target);
+        break;
+    default: break;
+    }
+}
+
+void ShootingModule::beginFull(const Snapshot& s) {
+    const float r = s.ball.valid && s.ball.radius > 10.f ? s.ball.radius : kBallRadius;
+    const ZoneRect zone = mode_ == ShootMode::Targets ? zoneRect(zone_, attemptLevel_) : goalMouthRect();
+    fullBegin(fullState_, fullSetup_, shootPlayerLevel(attemptLevel_), goal_, zone, hitboxOf(s.car), r, s.time);
+    steps_.setSteps(shoot::fullSteps(fullState_));
+    steps_.start(s.time);
+    if (fullSetup_.pickup) pickup_.beginAttempt();
+    fullRecorded_ = false;
 }
 
 void ShootingModule::applyHeld(Actions& out, int64_t frame) {
@@ -615,7 +856,6 @@ void ShootingModule::release(Actions& out, int64_t frame) {
     b.angVel = spawn_.ballReleaseAngVel;
     out.setCar = c;
     out.setBall = b;
-    if (cfg_.nativeCountdown && cfg_.countdown > 0.f) out.goMessage = true;
     expectJumpUntil_ = frame + 3;
     phase_ = ShootPhase::Live;
     phaseStart_ = frame;
@@ -623,15 +863,35 @@ void ShootingModule::release(Actions& out, int64_t frame) {
     flick_.reset();
     shot_.reset();
     touched_ = playerMoved_ = powerTouched_ = false;
+    firstAttempt_ = false;
+    ready_.stop();
+    // Moving roof start: carry assist up to kRoofAssistMaxLevel.
+    assistActive_ = movingStart_ && attemptLevel_ <= kRoofAssistMaxLevel + 1e-4f;
+    const float time = static_cast<float>(frame) / kTickRate;
+    if (full_) {
+        Snapshot s = prev_;
+        s.time = time;
+        s.ball.radius = s.ball.valid && s.ball.radius > 10.f ? s.ball.radius : kBallRadius;
+        beginFull(s);
+    }
 }
 
 // ---- Flick drill ------------------------------------------------------------------------------------------
 void ShootingModule::tickFlick(const TickContext& ctx, Actions& out) {
     const Snapshot& s = ctx.snap;
     if (const auto rep = flick_.update(s)) {
+        // Parcours complet: a flick before the pickup and the carry are done does not count.
+        if (full_ && steps_.running()) {
+            const Step* cur = steps_.currentStep();
+            if (!cur || cur->id != kStepFlick) {
+                steps_.fail(s.time, "shooting.full.early_flick", "Ramasse et porte d'abord la balle, puis flick.");
+                return;
+            }
+        }
         onFlickReport(*rep, ctx, out);
         return;
     }
+    if (full_) return;  // the steps handle a lost ball and the time
     const FlickPhase ph = flick_.phase();
     if (s.ball.valid && s.car.valid && ph != FlickPhase::Air && ph != FlickPhase::Dodged && elapsed(s.frame) > 0.3f) {
         const bool onFloor = s.ball.pos.z < kBallRestZ + 25.f;
@@ -648,6 +908,20 @@ void ShootingModule::tickFlick(const TickContext& ctx, Actions& out) {
         newAttemptLater("Temps écoulé : nouvel essai.");
 }
 
+namespace {
+// The verdict follows a success decided outside the grade (parcours complet).
+void forceVerdict(AttemptResult& r, bool success) {
+    r.success = success;
+    if (success && r.verdict < Verdict::Ok) r.verdict = Verdict::Ok;
+    if (!success && r.verdict > Verdict::Ok) r.verdict = Verdict::Ok;
+    if (!success && r.verdict == Verdict::None) r.verdict = Verdict::Fail;
+}
+
+std::string firstTip(const AttemptResult& r, const char* fallback) {
+    return r.tips.empty() ? std::string(fallback) : r.tips.front().text;
+}
+} // namespace
+
 void ShootingModule::onFlickReport(const FlickReport& rep, const TickContext& ctx, Actions& out) {
     const Snapshot& s = ctx.snap;
     const SpeedUnit unit = resolveUnit(static_cast<SpeedUnit>(cfg_.unit), ctx.profile.metric);
@@ -659,18 +933,35 @@ void ShootingModule::onFlickReport(const FlickReport& rep, const TickContext& ct
     const Vec3 targetWorld = goal_.toWorld(rect.u, rect.z);
 
     FlickGradeParams p;
-    p.requested = requested_;
+    // Niveaux 1 and 2 (and the parcours complet): any flick with contact and on target counts; the requested type
+    // counts from niveau 3.
+    p.requested = full_ || shootPlayerLevel(attemptLevel_) <= 2 ? -1 : requested_;
     p.level = attemptLevel_;
     p.minPower = flickMinPower(attemptLevel_);
-    p.requireOnTarget = cfg_.flickRequireOnTarget;
+    p.requireOnTarget = full_ || cfg_.flickRequireOnTarget;
     p.aimErrorDeg = angleBetweenDeg(flat(rep.launchVel), flat(targetWorld - rep.ballPos));
     p.delayedSec = cfg_.delayedSec;
     p.time = s.time;
     AttemptResult res = gradeFlick(rep, aim, p, ctx.profile);
-
+    if (full_) {
+        // "Flick": the flip hit the ball. "Cadre": on goal and strong enough for the level.
+        const Step* cur = steps_.currentStep();
+        if (cur && cur->id == kStepFlick) {
+            if (rep.contact) steps_.complete(s.time);
+            else steps_.fail(s.time, "shooting.flick_no_contact", firstTip(res, "Flippe pendant que la balle touche encore le toit."));
+        }
+        cur = steps_.running() ? steps_.currentStep() : nullptr;
+        if (cur && cur->id == kStepCadre) {
+            if (rep.contact && aim.onGoal && rep.power >= p.minPower) steps_.complete(s.time);
+            else steps_.fail(s.time, "shooting.full.cadre", firstTip(res, "Flick vers le but, plus fort."));
+        }
+        forceVerdict(res, steps_.isComplete());
+        recordFull(res.success);
+    } else if (cfg_.flickAdaptive) {
+        flickStair_.record(res.success);
+    }
     const float acc = metricValue(res, "accuracy", 0.f);
     const auto flags = stats_.addFlick(rep.category, rep.power, acc, res.success);
-    if (cfg_.flickAdaptive) flickStair_.record(res.success);
     lastFlick_ = std::string(flickTypeLabel(rep.category)) + (rep.cls.uncertain ? " (?)" : "");
     if (rep.contact) {
         hasLastShot_ = true;
@@ -689,6 +980,15 @@ void ShootingModule::tickTargets(const TickContext& ctx, Actions& out) {
     const Snapshot& s = ctx.snap;
     if (setup_ == TargetSetup::Roof) {
         if (const auto rep = flick_.update(s)) {
+            if (full_ && steps_.running()) {
+                const Step* cur = steps_.currentStep();
+                if (!cur || cur->id != kStepFlick) {
+                    steps_.fail(s.time, "shooting.full.early_flick", "Ramasse et dribble d'abord la balle, puis flick.");
+                    return;
+                }
+                if (rep->contact) steps_.complete(s.time);
+                else steps_.fail(s.time, "shooting.flick_no_contact", "Flippe pendant que la balle touche encore le toit.");
+            }
             lastFlickReport_ = *rep;
             lastFlick_ = std::string(flickTypeLabel(rep->category)) + (rep->cls.uncertain ? " (?)" : "");
             touched_ = true;
@@ -709,6 +1009,7 @@ void ShootingModule::tickTargets(const TickContext& ctx, Actions& out) {
             return;
         }
     }
+    if (full_) return;  // the steps have their own time limits
     // A shot in flight always resolves (the tracker has its own flight limit).
     if (elapsed(s.frame) > cfg_.attemptTimeout && !shot_.active()) {
         if (!touched_) {
@@ -737,8 +1038,20 @@ void ShootingModule::onTargetOutcome(const ShotOutcome& o, const TickContext& ct
     p.time = s.time;
     p.flick = lastFlickReport_ ? &*lastFlickReport_ : nullptr;
     AttemptResult res = gradeTarget(aim, o.shotSpeed, p);
+    if (full_) {
+        const Step* cur = steps_.running() ? steps_.currentStep() : nullptr;
+        if (cur && cur->id == kStepZone) {
+            if (aim.inZone) steps_.complete(s.time);
+            else steps_.fail(s.time, "shooting.full.zone", firstTip(res, "Vise la zone en couleur."));
+        } else if (cur) {
+            steps_.fail(s.time);
+        }
+        forceVerdict(res, steps_.isComplete());
+        recordFull(res.success);
+    } else if (cfg_.targetAdaptive) {
+        targetStairs_[static_cast<size_t>(setupIndex(setup_))].record(res.success);
+    }
     const bool streakRecord = stats_.addTarget(zone_, res.success, res.score);
-    if (cfg_.targetAdaptive) targetStairs_[static_cast<size_t>(setupIndex(setup_))].record(res.success);
     if (o.reached) noteHit(o, s.frame, aim.inZone);
     if (streakRecord)
         toastRecord(out, "Série record : " + std::to_string(stats_.bestStreakAll) + " cibles d'affilée !");
@@ -751,7 +1064,18 @@ void ShootingModule::tickPower(const TickContext& ctx, Actions& out) {
     if (powerTouched_) {
         if (s.frame >= powerFirst_ + 30) {
             const SpeedUnit unit = resolveUnit(static_cast<SpeedUnit>(cfg_.unit), ctx.profile.metric);
-            AttemptResult res = gradePower(powerShot_, cfg_.powerGoalKph / kUusToKph, s.time);
+            AttemptResult res = gradePower(powerShot_, powerGoal(), s.time);
+            if (full_) {
+                const Step* cur = steps_.running() ? steps_.currentStep() : nullptr;
+                if (cur && cur->id == kStepPower) {
+                    if (powerShot_.speed >= powerGoal()) steps_.complete(s.time);
+                    else steps_.fail(s.time, "shooting.full.power", firstTip(res, "Arrive plus vite et flip au dernier moment."));
+                }
+                forceVerdict(res, steps_.isComplete());
+                recordFull(res.success);
+            } else if (cfg_.powerAdaptive) {
+                powerStair_.record(res.success);
+            }
             const auto flags = stats_.addPower(powerShot_.speed, res.success);
             hasLastShot_ = true;
             lastShotSpeed_ = powerShot_.speed;
@@ -762,12 +1086,117 @@ void ShootingModule::tickPower(const TickContext& ctx, Actions& out) {
         }
         return;
     }
+    if (full_) return;  // the steps have their own time limits
     bool missed = elapsed(s.frame) > cfg_.attemptTimeout;
     if (s.ball.valid && s.car.valid && elapsed(s.frame) > 1.f) {
         const float behind = goal_.sign * (s.car.pos.y - s.ball.pos.y); // > 0: the ball went past the car
         if (behind > 1500.f) missed = true;
     }
     if (missed) newAttemptLater("Balle manquée : nouvel essai.");
+}
+
+// ---- Parcours complet -------------------------------------------------------------------------------------
+// The touch steps of the parcours: judged on the touch itself (first touch, shot, volley, one-touch, flip).
+void ShootingModule::onFullTouch(const TouchEvent& t, float post) {
+    if (!steps_.running()) return;
+    ++fullState_.touches;
+    const Step* cur = steps_.currentStep();
+    if (!cur) return;
+    const std::string id = cur->id;
+    const float now = t.post.time;
+    auto startShot = [&]() { shot_.start(t.post.ball, goal_, t.post.frame, post); };
+    auto crossing = [&]() {
+        return predictToPlaneY(t.post.ball.pos, t.post.ball.vel, t.post.ball.angVel, goal_.planeY(), 4.f,
+                               t.post.ball.radius)
+            .has_value();
+    };
+    switch (fullKind_) {
+    case ShootDrill::Rolling:
+        if (id == kStepFirst) {
+            const float rel = t.pre.car.valid && t.pre.ball.valid ? length(t.pre.ball.vel - t.pre.car.vel) : 0.f;
+            if (rel < kFirstTouchMaxRel) steps_.complete(now);
+            else steps_.fail(now, "shooting.full.first_hard", "Arrive sur la balle à peine plus vite qu'elle : elle doit rester devant toi.");
+        } else if (id == "push") {
+            if (post > kShotSpeed)
+                steps_.fail(now, "shooting.full.shot_early", "Pousse d'abord la balle vers le but en douceur, puis tire.");
+        } else if (id == kStepShot) {
+            if (post > kShotSpeed && crossing()) {
+                steps_.complete(now);
+                startShot();
+            }
+        }
+        break;
+    case ShootDrill::Bouncing:
+        if (id == kStepVolley) {
+            const bool justBounced = fullState_.lastBounceTime >= 0.f && t.pre.time - fullState_.lastBounceTime <= kVolleyWindow;
+            if (justBounced && post > kShotSpeed) {
+                steps_.complete(now);
+                startShot();
+            } else {
+                steps_.fail(now, "shooting.full.volley", justBounced ? "Frappe plus fort, en accélérant." : cur->tip);
+            }
+        } else {
+            steps_.fail(now, "shooting.full.early_touch", "Arrive au deuxième rebond avant de toucher la balle.");
+        }
+        break;
+    case ShootDrill::Pass:
+        if (id == kStepOneTouch) {
+            if (post > kShotSpeed && goal_.sign * t.post.ball.vel.y > 0.f) {
+                steps_.complete(now);
+                startShot();
+            } else {
+                steps_.fail(now, "shooting.full.onetouch", cur->tip);
+            }
+        } else {
+            steps_.fail(now, "shooting.full.early_touch", "Coupe la trajectoire du centre avant de le toucher.");
+        }
+        break;
+    case ShootDrill::Power:
+        if (id == kStepDodge) {
+            const int64_t since = t.pre.frame - lastDodgeFrame_;
+            const bool recent = t.pre.car.dodging || (since >= 0 && since <= 30);
+            const bool forward = !t.pre.car.dodging || length(t.pre.car.dodgeDir) < 0.1f || t.pre.car.dodgeDir.x > 0.3f;
+            if (recent && forward) steps_.complete(now);
+            else steps_.fail(now, "shooting.full.dodge", cur->tip);
+        } else if (id != kStepPower) {
+            steps_.fail(now, "shooting.full.early_touch", cur->tip);
+        }
+        break;
+    default: break;
+    }
+}
+
+void ShootingModule::recordFull(bool success) {
+    if (fullRecorded_) return;
+    fullRecorded_ = true;
+    fullStairs_[static_cast<size_t>(fullKind_)].record(success);
+}
+
+// The parcours ended on a step without a shot to grade (pickup, carry, a check, a time limit): the missing step and its
+// tip, the right staircase, no result for the coach.
+void ShootingModule::finishFull(const TickContext& ctx, Actions& out) {
+    if (phase_ != ShootPhase::Live || !steps_.finished()) return;
+    const bool success = steps_.isComplete();
+    const auto& f = steps_.failure();
+    // A failed pickup (or carry) feeds the pickup's own staircase (pickup::Progress), never the mechanic's.
+    const bool pickupPart = !success && (f.group == pickup::kGroup || f.id == "carry" || f.id == "dribble");
+    if (!pickupPart) recordFull(success);
+    AttemptResult r;
+    r.module = "shooting";
+    r.time = ctx.snap.time;
+    r.skill = std::string("shoot.full.") + shootDrillId(fullKind_);
+    r.title = std::string("Parcours complet : ") + shootDrillTitle(fullKind_);
+    r.success = success;
+    r.score = success ? 100.f : 0.f;
+    r.verdict = success ? Verdict::Good : Verdict::Fail;
+    if (!success) r.tips.push_back(steps_.missedTip(10.f));
+    lastResult_ = r;
+    hasLastResult_ = true;
+    ++attempts_;
+    message_ = success ? std::string() : steps_.missingText();
+    phase_ = ShootPhase::Result;
+    phaseStart_ = ctx.snap.frame;
+    out.requestSave = true;
 }
 
 // ---- Free analysis ----------------------------------------------------------------------------------------
@@ -811,10 +1240,15 @@ void ShootingModule::onTouch(const TouchEvent& t, const TickContext& ctx, Action
     case ShootMode::Targets: {
         touched_ = true;
         if (setup_ == TargetSetup::Roof) flick_.onTouch(t);
+        if (full_) {
+            if (setup_ != TargetSetup::Roof) onFullTouch(t, post);  // the shot is started by its step
+            break;
+        }
         if (!stillOnRoof) shot_.start(t.post.ball, goal_, t.post.frame, post);
         break;
     }
     case ShootMode::Power: {
+        if (full_) onFullTouch(t, post);
         if (!powerTouched_) {
             powerTouched_ = true;
             powerFirst_ = t.pre.frame;
@@ -922,6 +1356,10 @@ void ShootingModule::save(Store& store) const {
     for (int i = 1; i < kTargetSetupCount; ++i)
         targetStairs_[static_cast<size_t>(i)].save(store, std::string("shooting.stair.") +
                                                               setupId(static_cast<TargetSetup>(i)));
+    powerStair_.save(store, "shooting.stair.power");
+    pickup_.save(store, "shooting.stair.pickup");
+    for (int i = 0; i < kShootDrillCount; ++i)
+        fullStairs_[static_cast<size_t>(i)].save(store, std::string("shooting.full.") + shootDrillId(static_cast<ShootDrill>(i)));
 }
 
 void ShootingModule::load(const Store& store) {
@@ -934,6 +1372,10 @@ void ShootingModule::load(const Store& store) {
     for (int i = 1; i < kTargetSetupCount; ++i)
         loadStair(targetStairs_[static_cast<size_t>(i)],
                   std::string("shooting.stair.") + setupId(static_cast<TargetSetup>(i)));
+    loadStair(powerStair_, "shooting.stair.power");
+    loadStair(pickup_.staircase(), "shooting.stair.pickup");
+    for (int i = 0; i < kShootDrillCount; ++i)
+        loadStair(fullStairs_[static_cast<size_t>(i)], std::string("shooting.full.") + shootDrillId(static_cast<ShootDrill>(i)));
 }
 
 // ---- Drawing ----------------------------------------------------------------------------------------------
@@ -1006,10 +1448,13 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
     p.pos = {cfg_.hudX * view.screenW, cfg_.hudY * view.screenH};
     p.scale = std::max(0.3f, ctx.hudScale * cfg_.hudScale);
     p.minWidth = 230.f * p.scale;
-    const bool adaptive = mode_ == ShootMode::Flick || mode_ == ShootMode::Targets;
-    const float level = mode_ == ShootMode::Flick ? flickLevel() : targetLevel(setup_);
+    const bool adaptive = mode_ == ShootMode::Flick || mode_ == ShootMode::Targets ||
+                          (mode_ == ShootMode::Power && (cfg_.powerAdaptive || full_));
+    float level = mode_ == ShootMode::Flick ? flickLevel() : (mode_ == ShootMode::Power ? powerStair_.level() : targetLevel(setup_));
+    if (full_) level = fullLevel();
     p.title = "Tirs & flicks";
-    if (mode_ != ShootMode::None) p.title += std::string(" : ") + shootModeLabel(mode_);
+    if (full_) p.title += std::string(" : parcours complet, ") + shootDrillTitle(fullKind_);
+    else if (mode_ != ShootMode::None) p.title += std::string(" : ") + shootModeLabel(mode_);
     if (adaptive) p.title += ", niveau " + std::to_string(shootPlayerLevel(level)) + "/10";
     auto line = [&p](const std::string& text, Color c = colors::White, float bar = -1.f, Color barColor = colors::Green,
                      float scale = 1.f, bool detail = false) {
@@ -1028,7 +1473,7 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
     const std::string tip = hasLastResult_ && !lastResult_.tips.empty() ? lastResult_.tips.front().text : "";
     // After a miss its tip stays as a reminder until the next result.
     const bool reminder = !tip.empty() && !lastResult_.success;
-    const std::string goalSpeed = formatSpeed(cfg_.powerGoalKph / kUusToKph, unit, 0);
+    const std::string goalSpeed = formatSpeed(powerGoal(), unit, 0);
     // How to do the attempt, in words (flick with the player's buttons, zone to aim at, speed to reach).
     std::string how;
     if (mode_ == ShootMode::Flick)
@@ -1039,24 +1484,58 @@ DrawPanel ShootingModule::buildPanel(const ViewContext& view, const DrawContext&
     else if (mode_ == ShootMode::Power)
         how = "Objectif : " + goalSpeed;
 
+    const float now = ctx.hasSnapshot ? ctx.snap.time : prev_.time;
+    const bool roofBall = mode_ == ShootMode::Flick || (mode_ == ShootMode::Targets && setup_ == TargetSetup::Roof);
     switch (phase_) {
     case ShootPhase::Setup:
-    case ShootPhase::Countdown:
-        line(message_.empty() ? "Prépare-toi..." : message_, colors::Yellow);
+    case ShootPhase::Countdown: {
+        // What comes (a moving start is announced), the get-ready line, the reminder or how to do it.
+        std::string first = message_.empty() ? "Prépare-toi..." : message_;
+        if (movingStart_) first = shootPanelLine(ShootDrill::Roof, 0);
+        else if (full_) first = shoot::fullLabels(fullKind_, shootPlayerLevel(level)).front();
+        line(first, colors::Yellow);
+        const std::string ready = phase_ == ShootPhase::Countdown ? ready_.hudLine(now) : std::string();
+        if (!ready.empty()) line(ready, colors::White);
         if (reminder) line(tip, kTipColor);
-        if (!how.empty()) line(how, colors::Cyan);
+        else if (!how.empty()) line(how, colors::Cyan);
         break;
+    }
     case ShootPhase::Live:
-        if (mode_ == ShootMode::Flick)
+        if (full_) {
+            // Validated steps turn green, the current one is highlighted (shared step tracker HUD).
+            appendStepLines(p.lines, steps_, now);
+            int mains = 0;
+            for (const auto& l : p.lines) mains += l.detail ? 0 : 1;
+            if (reminder && mains < 3) line(tip, kTipColor);
+            break;
+        }
+        if (roofBall && flick_.phase() == FlickPhase::Carry) {
+            // "Balle stable": settled 0.3 s on the roof, the flick can start.
+            const bool stable = flick_.settledTime(frame) >= 0.3f;
+            const bool named = mode_ == ShootMode::Flick && requested_ >= 0 && shootPlayerLevel(attemptLevel_) > 2;
+            if (stable)
+                line(named ? std::string("Balle stable : ") + flickTypeHudLabel(static_cast<FlickType>(requested_)) + " !"
+                           : std::string("Balle stable : saute !"),
+                     colors::Green);
+            else
+                line(shootPanelLine(ShootDrill::Flick, 0), colors::White);
+        } else if (roofBall && flick_.phase() == FlickPhase::Air) {
+            line(shootPanelLine(ShootDrill::Flick, 2), colors::White);
+        } else if (mode_ == ShootMode::Flick) {
             line(requested_ >= 0
                      ? std::string("À toi : ") + flickTypeHudLabel(static_cast<FlickType>(requested_)) + " vers le but !"
                      : "À toi : flick vers le but !");
-        else if (mode_ == ShootMode::Targets)
+        } else if (mode_ == ShootMode::Targets && setup_ == TargetSetup::Bouncing && lastFloorBounce_ >= 0.f &&
+                   now - lastFloorBounce_ < 0.4f) {
+            line(shootPanelLine(ShootDrill::Bouncing, 2), colors::Green);  // "tire quand elle remonte" after a bounce
+        } else if (mode_ == ShootMode::Targets) {
             line("À toi : vise " + zoneWithArticle(zone_) + " !");
-        else
+        } else {
             line("À toi : frappe le plus fort possible !");
+        }
         if (reminder) line(tip, kTipColor);
         if (mode_ != ShootMode::Targets) line(how, colors::Cyan);
+        else if (setup_ == TargetSetup::Roof && !reminder) line("Vise " + zoneWithArticle(zone_), colors::Cyan);
         break;
     case ShootPhase::Result:
         if (hasLastResult_) {
@@ -1198,6 +1677,21 @@ void ShootingModule::draw(const ViewContext& view, const DrawContext& ctx, DrawL
         if (hasLastHit_ && ctx.snap.frame - lastHitFrame_ < 240)
             drawMarker(lastHitGoal_, lastHitWorld_, view.ballRadius * 0.6f, lastHitGood_ ? colors::Green : colors::Red,
                        occ, out);
+        // Circles on the floor until the first touch: next bounces, meeting point, run-up point.
+        const bool beforeTouch = (phase_ == ShootPhase::Countdown || phase_ == ShootPhase::Live) && !touched_ &&
+                                 !powerTouched_ && (!full_ || fullState_.touches == 0);
+        if (drill && beforeTouch) {
+            const Vec3 up{0.f, 0.f, 1.f};
+            const float t = phase_ == ShootPhase::Live ? elapsed(ctx.snap.frame) : 0.f;
+            int shown = 0;
+            for (const auto& b : bounceMarks_) {
+                if (b.time < t || shown >= 2) continue;
+                out.circle3D(Vec3{b.pos.x, b.pos.y, 6.f}, up, 110.f, shown == 0 ? cfg_.targetColor : colors::Cyan, 3.f, 28);
+                ++shown;
+            }
+            if (showMeet_) out.circle3D(Vec3{meet_.x, meet_.y, 6.f}, up, 150.f, colors::Green, 3.f, 28);
+            if (showRunUp_) out.circle3D(Vec3{runUp_.x, runUp_.y, 6.f}, up, 160.f, colors::Cyan, 3.f, 28);
+        }
         if (drill && cfg_.roofGuide && phase_ != ShootPhase::Result &&
             (mode_ == ShootMode::Flick || (mode_ == ShootMode::Targets && setup_ == TargetSetup::Roof)))
             drawRoofGuide(view, ctx, out);

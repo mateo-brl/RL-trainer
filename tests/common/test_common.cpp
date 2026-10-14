@@ -204,6 +204,64 @@ TEST(engine_world_control_by_mode) {
     CHECK(!e.worldControlAllowed());
 }
 
+TEST(engine_restores_boost_rules_when_a_module_switches_drill) {
+    // Speedflip "kickoff" drill (limited boost), then another Mécas mouvement drill started without stopping: the
+    // activity stays with the same module, but the new drill runs with the player's own boost rules.
+    Engine e;
+    Actions out;
+    GameContext ctx;
+    ctx.mode = GameMode::Freeplay;
+    ctx.mapName = "Stadium_P";
+    e.setContext(ctx, out);
+    int64_t f = 1000;
+    auto snap = [&f]() {
+        Snapshot s = snapAt(++f);
+        s.car.vel = {};
+        s.car.pos = {0.f, -2000.f, 17.01f};
+        s.car.onGround = true;
+        s.car.wheelContacts = 4;
+        s.car.hasFlip = true;
+        s.car.boost = 33.f;
+        s.ball.pos = {0.f, 0.f, 93.15f};
+        return s;
+    };
+    bool limited = false;
+    auto run = [&](int n, int* restores, int* rules) {
+        for (int i = 0; i < n; ++i) {
+            Actions a;
+            e.tick(snap(), a);
+            if (a.restoreBoostRules) {
+                limited = false;
+                if (restores) ++*restores;
+            }
+            if (a.boostRules) {
+                limited = !a.boostRules->unlimited;
+                if (rules) ++*rules;
+            }
+        }
+    };
+    e.post(Command{"mechanics", "drill", {"speedflip", "kickoff"}});
+    run(240, nullptr, nullptr);
+    CHECK(limited);
+    CHECK_EQ(e.activityOwner(), std::string("mechanics"));
+    int restores = 0, rules = 0;
+    e.post(Command{"mechanics", "drill", {"boost"}});
+    run(600, &restores, &rules);
+    CHECK_EQ(e.activityOwner(), std::string("mechanics"));
+    CHECK_EQ(restores, 1);
+    CHECK_EQ(rules, 0);
+    CHECK(!limited);
+    // Restarting the same drill keeps its own rules (no restore).
+    e.post(Command{"mechanics", "drill", {"speedflip", "kickoff"}});
+    run(240, nullptr, nullptr);
+    CHECK(limited);
+    restores = 0;
+    e.post(Command{"mechanics", "drill", {"speedflip", "kickoff"}});
+    run(240, &restores, nullptr);
+    CHECK_EQ(restores, 0);
+    CHECK(limited);
+}
+
 TEST(engine_parse_command_line) {
     Command c;
     CHECK(Engine::parseCommandLine({"rlt", "kickoff", "start", "diagonal"}, c));

@@ -34,8 +34,10 @@ void Pipeline::restart() {
     hasPrevFrame_ = false;
     lastProcessed_ = INT64_MIN;
     ignoreUntil_ = INT64_MIN;
+    ballMoveUntil_ = INT64_MIN;
     goalPending_ = false;
     armDtRead_ = false;
+    armCeiling_ = false;
     markCount_ = 0;
     sdkCount_ = 0;
 }
@@ -130,7 +132,7 @@ void Pipeline::feed(const Snapshot& s, const Snapshot* prev, const Snapshot* nex
         const float dt = std::max(kTickDt, f.t - prevFrame_.t);
         const Snapshot& p = prevFrame_.s;
         broken = distance(s.car.pos, p.car.pos + p.car.vel * dt) > kTeleport ||
-                 distance(s.ball.pos, p.ball.pos + p.ball.vel * dt) > kTeleport;
+                 (s.frame > ballMoveUntil_ && distance(s.ball.pos, p.ball.pos + p.ball.vel * dt) > kTeleport);
     }
     if (broken) {
         resetDetectors();
@@ -141,6 +143,10 @@ void Pipeline::feed(const Snapshot& s, const Snapshot* prev, const Snapshot* nex
     if (armDtRead_) {
         armDtRead_ = false;
         dt_.armReadMode(f.t);
+    }
+    if (armCeiling_) {
+        armCeiling_ = false;
+        ceiling_.armOnCeiling(f.t);
     }
 
     for (int i = 0; i < kFamilyCount; ++i) {

@@ -61,7 +61,7 @@ void RoofKeeper::update(bool onRoof, bool onFloor, float t, float dt) {
 
 namespace {
 
-constexpr float kRoofBallZ = 148.f;  // ball centre on the roof of a car resting on the floor (Octane)
+constexpr float kRoofBallZ = kCatchRoofZ;
 
 float fallTimeTo(float z0, float vz, float zTarget) {
     // z0 + vz t - g/2 t^2 = zTarget, positive root.
@@ -91,7 +91,29 @@ Vec3 clampField(Vec3 p, float margin) {
 
 } // namespace
 
-CatchPlan planCatch(uint64_t seed, double d, int variant) {
+float catchImpactSpeed(const Vec3& ballPos, const Vec3& ballVel) {
+    const float g = static_cast<float>(phys::kGravity);
+    return std::sqrt(std::max(0.f, ballVel.z * ballVel.z + 2.f * g * (ballPos.z - kRoofBallZ)));
+}
+
+float catchSettleTime(float impactSpeed, float e, float settleSpeed) {
+    const float g = static_cast<float>(phys::kGravity);
+    float t = 0.f;
+    float v = impactSpeed * e;
+    for (int i = 0; i < 30 && v >= settleSpeed; ++i) {
+        t += 2.f * v / g;
+        v *= e;
+    }
+    return t;
+}
+
+int catchHopCount(float impactSpeed, float e, float settleSpeed) {
+    int n = 0;
+    for (float v = impactSpeed * e; n < 30 && v >= settleSpeed; v *= e) ++n;
+    return n;
+}
+
+CatchPlan planCatch(uint64_t seed, double d, int variant, float catchHold) {
     d = dclamp01(d);
     Rng rng(splitmix64(seed), 0xC47C4A11ULL);
     const float df = static_cast<float>(d);
@@ -100,12 +122,19 @@ CatchPlan planCatch(uint64_t seed, double d, int variant) {
     CatchPlan p;
     p.fromWall = wall;
     if (!wall) {
-        const float h = lerpf(700.f, 1500.f, df) * static_cast<float>(rngRange(rng, 0.9, 1.0));
-        p.fallTime = fallTimeTo(h, 0.f, kRoofBallZ);
+        // Highest point of the flight: low at niveau 1 (one or two small hops), up to 15 m.
+        const float h = static_cast<float>(rngRange(rng, lerpf(350.f, 1350.f, df), lerpf(450.f, 1500.f, df)));
+        // Low drops are tossed up a little first (released `rise` under the top, going up): the fall alone from 3.5 m
+        // lasts 0.8 s, too short to get under the ball with a human reaction.
+        const float rise = lerpf(150.f, 0.f, clamp01(df / 0.4f));
+        const float vz0 = std::sqrt(2.f * static_cast<float>(phys::kGravity) * rise);
+        p.apex = h;
+        p.fallTime = fallTimeTo(h - rise, vz0, kRoofBallZ);
         const float cx = static_cast<float>(rngRange(rng, -2500, 2500));
         const float cy = static_cast<float>(rngRange(rng, -3000, 3000));
         const float yaw = static_cast<float>(rngRange(rng, -phys::kPi, phys::kPi));
-        const float dist = lerpf(300.f, 1500.f, df) * static_cast<float>(rngRange(rng, 0.6, 1.0));
+        // Distance to the landing point grows slowly at first (a short fall leaves little time to drive).
+        const float dist = lerpf(300.f, 1500.f, df * df) * static_cast<float>(rngRange(rng, 0.6, 1.0));
         const float spread = lerpf(35.f, 150.f, df) * kDegToRad;
         float bearing = yaw + spread * static_cast<float>(rngRange(rng, -1.0, 1.0));
         const float vh = lerpf(0.f, 450.f, df) * static_cast<float>(rngRange(rng, 0.4, 1.0));
@@ -114,10 +143,10 @@ CatchPlan planCatch(uint64_t seed, double d, int variant) {
         p.carYawRad = yaw;
         for (int attempt = 0; attempt < 2; ++attempt) {
             const Vec3 land = p.carPos + Vec3{std::cos(bearing), std::sin(bearing), 0.f} * dist;
-            const Vec3 vel{std::cos(vdir) * vh, std::sin(vdir) * vh, 0.f};
-            const Vec3 spawn = land - vel * p.fallTime;
+            const Vec3 vel{std::cos(vdir) * vh, std::sin(vdir) * vh, vz0};
+            const Vec3 spawn = land - Vec3{vel.x, vel.y, 0.f} * p.fallTime;
             p.landing = {land.x, land.y, kRoofBallZ};
-            p.ballPos = {spawn.x, spawn.y, h};
+            p.ballPos = {spawn.x, spawn.y, h - rise};
             p.ballVel = vel;
             if (insideField(land, 400.f) && insideField(spawn, 300.f)) break;
             bearing += kPi;  // mirror towards the field centre side
@@ -126,30 +155,34 @@ CatchPlan planCatch(uint64_t seed, double d, int variant) {
         // Last resort: keep everything inside the field even if the geometry changes a bit.
         if (!insideField(p.ballPos, 300.f) || !insideField(p.landing, 400.f)) {
             const Vec3 land = clampField(p.landing, 400.f);
-            p.ballVel = {0.f, 0.f, 0.f};
+            p.ballVel = {0.f, 0.f, vz0};
             p.landing = {land.x, land.y, kRoofBallZ};
-            p.ballPos = {land.x, land.y, h};
+            p.ballPos = {land.x, land.y, h - rise};
         }
-        p.timeLimit = p.fallTime + lerpf(3.0f, 1.6f, df);
     } else {
         const float side = rngUniform01(rng) < 0.5 ? -1.f : 1.f;
         const float y = static_cast<float>(rngRange(rng, -2500, 2500));
-        const float h = lerpf(700.f, 1300.f, df) * static_cast<float>(rngRange(rng, 0.9, 1.0));
+        // Niveau 1: 4.5 to 5 m high, a slow push off the wall and a little upward (1.4 s or more before it reaches the
+        // roof), the car close to where it lands.
+        const float h = lerpf(500.f, 1300.f, df) * static_cast<float>(rngRange(rng, 0.9, 1.0));
         const float vx = -side * lerpf(250.f, 650.f, df) * static_cast<float>(rngRange(rng, 0.8, 1.0));
         const float vy = lerpf(0.f, 350.f, df) * static_cast<float>(rngRange(rng, -1.0, 1.0));
-        const float vz = lerpf(150.f, 0.f, df) * static_cast<float>(rngRange(rng, 0.0, 1.0));
+        const float vz = lerpf(350.f, 0.f, df) * static_cast<float>(rngRange(rng, 0.7, 1.0));
         p.ballPos = {side * (4096.f - 91.25f - 40.f), y, h};
         p.ballVel = {vx, vy, vz};
+        p.apex = h + vz * vz / (2.f * static_cast<float>(phys::kGravity));
         p.fallTime = fallTimeTo(h, vz, kRoofBallZ);
         const Vec3 land = p.ballPos + Vec3{vx, vy, 0.f} * p.fallTime;
         p.landing = {land.x, land.y, kRoofBallZ};
-        const float back = lerpf(500.f, 1300.f, df) * static_cast<float>(rngRange(rng, 0.8, 1.0));
+        const float back = lerpf(200.f, 1300.f, df) * static_cast<float>(rngRange(rng, 0.8, 1.0));
         const float yOff = lerpf(0.f, 800.f, df) * static_cast<float>(rngRange(rng, -1.0, 1.0));
         p.carPos = clampField({land.x - side * back, land.y + yOff, static_cast<float>(phys::kCarRestZ)}, 600.f);
         const Vec3 to = p.landing - p.carPos;
         p.carYawRad = std::atan2(to.y, to.x);
-        p.timeLimit = p.fallTime + lerpf(3.0f, 1.6f, df);
     }
+    p.impactSpeed = catchImpactSpeed(p.ballPos, p.ballVel);
+    p.settleTime = catchSettleTime(p.impactSpeed);
+    p.timeLimit = p.fallTime + p.settleTime + std::max(0.f, catchHold) + kCatchMargin;
     return p;
 }
 

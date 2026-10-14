@@ -18,12 +18,15 @@ using namespace shtest;
 
 namespace {
 
-void runToLive(Harness& h, World& w, int maxTicks = 600) {
+void runToLive(Harness& h, World& w, int maxTicks = 900) {
+    // The first attempt of a drill waits for the throttle (released once, then pressed), then counts down.
     for (int i = 0; i < maxTicks && h.mod.phase() != ShootPhase::Live; ++i) {
+        w.in.throttle = i < 2 ? 0.f : 1.f;
         const Actions a = h.tick(w.snap());
         w.apply(a);
         w.advance();
     }
+    w.in.throttle = 0.f;
 }
 
 void runTicks(Harness& h, World& w, int n) {

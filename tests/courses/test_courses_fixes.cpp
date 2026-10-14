@@ -35,8 +35,9 @@ void manualDifficulty(Harness& h, int d) {
     h.set("rlt_co_difficulty", std::to_string(d));
 }
 
+// Generator version 1 codes: these regressions were written on the original courses, which old codes still give.
 std::string code42(courses::CourseType t = courses::CourseType::Aerial, int d = 50) {
-    return courses::encodeCourseCode(42, t, d);
+    return courses::encodeCourseCode(42, t, d, 1);
 }
 
 // Catch attempt: the ball falls for half a second, first contact with the given velocities just before it and
@@ -275,7 +276,7 @@ TEST(courses_fix_penalty_all_missed_is_neither_success_nor_record) {
 }
 
 TEST(courses_fix_penalty_success_needs_three_quarters_of_the_rings) {
-    const int n = static_cast<int>(courses::generateCourse(42, courses::CourseType::Aerial, 50).rings.size());
+    const int n = static_cast<int>(courses::generateCourse(42, courses::CourseType::Aerial, 50, nullptr, 1).rings.size());
     CHECK_EQ(n, 12);
     CHECK_EQ(CoursesModule::maxMissesAllowed(n), 3);
     // 3 rings missed: still a (penalised) success. 4: a failure.

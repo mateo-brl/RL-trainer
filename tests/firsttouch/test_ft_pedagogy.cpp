@@ -42,7 +42,9 @@ void startAt(Harness& h, DrillType type, float level) {
     h.set("rlt_ft_drill_seed", "4321");
     h.tick(restSnap(100));
     h.command("drill", {drillId(type)});
-    h.tick(restSnap(101));
+    Snapshot s = restSnap(101);
+    h.tick(s);
+    passReady(h, s);  // get-ready hold of the first ball
 }
 
 // Typical beginner touch on a ball rolling away: arrives 350 uu/s (about 13 km/h) too fast and pushes the ball
@@ -152,7 +154,7 @@ TEST(ft_beginner_touch_passes_niveau_1_and_fails_niveau_10) {
         Harness h;
         startAt(h, DrillType::RollAway, kDrillStartLevel);
         CHECK(h.mod.drillStatus().criteria.firstStep);
-        const Actions a = runScenario(h, beginnerTouch(130), 125);
+        const Actions a = runScenario(h, beginnerTouch(afterGo(h)), 125);
         CHECK(a.results.size() == 1);
         if (!a.results.empty()) CHECK(a.results.front().success);  // the coach sees the same verdict
         const auto st = h.mod.drillStatus();
@@ -166,7 +168,7 @@ TEST(ft_beginner_touch_passes_niveau_1_and_fails_niveau_10) {
         Harness h;
         startAt(h, DrillType::RollAway, 1.f);
         CHECK(!h.mod.drillStatus().criteria.firstStep);
-        const Actions a = runScenario(h, beginnerTouch(130), 125);
+        const Actions a = runScenario(h, beginnerTouch(afterGo(h)), 125);
         CHECK(a.results.size() == 1);
         if (!a.results.empty()) CHECK(!a.results.front().success);
         const auto st = h.mod.drillStatus();
@@ -188,12 +190,12 @@ TEST(ft_top_level_stays_demanding) {
 
     Harness h;
     startAt(h, DrillType::RollAway, 1.f);
-    runScenario(h, decentTouch(130), 125);
+    runScenario(h, decentTouch(afterGo(h)), 125);
     CHECK(!h.mod.drillStatus().lastSuccess);
     // The clean touch still passes it.
     Harness g;
     startAt(g, DrillType::RollAway, 1.f);
-    runScenario(g, groundPickup(1000.f, 950.f, 1000.f, 1040.f, 130), 125);
+    runScenario(g, groundPickup(1000.f, 950.f, 1000.f, 1040.f, afterGo(g)), 125);
     CHECK(g.mod.drillStatus().lastSuccess);
 }
 
@@ -276,7 +278,7 @@ TEST(ft_compact_drill_shows_only_the_drill_panel) {
     CHECK(no2DExtras(dl));
 
     // Evaluate: one line telling what to do.
-    runScenario(h, groundPickup(1700.f, 800.f, 1500.f, 2200.f, 130), 60);
+    runScenario(h, groundPickup(1700.f, 800.f, 1500.f, 2200.f, afterGo(h)), 60);
     CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::Evaluate);
     dl = h.draw();
     checkCompactPanels(dl);
@@ -297,8 +299,8 @@ TEST(ft_compact_drill_shows_only_the_drill_panel) {
         CHECK(main[2].rfind("Balle suivante dans ", 0) == 0);
     }
 
-    // Next ball: the tip stays as a reminder under the instruction and the timer.
-    for (int i = 0; i < 200 && h.mod.drillStatus().phase != FirstTouchModule::DrillPhase::WaitTouch; ++i)
+    // Next ball (after the pause and its 1 s hold): the tip stays as a reminder under the step and the timer.
+    for (int i = 0; i < 400 && h.mod.drillStatus().phase != FirstTouchModule::DrillPhase::WaitTouch; ++i)
         h.tick(advance(h.latest));
     dl = h.draw();
     checkCompactPanels(dl);

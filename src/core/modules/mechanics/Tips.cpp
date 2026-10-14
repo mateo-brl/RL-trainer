@@ -108,9 +108,70 @@ const Plain kPlain[] = {
     {"AS_SHORT", "Tiens la rotation plus longtemps : garde le stick et l'air roll à fond."},
     {"SM_NOT_SUPERSONIC", "Reste supersonique : un petit coup de boost dès que tu ralentis."},
     {"SM_TOO_MUCH_BOOST", "Dépense moins de boost : petits coups seulement, et lâche-le à vitesse max."},
+    {"SF_SLOW_TO_BALL", "Tu es arrivé trop tard : vise la balle avant de sauter et garde le boost jusqu'à elle."},
+    {"SF_NOT_AIMED", "Avant de sauter, tourne un peu vers la balle en suivant la ligne au sol."},
+    {"HF_NO_REVERSE", "Recule d'abord vers la balle, accélérateur en arrière, avant de sauter."},
+    {"DRILL_NO_SPEED", "Prends d'abord de la vitesse : roule tout droit, accélérateur appuyé."},
+    {"HF_SLOW_TO_BALL", "Enchaîne plus vite : air roll dès que la voiture est à l'envers, puis fonce vers la balle."},
+    {"RC_SHORT_AIR", "Saute franchement du mur : reste au moins une demi-seconde en l'air avant de retomber."},
+    {"FC_JUMP_LONG", "Tu flippes trop tard : flippe juste après le saut."},
+    {"FC_WRONG_FLIP", "Fais un flip vers l'avant (ou l'arrière), stick bien droit : un flip de côté ne s'annule pas."},
+    {"WD_NOT_FORWARD", "Flippe vers l'avant : stick poussé vers l'avant au moment du flip."},
+    {"ZAP_NOSE", "Baisse un peu le nez avant de toucher le sol : stick un poil vers l'avant."},
+    {"ZAP_LATE", "Flippe plus tôt : dès que l'avant touche le sol, pas quand la voiture est posée."},
+    {"CHAIN_SLOW", "Enchaîne les wavedashes sans pause : chaque dash ajoute de la vitesse."},
+    {"WALL_NO_CLIMB", "Roule vers le mur et monte dessus sans sauter, en gardant l'accélérateur."},
+    {"WALL_NOT_RIDING", "Longe le mur à hauteur de la bande, sans monter ni redescendre vite."},
+    {"FA_TOUCH_LOW", "Décolle plus tôt : tu as touché la balle trop bas."},
+    {"FA_NOT_PLACED", "Place-toi sous la trajectoire de la balle avant de décoller."},
+    {"AS_NO_TAKEOFF", "Décolle d'abord : saut puis double saut, ou boost, avant de tourner."},
+    {"RC_NO_CLIMB", "Roule vers le mur et monte dessus avant de sauter."},
+    {"RC_NO_WALL_JUMP", "Saute depuis le mur, pas depuis le sol."},
+    {"PS_NOT_AIMED", "Relâche le powerslide quand ton nez vise la balle : tu es ressorti à côté."},
+    {"SM_SLOW_TO_SUPERSONIC", "Boost tout de suite et garde-le jusqu'à la traînée supersonique."},
+    {"SM_EARLY_BOOST", "Accélérateur seul au début : garde le boost pour la fin de l'accélération."},
 };
 
+// Lines with the player's buttons: {jump}, {boost}, {slide}, {throttle}, {airroll} (fillButtons).
+const Plain kButtons[] = {
+    {"SF_NO_BOOST", "Garde {boost} et l'accélérateur appuyés dès le départ."},
+    {"SF_NO_JUMP", "Saute avec un appui court sur {jump} : le speedflip part d'un petit saut."},
+    {"SF_NO_FLIP", "Fais le flip juste après le saut : un deuxième appui sur {jump} avec le stick penché en diagonale vers l'avant."},
+    {"SF_SIDE_FLIP", "Penche le stick en diagonale vers l'avant au deuxième appui sur {jump}, pas sur le côté : tu as fait un flip de côté."},
+    {"SF_BACK_FLIP", "Pousse le stick en diagonale vers l'avant au deuxième appui sur {jump} : tu as fait un flip arrière."},
+    {"SF_JUMP_HELD", "Saute avec un appui court : relâche {jump} tout de suite."},
+    {"HF_NO_FLIP", "Saute, puis flip arrière : stick tiré vers toi et deuxième appui sur {jump}."},
+    {"HF_WRONG_FLIP", "Fais un flip arrière : tire le stick vers toi au deuxième appui sur {jump}."},
+    {"FC_NO_FLIP", "Saute, puis flip avant : stick vers l'avant et deuxième appui sur {jump}."},
+    {"WD_NO_FLIP", "Juste avant que les roues touchent le sol, flip avant : stick vers l'avant et {jump}."},
+    {"WD_NO_HOP", "Fais d'abord un petit saut : un appui court sur {jump}."},
+    {"ZAP_NO_FLIP", "Dès que l'avant touche le sol, flip avant : stick vers l'avant et {jump}, sans sauter avant."},
+    {"WALL_NO_DASH", "Sur le mur, tape {jump} puis flippe tout de suite en diagonale vers l'avant, côté mur."},
+    {"FA_NO_JUMP", "Saute en gardant {jump} appuyé, avec {boost} et le stick tiré vers toi."},
+    {"ST_NO_STALL", "Mets le stick d'un côté et {airroll} de l'autre, puis appuie sur {jump}."},
+    {"ST_TOO_LOW", "Monte plus haut avant le stall : garde {jump} appuyé au premier saut."},
+    {"ST_DOUBLE_JUMP", "Un seul saut : le double saut utilise ton flip, le stall n'est plus possible. Garde {jump} pour monter."},
+    {"AS_NO_SPIN", "Fais {airroll} à fond d'un côté, et le stick à fond du même côté."},
+    {"PS_NO_SLIDE", "Pendant le virage, appuie un court instant sur {slide} : l'arrière doit glisser."},
+};
+
+std::string replaceAll(std::string s, const std::string& from, const std::string& to) {
+    for (size_t pos = s.find(from); pos != std::string::npos; pos = s.find(from, pos + to.size())) s.replace(pos, from.size(), to);
+    return s;
+}
+
 } // namespace
+
+std::string fillButtons(std::string_view text, const PlayerProfile& profile, KeyStyle style) {
+    std::string s(text);
+    if (s.find('{') == std::string::npos) return s;
+    s = replaceAll(s, "{jump}", actionPrompt(profile, GameAction::Jump, style));
+    s = replaceAll(s, "{boost}", actionPrompt(profile, GameAction::Boost, style));
+    s = replaceAll(s, "{slide}", actionPrompt(profile, GameAction::Powerslide, style));
+    s = replaceAll(s, "{throttle}", actionPrompt(profile, GameAction::Throttle, style));
+    s = replaceAll(s, "{airroll}", airRollPrompt(profile, 0, style));
+    return s;
+}
 
 std::string airRollPrompt(const PlayerProfile& profile, int side, KeyStyle style) {
     if (side < 0 && !actionKeyLabel(profile, GameAction::AirRollLeft, style).empty())
@@ -129,6 +190,8 @@ std::string tipText(std::string_view code, const MechGrade& g, const PlayerProfi
                     KeyStyle style) {
     for (const Plain& p : kPlain)
         if (code == p.code) return p.fr;
+    for (const Plain& p : kButtons)
+        if (code == p.code) return fillButtons(p.fr, profile, style);
     const std::string jump = actionPrompt(profile, GameAction::Jump, style);
     const std::string boost = actionPrompt(profile, GameAction::Boost, style);
     const std::string throttle = actionPrompt(profile, GameAction::Throttle, style);

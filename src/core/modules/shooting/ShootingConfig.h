@@ -43,7 +43,8 @@ struct ShootingConfig {
 
     // ---- Puissance
     float powerBallSpeedKph = 25.f; // speed of the ball rolling towards the player
-    float powerGoalKph = 90.f; // success threshold
+    float powerGoalKph = 90.f; // success threshold when the adaptive goal is off
+    bool powerAdaptive = true; // goal from the adaptive level: 70 km/h at niveau 1 .. 110 at niveau 10
 
     // ---- Affichage
     int hudMode = 0; // 0 during drills, 1 always (outside replays), 2 never

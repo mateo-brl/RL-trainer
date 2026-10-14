@@ -121,13 +121,24 @@ void CoursesModule::onTick(const TickContext& ctx, Actions& out) {
         return;
     }
     switch (phase_) {
-    case CoursesPhase::Setup:
+    case CoursesPhase::Setup: {
+        // Get-ready phase (fix 1): the first attempt of an exercise waits until the player presses the throttle, then
+        // counts 3 s down; the next attempts count `countdown` seconds down. The car and the ball are held still and
+        // re-placed on every tick until GO.
         countdownTotal_ = std::max(0, static_cast<int>(std::lround(cfg_.countdown * 120.f)));
         phaseTicks_ = 0;
         lastCountdownMsg_ = 0;
+        ReadyPhase::Options o = firstAttempt_ ? ReadyPhase::firstAttempt()
+                                              : ReadyPhase::Options{false, std::max(0.f, cfg_.countdown), true, false};
+        // Ball balanced on a stopped car: a throttle still held at GO would throw it off the roof (the kickoff habit),
+        // so GO waits until the throttle is let go.
+        o.waitThrottleRelease = roofStartAtRest(ctx);
+        ready_.start(s.time, o);
+        firstAttempt_ = false;
         phase_ = CoursesPhase::Countdown;
         countdownTick(ctx, out);
         break;
+    }
     case CoursesPhase::Countdown: countdownTick(ctx, out); break;
     case CoursesPhase::Running: runningTick(ctx, out); break;
     case CoursesPhase::Result: resultTick(ctx, out); break;
@@ -135,59 +146,97 @@ void CoursesModule::onTick(const TickContext& ctx, Actions& out) {
     }
 }
 
-void CoursesModule::applyStartPose(const TickContext& ctx, Actions& out, bool release) {
+void CoursesModule::startPose(const TickContext& ctx, CarPlacement& cp, std::optional<BallPlacement>& ball) const {
     const CarState& car = ctx.snap.car;
     Vec3 carPos;
     Vec3 carVel;
     float yawRad = 0.f;
-    switch (kind_) {
-    case CoursesKind::Dribble:
-        carPos = dribbleCarPos_;
-        yawRad = kPi / 2.f;
-        break;
-    case CoursesKind::Catch:
-        carPos = catchPlan_.carPos;
-        yawRad = catchPlan_.carYawRad;
-        break;
-    default:
-        carPos = courses::toF(course_.start.carPos);
-        yawRad = static_cast<float>(course_.start.carYaw);
-        if (release) carVel = courses::toF(course_.start.carVel);
-        break;
+    if (full_) {
+        carPos = fullCarPos_;
+        yawRad = fullYawDeg_ * kDegToRad;
+    } else {
+        switch (kind_) {
+        case CoursesKind::Dribble:
+            carPos = dribbleCarPos_;
+            yawRad = kPi / 2.f;
+            break;
+        case CoursesKind::Catch:
+            carPos = catchPlan_.carPos;
+            yawRad = catchPlan_.carYawRad;
+            break;
+        default:
+            carPos = courses::toF(course_.start.carPos);
+            yawRad = static_cast<float>(course_.start.carYaw);
+            carVel = courses::toF(course_.start.carVel);
+            break;
+        }
     }
-    CarPlacement cp;
+    cp = CarPlacement{};
     cp.pos = carPos;
     cp.rot = rotFromYawDeg(yawRad * kRadToDeg);
     cp.vel = carVel;
     cp.angVel = {};
     if (kindIsRings(kind_)) cp.boost = cfg_.unlimitedBoost ? 100.f : static_cast<float>(std::clamp(cfg_.boostStart, 0, 100));
     else cp.boost = 100.f;
-    out.setCar = cp;
+    if (full_) cp.boost = 100.f;  // the full sequences always start with a full tank
 
     const Basis b = basisFromRot(cp.rot);
     const float radius = ctx.snap.ball.valid ? ctx.snap.ball.radius : 91.25f;
     const Vec3 roof = courses::roofSpawn(carPos, b, car.hitboxOffset, car.hitboxExtent, radius);
+    ball.reset();
+    if (full_) {
+        if (kindUsesPickup(kind_)) ball = pickupSetup_.ball;
+        else if (kind_ == CoursesKind::Catch) ball = BallPlacement{fullBallPos_, fullBallVel_, {}};
+        else if (cfg_.parkBall) ball = BallPlacement{parkPos_, {}, {}};
+        return;
+    }
     switch (kind_) {
     case CoursesKind::RingsAir:
     case CoursesKind::RingsGround:
-        if (cfg_.parkBall) out.setBall = BallPlacement{parkPos_, {}, {}};
+        if (cfg_.parkBall) ball = BallPlacement{parkPos_, {}, {}};
         break;
-    case CoursesKind::RingsAirDribble:
-        if (cfg_.airDribbleStart == 1)
-            out.setBall = BallPlacement{courses::toF(course_.start.ballPos), release ? courses::toF(course_.start.ballVel) : Vec3{}, {}};
-        else out.setBall = BallPlacement{roof, carVel, {}};
+    case CoursesKind::RingsAirDribble: {
+        // Generator v2 stores the start in the course (and its code); version 1 courses follow the setting.
+        const bool popped = course_.version >= 2 ? !course_.start.ballOnRoof : cfg_.airDribbleStart == 1;
+        if (popped) ball = BallPlacement{courses::toF(course_.start.ballPos), courses::toF(course_.start.ballVel), {}};
+        else ball = BallPlacement{roof, carVel, {}};
         break;
+    }
     case CoursesKind::Slalom:
-    case CoursesKind::Dribble: out.setBall = BallPlacement{roof, carVel, {}}; break;
-    case CoursesKind::Catch:
-        out.setBall = BallPlacement{catchPlan_.ballPos, release ? catchPlan_.ballVel : Vec3{}, {}};
-        break;
+    case CoursesKind::Dribble: ball = BallPlacement{roof, carVel, {}}; break;
+    case CoursesKind::Catch: ball = BallPlacement{catchPlan_.ballPos, catchPlan_.ballVel, {}}; break;
     }
 }
 
+bool CoursesModule::roofStartAtRest(const TickContext& ctx) const {
+    if (full_) return false;  // the full sequences start with a pickup, the ball on the floor
+    if (kind_ != CoursesKind::Dribble && kind_ != CoursesKind::Slalom && kind_ != CoursesKind::RingsAirDribble) return false;
+    CarPlacement cp;
+    std::optional<BallPlacement> ball;
+    startPose(ctx, cp, ball);
+    // Ball on the roof: same velocity as the car (a popped air dribble start throws it up instead).
+    return ball && length(cp.vel) < 1.f && length(ball->vel) < 1.f && ball->pos.z > cp.pos.z + 50.f;
+}
+
+void CoursesModule::applyStartPose(const TickContext& ctx, Actions& out, bool release) {
+    CarPlacement cp;
+    std::optional<BallPlacement> ball;
+    startPose(ctx, cp, ball);
+    if (release) {
+        out.setCar = cp;
+        if (ball) out.setBall = *ball;
+        return;
+    }
+    // Held: zero velocities, re-sent on every tick (gravity still acts on a car or a ball placed only once).
+    HoldPose hold;
+    hold.car = cp;
+    hold.ball = ball;
+    hold.boost = cp.boost;
+    applyHold(hold, &ctx.snap, out);
+}
+
 void CoursesModule::countdownTick(const TickContext& ctx, Actions& out) {
-    const int remaining = countdownTotal_ - phaseTicks_;
-    if (remaining <= 0) {
+    if (ready_.update(ctx.snap, out)) {  // GO tick: real velocities, no freeze (the player's inputs go through)
         applyStartPose(ctx, out, true);
         out.goMessage = true;
         phase_ = CoursesPhase::Running;
@@ -198,7 +247,7 @@ void CoursesModule::countdownTick(const TickContext& ctx, Actions& out) {
         runTime_ = 0.f;
         lastBoost_ = -1.f;
         // The first sample is checked against the start pose (catches a teleport on the very first tick).
-        if (kindUsesCourse(kind_)) {
+        if (kindUsesCourse(kind_) && !full_) {
             if (course_.ballCourse && out.setBall) {
                 prevPos_ = courses::toD(out.setBall->pos);
                 prevVel_ = courses::toD(out.setBall->vel);
@@ -210,15 +259,10 @@ void CoursesModule::countdownTick(const TickContext& ctx, Actions& out) {
                 havePrev_ = true;
             }
         }
+        if (full_) fullRelease(ctx);
         return;
     }
-    out.freezeCar = true;
     applyStartPose(ctx, out, false);
-    const int n = (remaining + 119) / 120;
-    if (n != lastCountdownMsg_ && n >= 1 && n <= 3) {
-        out.countdownMessage = n;
-        lastCountdownMsg_ = n;
-    }
     ++phaseTicks_;
 }
 
@@ -256,6 +300,10 @@ void CoursesModule::runningTick(const TickContext& ctx, Actions& out) {
     const float dt = std::clamp(static_cast<float>(t) - runTime_, 0.f, 1.f);
     runTime_ = static_cast<float>(t);
     trackCar(s);
+    if (full_) {
+        fullTick(ctx, out, t, dt);
+        return;
+    }
     switch (kind_) {
     case CoursesKind::Dribble: dribbleTick(ctx, out, t, dt); break;
     case CoursesKind::Catch: catchTick(ctx, out, t, dt); break;
@@ -643,12 +691,35 @@ void CoursesModule::endDribble(const TickContext& ctx, Actions& out) {
 }
 
 // ---- Catch -------------------------------------------------------------------------------------------------
+bool CoursesModule::catchLooseOnRoof(const Snapshot& s) const {
+    if (!s.ball.valid || !s.car.valid) return false;
+    return courses::ballOnRoof(s.ball.pos, s.car.pos, s.car.basis, s.car.hitboxOffset, s.car.hitboxExtent, s.ball.radius,
+                               courses::kCatchLooseTolUp);
+}
+
 void CoursesModule::catchTick(const TickContext& ctx, Actions& out, double t, float dt) {
     const Snapshot& s = ctx.snap;
-    const bool onRoof = courses::ballOnRoof(s.ball, s.car);
+    // Tiny hops still count as on the roof, and a short break (kCatchHopGrace) does not restart the hold.
+    const bool onRoof = catchLooseOnRoof(s);
     ballOnRoofNow_ = onRoof;
-    if (onRoof) catchOnRoof_ += dt;
-    else catchOnRoof_ = 0.f;
+    if (onRoof) {
+        catchOnRoof_ += dt;
+        catchGap_ = 0.f;
+    } else if (catchOnRoof_ > 0.f) {
+        catchGap_ += dt;
+        if (catchGap_ > courses::kCatchHopGrace) {
+            catchOnRoof_ = 0.f;
+            catchGap_ = 0.f;
+        }
+    }
+    // HUD: the ball hops ahead of the roof, the player should roll forward under it.
+    if (!onRoof && haveFirstTouch_ && s.ball.valid) {
+        const Vec3 local = s.car.basis.toLocal(s.ball.pos - hitboxCenter(s.car));
+        const Vec3 rel = s.car.basis.toLocal(s.ball.vel - s.car.vel);
+        catchHopFwd_ = local.x > s.car.hitboxExtent.x * 0.25f || rel.x > 80.f;
+    } else {
+        catchHopFwd_ = false;
+    }
     if (catchOnRoof_ + 1e-4f >= cfg_.catchHold) {
         endCatch(ctx, out, true, std::string());
         return;
@@ -733,7 +804,7 @@ void CoursesModule::endCatch(const TickContext& ctx, Actions& out, bool success,
     last_.success = success;
     last_.score = score;
     last_.verdict = verdictLabel(r.verdict);
-    last_.headline = success ? "Balle contrôlée en " + formatNumber(settle, 2) + " s" : "Raté : " + reason;
+    last_.headline = success ? "Balle contrôlée en " + formatNumber(settle, 1) + " s" : "Raté : " + reason;
     if (isFastest && attempts_[static_cast<size_t>(kind_)] > 1) last_.headline += " (le plus rapide !)";
     last_.time = success ? settle : runTime_;
     last_.newRecord = false;  // the catch has no record
@@ -773,7 +844,8 @@ void CoursesModule::resultTick(const TickContext& ctx, Actions& out) {
         break;
     case 3: stopExercise(true); break;
     default:
-        if (kind_ == CoursesKind::Catch || kind_ == CoursesKind::Dribble) nextAttempt(ctx, out);
+        // Full sequences and control drills: a new start at the current level after every attempt.
+        if (full_ || kind_ == CoursesKind::Catch || kind_ == CoursesKind::Dribble) nextAttempt(ctx, out);
         else if (lastSuccess_ && cfg_.difficultyMode == 0 && !fromCode_) nextAttempt(ctx, out);
         else restartAttempt();
         break;

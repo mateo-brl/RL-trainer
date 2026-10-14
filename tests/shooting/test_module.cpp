@@ -13,12 +13,16 @@ using namespace shtest;
 namespace {
 
 // Ticks the harness with the world until the drill is live (setup + countdown).
-void runToLive(Harness& h, World& w, int maxTicks = 600) {
+void runToLive(Harness& h, World& w, int maxTicks = 900) {
+    // The first attempt of a drill waits for the throttle (released once, then pressed), then counts down. The
+    // throttle is let go after the press: with the ball balanced on a stopped car, GO waits for that.
     for (int i = 0; i < maxTicks && h.mod.phase() != ShootPhase::Live; ++i) {
+        w.in.throttle = i >= 2 && i < 10 ? 1.f : 0.f;
         const Actions a = h.tick(w.snap());
         w.apply(a);
         w.advance();
     }
+    w.in.throttle = 0.f;
 }
 
 void runTicks(Harness& h, World& w, int n) {
@@ -217,8 +221,10 @@ TEST(shooting_flick_drill_spawn_countdown_and_release) {
     World w;
     h.tick(w.snap());
     h.command("flick", {"front"});
-    // Setup tick: car and ball placed, held still.
+    // Setup tick: car and ball placed, held still; the first attempt waits for the throttle.
+    w.in.throttle = 1.f;  // still held from before
     const Actions setup = h.tick(w.snap());
+    CHECK(setup.freezeCar);
     CHECK(setup.setCar && setup.setBall);
     CHECK(h.mod.phase() == ShootPhase::Countdown);
     if (!setup.setCar || !setup.setBall) return;
@@ -236,11 +242,26 @@ TEST(shooting_flick_drill_spawn_countdown_and_release) {
     CHECK(b.fwd.y > 0.9f);
     w.apply(setup);
     w.advance();
-    // Countdown: held every tick, inputs frozen, native "1" then GO at the release.
+    // Waiting: held every tick until the throttle is pressed (a throttle held from before does not count).
+    for (int i = 0; i < 240; ++i) {
+        w.in.throttle = 1.f;
+        const Actions a = h.tick(w.snap());
+        CHECK(a.freezeCar && a.setCar && a.setBall);
+        CHECK(!a.countdownMessage);
+        w.apply(a);
+        w.advance();
+    }
+    CHECK(h.mod.phase() == ShootPhase::Countdown);
+    CHECK(h.mod.status().readyLine.find("accélérer") != std::string::npos);
+    w.in.throttle = 0.f;
+    h.tick(w.snap());
+    w.advance();
+    w.in.throttle = 1.f;
+    // Countdown: held every tick, inputs frozen, native "3", "2", "1" then GO at the release.
     int countdownMsgs = 0;
     bool released = false;
     Actions rel;
-    for (int i = 0; i < 200 && !released; ++i) {
+    for (int i = 0; i < 500 && !released; ++i) {
         const Actions a = h.tick(w.snap());
         if (a.countdownMessage) ++countdownMsgs;
         if (h.mod.phase() == ShootPhase::Live) {
@@ -254,14 +275,53 @@ TEST(shooting_flick_drill_spawn_countdown_and_release) {
         w.advance();
     }
     CHECK(released);
-    CHECK_EQ(countdownMsgs, 1);
+    CHECK_EQ(countdownMsgs, 3);
     CHECK(rel.goMessage);
+    w.in.throttle = 0.f;
     CHECK(rel.setCar && rel.setBall);
     if (rel.setCar && rel.setBall) {
-        CHECK(length(rel.setCar->vel) > 300.f); // driving start
+        CHECK(length(rel.setCar->vel) > 299.f); // driving start: 300 uu/s on the first moving levels
         CHECK_NEAR(distance(rel.setCar->vel, rel.setBall->vel), 0.f, 1e-3f); // the ball moves with the car
         CHECK(!rel.freezeCar);
     }
+}
+
+TEST(shooting_stationary_flick_waits_for_the_throttle_release) {
+    // Ball balanced on a stopped car: the player keeps the throttle held from his press through the countdown (the
+    // kickoff habit). GO waits until he lets go (HUD "Lâche l'accélérateur pour partir"), then comes on that tick.
+    Harness h;
+    World w;
+    h.tick(w.snap());
+    h.command("flick", {"front"});
+    for (int i = 0; i < 8 * 120; ++i) {
+        w.in.throttle = i < 2 ? 0.f : 1.f;
+        const Actions a = h.tick(w.snap());
+        CHECK(h.mod.phase() != ShootPhase::Live);
+        CHECK(a.freezeCar);
+        w.apply(a);
+        w.advance();
+    }
+    CHECK(h.mod.phase() == ShootPhase::Countdown);
+    CHECK_EQ(h.mod.status().readyLine, std::string("Lâche l'accélérateur pour partir"));
+    w.in.throttle = 0.f;
+    const Actions go = h.tick(w.snap());
+    CHECK(h.mod.phase() == ShootPhase::Live);
+    CHECK(go.setCar && go.setBall && !go.freezeCar);
+    // A moving start (the car drives at GO, the ball rides with it) is not held back.
+    Harness g;
+    World v;
+    g.set("rlt_sh_flick_start", "1");
+    g.tick(v.snap());
+    g.command("flick", {"front"});
+    int live = -1;
+    for (int i = 0; i < 8 * 120 && live < 0; ++i) {
+        v.in.throttle = i < 2 ? 0.f : 1.f;
+        const Actions a = g.tick(v.snap());
+        v.apply(a);
+        v.advance();
+        if (g.mod.phase() == ShootPhase::Live) live = i;
+    }
+    CHECK(live >= 0 && live <= 2 + static_cast<int>(3.1f * kTickRate));
 }
 
 TEST(shooting_flick_drill_full_attempt) {
@@ -300,6 +360,10 @@ TEST(shooting_flick_drill_full_attempt) {
 
 TEST(shooting_flick_drill_wrong_type_and_lost_ball) {
     Harness h;
+    Store st;  // niveau 4: the requested type counts (niveaux 1 and 2 accept any flick)
+    st.setFloat("shooting.stair.flick.level", 1.f / 3.f);
+    st.setInt("shooting.stair.flick.attempts", 1);
+    h.mod.load(st);
     World w;
     h.tick(w.snap());
     h.command("flick", {"musty"});

@@ -62,12 +62,25 @@ TEST(courses_hud_compact_countdown_keeps_start_goal_and_tip) {
     h.command("rings", {"air", code42()});
     h.tick();
     CHECK(h.mod.phase() == CoursesPhase::Setup || h.mod.phase() == CoursesPhase::Countdown);
-    const DrawPanel p = compactPanel(h);
+    DrawPanel p = compactPanel(h);
     checkCompact(p);
-    CHECK(has(p, "Départ dans"));
+    // First attempt: the HUD asks for the throttle, says the goal and the first thing to do.
+    CHECK(has(p, "Appuie sur accélérer quand tu es prêt"));
     CHECK(has(p, "anneaux dans l'ordre"));
-    CHECK(has(p, "caméra balle"));
+    CHECK(has(p, "Saute et lève le nez"));
     CHECK(!has(p, "Code "));  // detail: the code is in the tab
+    h.snap.in.throttle = 1.f;
+    h.tick();
+    p = compactPanel(h);
+    checkCompact(p);
+    CHECK(has(p, "Départ dans 3"));
+    // Ground arches: the ball cam tip.
+    Harness g;
+    g.command("rings", {"ground", courses::encodeCourseCode(42, courses::CourseType::GroundWall, 0)});
+    g.tick();
+    p = compactPanel(g);
+    checkCompact(p);
+    CHECK(has(p, "caméra balle"));
     // The full HUD still has everything.
     DrawContext full{h.settings, h.game, h.profile, h.snap, true, true, 1.f, false};
     DrawList dl;
@@ -146,6 +159,17 @@ TEST(courses_hud_compact_control_drills) {
     DrawPanel p = compactPanel(d);
     checkCompact(p);
     CHECK(p.lines[0].text.find("Tenue ") == 0);
+    CHECK(has(p, "Balle au centre du toit"));  // front / back gauge
+    CHECK(!has(p, "Vitesse moy."));            // niveau 1: no minimum speed
+    // From niveau 2 the speed target shows.
+    Harness d2;
+    d2.set("rlt_co_difficulty_mode", "5");
+    d2.set("rlt_co_difficulty", "50");
+    d2.command("control", {"dribble"});
+    d2.runCountdown();
+    d2.tick();
+    p = compactPanel(d2);
+    checkCompact(p);
     CHECK(has(p, "Vitesse moy."));
     // Catch: time left and time on the roof, the touch count is a detail.
     Harness c;

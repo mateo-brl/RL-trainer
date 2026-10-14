@@ -11,6 +11,7 @@
 #include "core/common/Controls.h"
 #include "core/common/Text.h"
 #include "core/modules/courses/CoursesModule.h"
+#include "core/modules/courses/Tutorials.h"
 #include "imgui.h"
 #include "plugin/ui/Ui.h"
 
@@ -44,14 +45,15 @@ void refreshPreview(CodeField& f, const std::string& typed) {
     f.preview.clear();
     const auto decoded = courses::parseCourseCode(typed);
     if (!decoded) return;
-    const courses::Course c = courses::generateCourse(decoded->seed, decoded->type, decoded->difficultyPct);
+    const courses::Course c = courses::generateCourse(decoded->seed, decoded->type, decoded->difficultyPct, nullptr, decoded->version);
     if (c.rings.empty()) return;
     const bool gates = decoded->type == courses::CourseType::DribbleGates;
     const size_t n = c.rings.size();
     f.previewValid = true;
     f.preview = std::string("Code valide : ") + CoursesModule::kindTitle(kindOfType(decoded->type)) + ", niveau " +
                 std::to_string(CoursesModule::levelNumber(decoded->difficultyPct)) + "/10, " + std::to_string(n) +
-                (gates ? (n > 1 ? " portes" : " porte") : (n > 1 ? " anneaux" : " anneau"));
+                (gates ? (n > 1 ? " portes" : " porte") : (n > 1 ? " anneaux" : " anneau")) +
+                (decoded->version < courses::kGeneratorVersion ? " (ancien code : le parcours d'origine)" : "");
 }
 
 CodeField& codeField() {
@@ -70,6 +72,11 @@ struct TabData {
     float dribbleBest = 0.f;
     float catchBest = 0.f;
     int difficulty[kCoursesKindCount] = {};
+    int fullDifficulty[kCoursesKindCount] = {};
+    bool fullMode[kCoursesKindCount] = {};
+    int pickupNiveau = 1;
+    PlayerProfile profile;
+    KeyStyle keyStyle = KeyStyle::Auto;
     GameContext game;
     bool worldControl = false;
     std::string owner;
@@ -85,8 +92,10 @@ TabData readData(const UiContext& ctx) {
     d.worldControl = ctx.engine.worldControlAllowed();
     d.owner = ctx.engine.activityOwner();
     const KeyStyle style = keyStyleFromIndex(ctx.engine.settings().profile.buttonStyle);
-    d.resetPrompt = actionPrompt(ctx.engine.profile(), GameAction::ResetShot, style);
-    d.ballCamKey = actionKeyLabel(ctx.engine.profile(), GameAction::BallCam, style);
+    d.keyStyle = style;
+    d.profile = ctx.engine.profile();
+    d.resetPrompt = actionPrompt(d.profile, GameAction::ResetShot, style);
+    d.ballCamKey = actionKeyLabel(d.profile, GameAction::BallCam, style);
     if (!mod) return d;
     d.found = true;
     d.status = mod->status();
@@ -97,8 +106,59 @@ TabData readData(const UiContext& ctx) {
     d.cfg = mod->config();
     d.dribbleBest = mod->dribbleBest();
     d.catchBest = mod->catchBest();
-    for (int i = 0; i < kCoursesKindCount; ++i) d.difficulty[i] = mod->difficultyFor(static_cast<CoursesKind>(i));
+    for (int i = 0; i < kCoursesKindCount; ++i) {
+        const auto k = static_cast<CoursesKind>(i);
+        d.difficulty[i] = mod->difficultyFor(k);
+        d.fullDifficulty[i] = mod->fullDifficultyFor(k);
+        d.fullMode[i] = mod->fullMode(k);
+    }
+    d.pickupNiveau = mod->pickupNiveau();
     return d;
+}
+
+constexpr Color kAccent{255, 199, 64, 255};
+
+// Tutorial of one exercise: the steps (what to do, why, how to know it is right), the in-game panel, niveau 1, the
+// "parcours complet", and the numbers under "Détails techniques".
+void drawTutorial(const UiContext& ctx, const TabData& d, CoursesKind k) {
+    const courses::Tutorial& t = courses::tutorial(k);
+    auto fill = [&](const char* text) { return courses::fillButtons(text, d.profile, d.keyStyle); };
+    ImGui::TextWrapped("%s", fill(t.intro).c_str());
+    if (t.before && *t.before) {
+        ui::textColored(kAccent, "Conseillé avant :");
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", t.before);
+    }
+    ui::textColored(kAccent, "Les étapes");
+    for (const auto& st : t.steps) {
+        ImGui::TextWrapped("%s", fill(st.todo).c_str());
+        ImGui::Indent();
+        ImGui::TextWrapped("Pourquoi : %s", fill(st.why).c_str());
+        ImGui::TextWrapped("C'est bon quand : %s", fill(st.ok).c_str());
+        ImGui::Unindent();
+    }
+    ui::textColored(kAccent, "Panneau en jeu");
+    for (const char* line : t.panel) ImGui::BulletText("%s", line);
+    ui::textColored(kAccent, "Niveau 1");
+    ImGui::TextWrapped("%s", fill(t.level1).c_str());
+    ui::textColored(kAccent, CoursesModule::kindFullTitle(k));
+    ImGui::TextWrapped("%s", fill(t.full).c_str());
+    for (size_t i = 0; i < t.fullSteps.size(); ++i) ImGui::BulletText("%d. %s", static_cast<int>(i + 1), t.fullSteps[i]);
+    if (CoursesModule::kindUsesPickup(k)) {
+        ui::textColored(kAccent, "Le ramassage");
+        ImGui::TextWrapped("%s", courses::pickupText());
+        ImGui::TextDisabled("Niveau du ramassage : %d/10", d.pickupNiveau);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Ramassage au niveau 1")) ctx.post("courses", "reset_level", {"pickup"});
+    }
+    const std::string techId = std::string("Détails techniques##co_tech_") + CoursesModule::kindKey(k);
+    if (ImGui::CollapsingHeader(techId.c_str())) {
+        ImGui::Indent();
+        for (const char* line : t.tech) ImGui::TextWrapped("%s", line);
+        if (CoursesModule::kindUsesPickup(k))
+            for (const char* line : courses::pickupTech()) ImGui::TextWrapped("%s", line);
+        ImGui::Unindent();
+    }
 }
 
 void quickSetting(const UiContext& ctx, const Settings& current, const char* cvar) {
@@ -115,14 +175,35 @@ Color tierColor(CoursesKind k) {
 }
 
 void exerciseButton(const UiContext& ctx, const TabData& d, CoursesKind k) {
-    ImGui::PushID(static_cast<int>(k));
+    const int i = static_cast<int>(k);
+    ImGui::PushID(i);
     const char* command = CoursesModule::kindIsRings(k) ? "rings" : "control";
     if (ImGui::Button(CoursesModule::kindTitle(k), ImVec2(190.f, 0.f))) ctx.post("courses", command, {CoursesModule::kindKey(k)});
     ImGui::SameLine();
     ui::textColored(tierColor(k), CoursesModule::kindTierLabel(k));
     ImGui::SameLine();
-    ImGui::TextDisabled("niveau %d/10", CoursesModule::levelNumber(d.difficulty[static_cast<int>(k)]));
+    const int level = d.fullMode[i] ? d.fullDifficulty[i] : d.difficulty[i];
+    ImGui::TextDisabled("niveau %d/10", CoursesModule::levelNumber(level));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Revenir au niveau 1")) ctx.post("courses", "reset_level", {CoursesModule::kindKey(k)});
     ImGui::TextWrapped("%s", CoursesModule::kindHelp(k));
+    // Start: the exercise alone, or with every step before it ("parcours complet").
+    const char* modes[2] = {"Départ normal", CoursesModule::kindFullTitle(k)};
+    int mode = d.fullMode[i] ? 1 : 0;
+    ImGui::SetNextItemWidth(320.f);
+    if (ImGui::Combo("Départ", &mode, modes, 2))
+        ctx.post("courses", "mode", {CoursesModule::kindKey(k), mode == 1 ? "parcours" : "normal"});
+    ui::helpMarker("Parcours complet : toutes les étapes avant l'exercice (décoller, monter au mur, ramasser la balle...), "
+                   "vérifiées une par une. Il a son propre niveau.");
+    // Soft prerequisites: the slalom and the air dribble rings come after the roof dribble.
+    if ((k == CoursesKind::Slalom || k == CoursesKind::RingsAirDribble) &&
+        CoursesModule::levelNumber(d.difficulty[static_cast<int>(CoursesKind::Dribble)]) < 3)
+        ui::textColored(colors::Orange, "Conseil : monte d'abord le Dribble sur le toit au niveau 3.");
+    if (ImGui::CollapsingHeader("Tutoriel")) {
+        ImGui::Indent();
+        drawTutorial(ctx, d, k);
+        ImGui::Unindent();
+    }
     ImGui::PopID();
 }
 
@@ -140,6 +221,13 @@ void renderCoursesTab(UiContext& ctx) {
     ImGui::TextWrapped("Des maps d'entraînement intégrées au freeplay, sans rien télécharger : anneaux à traverser en vol, "
                        "arches au sol et sur les murs, air dribble, et exercices de contrôle de balle. Chaque parcours a "
                        "un code à partager, et ton record est gardé pour chaque code.");
+    ui::textColored(kAccent, courses::progressRule());
+    ImGui::TextWrapped("%s", courses::pathAdvice());
+    if (ImGui::CollapsingHeader("Lexique##co_lexicon")) {
+        ImGui::Indent();
+        ImGui::TextWrapped("%s", courses::lexicon());
+        ImGui::Unindent();
+    }
 
     const bool workshopCourse = d.game.category == MapCategory::Rings || d.game.category == MapCategory::Dribble ||
                                 d.game.category == MapCategory::AirDribble;
@@ -155,6 +243,7 @@ void renderCoursesTab(UiContext& ctx) {
     const CoursesStatus& s = d.status;
     if (s.active) {
         ImGui::Text("%s : %s", s.title.c_str(), phaseColorLabel(s));
+        if (!s.stepLine.empty()) ui::textColored(kAccent, "Étape " + s.stepLine);
         ImGui::Text("Niveau %d/10%s", CoursesModule::levelNumber(s.difficulty), s.fromCode ? " (fixé par le code)" : "");
         if (!s.code.empty()) {
             ImGui::Text("Code : %s", s.code.c_str());
@@ -205,7 +294,7 @@ void renderCoursesTab(UiContext& ctx) {
 
     // ---- Exercises (easiest first) ------------------------------------------------------------------------------
     ui::separatorText("Exercices");
-    ui::textColored(tierColor(CoursesKind::RingsGround), "Débutant : commence par les anneaux au sol, puis le dribble.");
+    ImGui::TextDisabled("Chaque essai commence voiture bloquée : appuie sur accélérer quand tu es prêt, puis 3, 2, 1.");
     for (CoursesKind k : CoursesModule::kindsByTier()) exerciseButton(ctx, d, k);
     ImGui::TextDisabled("Astuce : coupe la caméra balle%s pour les anneaux en voiture.",
                         d.ballCamKey.empty() ? "" : (" (" + d.ballCamKey + ")").c_str());
@@ -329,6 +418,9 @@ void renderCoursesTab(UiContext& ctx) {
         ImGui::BulletText("Air dribble et slalom : c'est la balle qui doit passer, et elle ne doit pas toucher le sol.");
         ImGui::BulletText("Slalom : balle sur le toit, et passage propre au centre de chaque porte (sans frôler les poteaux).");
         ImGui::BulletText("Rattrapage : suis le cercle au sol, amortis la balle et garde-la sur le toit.");
+        ImGui::BulletText("Parcours complet : chaque étape passe au vert sur le panneau. S'il en manque une, le panneau dit "
+                          "laquelle et comment la réussir.");
+        ImGui::BulletText("Revenir au niveau 1 : remet l'exercice (et son parcours complet) au niveau 1.");
     }
     if (ImGui::CollapsingHeader("Commandes console##courses_cmds")) {
         ImGui::BulletText("rlt courses rings <air|ground|airdribble> [code]");
@@ -337,6 +429,8 @@ void renderCoursesTab(UiContext& ctx) {
         ImGui::BulletText("rlt courses restart  /  next  /  stop");
         ImGui::BulletText("rlt courses code (affiche le code dans le chat)");
         ImGui::BulletText("rlt courses clearpb [code] (efface un record)");
+        ImGui::BulletText("rlt courses mode <air|ground|airdribble|dribble|slalom|catch> <normal|parcours>");
+        ImGui::BulletText("rlt courses reset_level <exercice|pickup> (revenir au niveau 1)");
     }
 
     // ---- Settings -----------------------------------------------------------------------------------------------

@@ -26,7 +26,13 @@ void SpeedManagementAnalyzer::onTick(const Ctx& c, std::vector<MechGrade>& out) 
         atSpeed_++;
         if (s.in.throttle < 0.5f && !boosting) coast_++;
     }
-    if (s.car.supersonic || speed >= k::kSupersonicStartSpeed) super_++;
+    const bool super = s.car.supersonic || speed >= k::kSupersonicStartSpeed;
+    if (super) super_++;
+    if (super && firstSuper_ < 0) firstSuper_ = ticks_ - 1;
+    if (firstSuper_ >= 0) {
+        afterTicks_++;
+        if (super) superAfter_++;
+    }
     if (ticks_ < c.cfg.speedWindowTicks) return;
     if (boostTicks_ > 24 || atSpeed_ > 60) emit(c, out);
     clear();
@@ -54,6 +60,10 @@ void SpeedManagementAnalyzer::emit(const Ctx& c, std::vector<MechGrade>& out) {
     g.add("coastAtSpeedRatio", coast);
     g.add("avgBoostHoldTicks", avgHold);
     g.add("windowSeconds", static_cast<float>(ticks_) * k::kDt);
+    // Time from the start of the window to the first supersonic tick (99 when never), and how much of the time
+    // after that the car stayed supersonic (boost drill).
+    g.add("timeToSupersonic", firstSuper_ >= 0 ? static_cast<float>(firstSuper_) * k::kDt : 99.f);
+    g.add("supersonicAfterRatio", afterTicks_ ? static_cast<float>(superAfter_) / static_cast<float>(afterTicks_) : 0.f);
     const float wasteS = lerpPts(waste, 0.05f, 0.5f), coastS = lerpPts(coast, 0.05f, 0.5f);
     const float score = 0.6f * wasteS + 0.4f * coastS;
     if (waste > 0.2f) g.err("SM_BOOST_AT_MAX", 0.6f * (100.f - wasteS));

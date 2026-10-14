@@ -115,7 +115,8 @@ TEST(courses_catch_plans_inside_field_and_reachable) {
                 if (p.fromWall) ++wall;
                 else ++drop;
                 CHECK(std::fabs(p.ballPos.x) <= 4096.f - 91.f && std::fabs(p.ballPos.y) <= 5120.f - 91.f);
-                CHECK(p.ballPos.z > 500.f && p.ballPos.z < 2044.f - 91.f);
+                // Released at least 2 m up (low drops are tossed up a little first), the top under the ceiling.
+                CHECK(p.ballPos.z > 190.f && p.apex < 2044.f - 91.f && p.apex >= p.ballPos.z - 1e-3f);
                 CHECK(std::fabs(p.landing.x) <= 4096.f - 300.f && std::fabs(p.landing.y) <= 4600.f);
                 CHECK(std::fabs(p.landing.x) + std::fabs(p.landing.y) <= 8064.f - 300.f);
                 CHECK(std::fabs(p.carPos.x) <= 3500.f && std::fabs(p.carPos.y) <= 4000.f);
@@ -137,8 +138,8 @@ TEST(courses_catch_plans_inside_field_and_reachable) {
     CHECK(a.ballPos == b.ballPos && a.carPos == b.carPos);
     float hEasy = 0.f, hHard = 0.f;
     for (uint64_t s = 0; s < 200; ++s) {
-        hEasy += planCatch(s, 0.0, 1).ballPos.z;
-        hHard += planCatch(s, 1.0, 1).ballPos.z;
+        hEasy += planCatch(s, 0.0, 1).apex;
+        hHard += planCatch(s, 1.0, 1).apex;
     }
     CHECK(hHard > hEasy * 1.5f);
 }

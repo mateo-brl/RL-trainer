@@ -93,6 +93,7 @@ const std::vector<MetricSpec> kFastAerial = {
     {"tiltInput", "Stick tiré", "%", 100.f, B::Fixed, 70.f, kBig, 50.f, 100.f, nullptr, 0, false, 0.f, 2.f},
     {"timeToBall", "Temps jusqu'à la balle", "s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 2, false, 0.f, 1e6f},
     {"vzEnd", "Vitesse verticale", "uu/s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 0, false, -1e6f, 1e6f},
+    {"ballZAtTouch", "Hauteur de la balle à la touche", "uu", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 0, false, 0.f, 1e6f},
 };
 const std::vector<MetricSpec> kDoubleJumpAerial = {
     {"holdTicks", "1er saut tenu", "ms", kMsTick, B::Fixed, 167.f, 225.f, 100.f, 200.f, nullptr, 0, false, 0.f, 1e6f},
@@ -126,12 +127,16 @@ const std::vector<MetricSpec> kPowerslide = {
     {"exitSlipDeg", "Glisse en sortie", "°", 1.f, B::Fixed, -kBig, 8.f, 27.f, 0.f, nullptr, 0, false, 0.f, 180.f},
     {"headingChangeDeg", "Virage", "°", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 0, false, 0.f, 1e6f},
     {"turnRateDegPerS", "Vitesse de rotation", "°/s", 1.f, B::Fixed, 150.f, kBig, 100.f, 200.f, nullptr, 0, false, 0.f, 1e6f},
+    {"aimErrorDeg", "Visée en sortie", "°", 1.f, B::Fixed, -kBig, 10.f, 30.f, 0.f, nullptr, 0, false, 0.f, 180.f},
 };
 const std::vector<MetricSpec> kBoost = {
     {"wasteRatio", "Boost gaspillé à vitesse max", "%", 100.f, B::Fixed, -kBig, 5.f, 45.f, 0.f, nullptr, 0, false, 0.f, 2.f},
     {"coastAtSpeedRatio", "Sans accélérateur en supersonique", "%", 100.f, B::Fixed, -kBig, 5.f, 45.f, 0.f, nullptr, 0, false, 0.f, 2.f},
     {"supersonicRatio", "Temps supersonique", "%", 100.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 0, false, 0.f, 2.f},
     {"boostUsed", "Boost utilisé", "", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 0, false, 0.f, 1e6f},
+    {"timeToSupersonic", "Temps jusqu'au supersonique", "s", 1.f, B::None, 0.f, 0.f, 0.f, 0.f, nullptr, 2, false, 0.f, 90.f},
+    {"boostWastedAtMax", "Boost gaspillé à vitesse max", "", 1.f, B::Fixed, -kBig, 1.5f, 10.f, 0.f, nullptr, 1, false, 0.f, 1e6f},
+    {"supersonicAfterRatio", "Supersonique gardé", "%", 100.f, B::Fixed, 90.f, kBig, 40.f, 100.f, nullptr, 0, false, 0.f, 2.f},
 };
 
 // {key, scale, lowerIsBetter, needSuccess, unit, label, decimals}
@@ -377,6 +382,8 @@ const char* errorCheckLabel(const char* code) {
         {"WD_LATE_JUMPED", "Flip avant que les roues touchent"}, {"WD_NO_STICK", "Stick incliné au moment du flip"},
         {"WALL_FELL_OFF", "Rester collé au mur"},         {"FA_ACCIDENTAL_DODGE", "Pas de flip au double saut"},
         {"FA_NO_DOUBLE_JUMP", "Double saut"},             {"ST_NO_FLIP", "Flip encore disponible"},
+        {"HF_WRONG_FLIP", "Flip arrière"},                {"FC_WRONG_FLIP", "Flip avant ou arrière"},
+        {"SF_SIDE_FLIP", "Pas de flip de côté"},          {"SF_BACK_FLIP", "Pas de flip arrière"},
         {"ST_YAW_ROLL_MISMATCH", "Stick et air roll opposés"}, {"ST_PITCH_LEAK", "Stick ni en haut ni en bas"},
     };
     for (const Label& l : labels)
@@ -390,7 +397,9 @@ std::vector<std::string> drillCheckLines(const DrillSetup& d, const DetectConfig
     std::vector<std::string> out;
     if (d.focus == Focus::None) return out;
     const Mech m = focusInfo(d.focus).primary;
-    if (d.needTouch || d.kickoff) out.push_back("Toucher la balle");
+    if (d.reachGap > 0.f) out.push_back("Passer à moins de " + num(d.reachGap, 0) + " uu de la balle");
+    else if (d.needTouch || d.kickoff) out.push_back("Toucher la balle");
+    if (d.runDashes > 1) out.push_back("Wall dashes à la suite : " + std::to_string(d.runDashes));
     for (const DrillCheck& c : d.checks) {
         if (!c.key) {
             out.push_back(errorCheckLabel(c.lowCode));

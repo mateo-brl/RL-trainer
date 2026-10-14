@@ -19,8 +19,8 @@ int b32Value(char ch) {
 
 // Weighted sum mod 31 of the base32 values of the type, difficulty and seed characters (positions 5..22),
 // weights 1..17: every single substitution (except 0 <-> Z) and every swap of two different neighbours changes
-// the check character. The fixed "RLT1-" prefix is validated separately.
-char codeCheck(const std::string& body) {
+// the check character. The "RLT<version>-" prefix is validated separately (the version also enters the check from 2).
+char codeCheck(const std::string& body, uint32_t version) {
     uint32_t sum = 0, w = 1;
     for (size_t i = 5; i < body.size() && i < 23; ++i) {
         if (body[i] == '-') continue;
@@ -28,15 +28,17 @@ char codeCheck(const std::string& body) {
         sum += w * static_cast<uint32_t>(v < 0 ? 0 : v);
         ++w;
     }
+    if (version >= 2) sum += 18u * version;  // version 1 codes keep their check character
     return kB32[sum % 31u];
 }
 
-std::string prefix() { return "RLT" + std::to_string(kGeneratorVersion) + "-"; }
+std::string prefix(uint32_t version) { return "RLT" + std::to_string(version) + "-"; }
 
 } // namespace
 
-std::string encodeCourseCode(uint64_t seed, CourseType type, int difficultyPct) {
-    std::string s = prefix();
+std::string encodeCourseCode(uint64_t seed, CourseType type, int difficultyPct, uint32_t version) {
+    version = std::clamp(version, kOldestGeneratorVersion, kGeneratorVersion);
+    std::string s = prefix(version);
     s += kTypeLetters[static_cast<int>(type)];
     const int dp = std::clamp(difficultyPct, 0, 100);
     s += static_cast<char>('0' + dp / 100);
@@ -51,15 +53,18 @@ std::string encodeCourseCode(uint64_t seed, CourseType type, int difficultyPct) 
     }
     s.append(buf, 13);
     s += '-';
-    s += codeCheck(s);
+    s += codeCheck(s, version);
     return s;
 }
 
 std::optional<DecodedCode> decodeCourseCode(const std::string& code) {
     // RLT1-A050-XXXXXXXXXXXXX-C -> 4 + 1 + 4 + 1 + 13 + 1 + 1 = 25 characters
-    if (code.size() != kCodeLength || code.compare(0, 5, prefix()) != 0) return std::nullopt;
+    if (code.size() != kCodeLength || code.compare(0, 3, "RLT") != 0 || code[4] != '-') return std::nullopt;
+    if (code[3] < '0' || code[3] > '9') return std::nullopt;
+    const uint32_t version = static_cast<uint32_t>(code[3] - '0');
+    if (version < kOldestGeneratorVersion || version > kGeneratorVersion) return std::nullopt;
     if (code[9] != '-' || code[23] != '-') return std::nullopt;
-    if (codeCheck(code.substr(0, 24)) != code[24]) return std::nullopt;
+    if (codeCheck(code.substr(0, 24), version) != code[24]) return std::nullopt;
     int t = -1;
     for (int i = 0; i < kCourseTypeCount; ++i)
         if (code[5] == kTypeLetters[i]) t = i;
@@ -81,6 +86,7 @@ std::optional<DecodedCode> decodeCourseCode(const std::string& code) {
     out.seed = v;
     out.type = static_cast<CourseType>(t);
     out.difficultyPct = dp;
+    out.version = version;
     return out;
 }
 

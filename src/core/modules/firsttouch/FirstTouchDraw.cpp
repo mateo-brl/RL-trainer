@@ -7,6 +7,7 @@
 
 #include "core/common/Text.h"
 #include "core/modules/firsttouch/FirstTouchModule.h"
+#include "core/modules/firsttouch/FirstTouchTutorials.h"
 
 namespace rlt {
 
@@ -56,7 +57,10 @@ void FirstTouchModule::draw(const ViewContext& view, const DrawContext& ctx, Dra
     if (!cfg_.enabled) return;
     // During a drill the compact HUD keeps the drill panel only: it already carries the verdict and the tip.
     if (cfg_.hudEnabled && !(ctx.compactHud && drill_.active)) drawStatsPanel(view, ctx, out);
-    if (drill_.active) drawDrillPanel(view, ctx, out);
+    if (drill_.active) {
+        drawDrillPanel(view, ctx, out);
+        drawDrillWorld(ctx, out);
+    }
     if (cfg_.showContactMarker) drawContactMarker(view, ctx, out);
 }
 
@@ -168,6 +172,45 @@ void FirstTouchModule::drawHeatmap(float anchorX, float topY, bool anchorRight, 
     }
 }
 
+std::string FirstTouchModule::currentPanelLine(const DrawContext& ctx) const {
+    using ft::DrillType;
+    const DrillType t = drill_.current;
+    const Snapshot& s = ctx.snap;
+    const bool snapOk = ctx.hasSnapshot && s.car.valid && s.ball.valid;
+    const float carSpeed = snapOk ? length2D(s.car.vel) : 0.f;
+    const float sinceGo = drill_.now - drill_.goTime;
+    const float toLanding = snapOk && drill_.showLanding ? length2D(hitboxCenter(s.car) - drill_.landing) : 1e9f;
+    int idx = 0;
+    switch (t) {
+    case DrillType::RollIn: idx = drill_.ballDist > 700.f ? 0 : 1; break;
+    case DrillType::RollAway: idx = drill_.ballDist > 800.f ? 0 : (drill_.ballDist > 350.f ? 1 : 2); break;
+    case DrillType::Pass: idx = sinceGo < 0.8f ? 0 : (drill_.ballDist > 900.f ? 1 : 2); break;
+    case DrillType::Lob:
+        if (drill_.floorBounces >= 1) idx = 3;
+        else if (toLanding > 500.f) idx = 0;
+        else idx = carSpeed > 300.f ? 1 : 2;
+        break;
+    case DrillType::Wall:
+        if (drill_.floorBounces >= 1) idx = 3;
+        else if (sinceGo < 0.6f) idx = 0;
+        else idx = toLanding > 400.f ? 1 : 2;
+        break;
+    case DrillType::High:
+        if (drill_.hangMode != ft::HangRelease::None && drill_.hang.hanging()) {
+            if (drill_.underBall)
+                return carSpeed > 300.f ? "Sous la balle : arrête-toi" : "Sous la balle : saute !";
+            idx = 0;
+        } else if (drill_.hangMode != ft::HangRelease::None) {
+            idx = snapOk && airborne(s.car) ? 2 : 1;
+        } else {
+            idx = drill_.ballDist > 600.f ? 0 : (snapOk && airborne(s.car) ? 2 : 1);
+        }
+        break;
+    case DrillType::Mix: idx = 0; break;
+    }
+    return ft::drillPanelLine(t, idx);
+}
+
 void FirstTouchModule::drawDrillPanel(const ViewContext& view, const DrawContext& ctx, DrawList& out) const {
     const float scale = std::max(0.3f, ctx.hudScale * cfg_.hudSize);
     DrawPanel p;
@@ -176,29 +219,79 @@ void FirstTouchModule::drawDrillPanel(const ViewContext& view, const DrawContext
     p.scale = scale;
     p.minWidth = 220.f * scale;
 
+    const bool parcours = drill_.full && drill_.type != ft::DrillType::Mix;
+    const bool match = drill_.full && drill_.type == ft::DrillType::Mix;
     const auto i = static_cast<size_t>(drill_.current);
-    const float level = drill_.phase == DrillPhase::Place ? stairs_[i].level() : drill_.repLevel;
+    float level = drill_.repLevel;
+    if (drill_.phase == DrillPhase::Place)
+        level = parcours ? fullStairs_[static_cast<size_t>(drill_.type)].level() : stairs_[i].level();
+    const KeyStyle style = keyStyleFromIndex(ctx.settings.profile.buttonStyle);
     // Title: the drill and its level (1..10); a Mix names the drill of the current ball.
-    p.title = drill_.type == ft::DrillType::Mix ? std::string("Mix : ") + ft::drillName(drill_.current)
-                                                : std::string(ft::drillName(drill_.type));
-    p.title += ", niveau " + std::to_string(ft::playerLevel(level)) + "/10";
+    if (match) {
+        p.title = "Séquence de match : balle " + std::to_string(std::min(drill_.matchBall + 1, ft::kMatchBalls)) + "/" +
+                  std::to_string(ft::kMatchBalls);
+        if (drill_.phase != DrillPhase::Pause) p.title += std::string(", ") + ft::drillName(drill_.current);
+    } else {
+        p.title = parcours ? std::string("Parcours complet : ") + ft::drillName(drill_.type)
+                           : (drill_.type == ft::DrillType::Mix ? std::string("Mix : ") + ft::drillName(drill_.current)
+                                                                : std::string(ft::drillName(drill_.type)));
+        p.title += ", niveau " + std::to_string(ft::playerLevel(level)) + "/10";
+    }
+    const bool reminder = !drill_.lastSuccess && !drill_.lastTip.empty();
 
     // At most 3 main lines: what to do now, the time left (or the verdict of the last ball), the one tip.
     switch (drill_.phase) {
-    case DrillPhase::Place: p.lines.push_back(makeLine("Placement de la balle...", kTextColor)); break;
+    case DrillPhase::Place:
+        p.lines.push_back(makeLine(drill_.waitingWall
+                                       ? "Va vers un mur de côté : la balle arrive quand tu en es près."
+                                       : "Placement de la balle...",
+                                   kTextColor));
+        break;
+    case DrillPhase::Ready: {
+        // What comes, the get-ready line (press the throttle / countdown), the reminder or the goal.
+        if (drill_.type == ft::DrillType::Mix)
+            p.lines.push_back(makeLine(std::string("Prochaine balle : ") + ft::drillName(drill_.current), kAccent));
+        else if (parcours)
+            p.lines.push_back(makeLine(ft::fullLabels(drill_.type, ft::playerLevel(level)).front(), kAccent));
+        else
+            p.lines.push_back(makeLine(ft::drillPanelLine(drill_.current, 0), colors::White));
+        p.lines.push_back(makeLine(drill_.ready.hudLine(drill_.now), cfg_.okColor));
+        if (reminder) p.lines.push_back(makeLine(drill_.lastTip, cfg_.okColor));
+        else if (!parcours) p.lines.push_back(makeLine(ft::drillGoal(level), kAccent));
+        p.lines.push_back(detailLine(ft::drillInstruction(drill_.current, ctx.profile, style), kDimColor));
+        break;
+    }
     case DrillPhase::WaitTouch: {
         const float left = std::max(0.f, drill_.deadline - drill_.now);
+        if (parcours) {
+            // Validated steps turn green, the current one is highlighted (shared step tracker HUD).
+            appendStepLines(p.lines, drill_.steps, drill_.now);
+            int mains = 0;
+            for (const auto& l : p.lines) mains += l.detail ? 0 : 1;
+            if (reminder && mains < 3) p.lines.push_back(makeLine(drill_.lastTip, cfg_.okColor));
+            p.lines.push_back(detailLine("Temps : " + secondsText(left), kDimColor));
+            break;
+        }
+        PanelLine what = makeLine(currentPanelLine(ctx), colors::White);
+        if (drill_.current == ft::DrillType::RollAway && drill_.ballDist <= 800.f) {
+            // Speed-match bar: car speed against the ball's, green within 150 uu/s.
+            const float diff = std::fabs(drill_.speedDiff);
+            what.bar = clamp01(1.f - diff / 600.f);
+            what.barColor = diff < 150.f ? cfg_.goodColor : (diff < 300.f ? cfg_.okColor : cfg_.badColor);
+        }
+        p.lines.push_back(what);
         const float total = drill_.repCriteria.timeout;
-        p.lines.push_back(makeLine(
-            ft::drillInstruction(drill_.current, ctx.profile, keyStyleFromIndex(ctx.settings.profile.buttonStyle)),
-            colors::White));
         std::string timer = "Temps : " + secondsText(left);
-        if (drill_.reps > 0) timer += "   Réussis : " + std::to_string(drill_.successes) + "/" + std::to_string(drill_.reps);
+        if (match)
+            timer += "   Réussies : " + std::to_string(drill_.matchPassed) + "/" + std::to_string(drill_.matchBall);
+        else if (drill_.reps > 0)
+            timer += "   Réussis : " + std::to_string(drill_.successes) + "/" + std::to_string(drill_.reps);
         p.lines.push_back(makeLine(timer, kTextColor, 1.f, total > 0.f ? left / total : 0.f,
                                    left < 2.f ? cfg_.badColor : cfg_.okColor));
         // After a miss the tip stays as a reminder; otherwise the goal of the level.
-        if (!drill_.lastSuccess && !drill_.lastTip.empty()) p.lines.push_back(makeLine(drill_.lastTip, cfg_.okColor));
+        if (reminder) p.lines.push_back(makeLine(drill_.lastTip, cfg_.okColor));
         else p.lines.push_back(makeLine(ft::drillGoal(level), kAccent));
+        p.lines.push_back(detailLine(ft::drillInstruction(drill_.current, ctx.profile, style), kDimColor));
         break;
     }
     case DrillPhase::Evaluate: {
@@ -211,8 +304,13 @@ void FirstTouchModule::drawDrillPanel(const ViewContext& view, const DrawContext
     case DrillPhase::Pause: {
         if (!drill_.lastOutcome.empty())
             p.lines.push_back(makeLine(drill_.lastOutcome, drill_.lastSuccess ? cfg_.goodColor : cfg_.badColor));
-        if (!drill_.lastSuccess && !drill_.lastTip.empty()) p.lines.push_back(makeLine(drill_.lastTip, cfg_.okColor));
-        p.lines.push_back(makeLine("Balle suivante dans " + secondsText(drill_.deadline - drill_.now), kTextColor));
+        if (reminder) p.lines.push_back(makeLine(drill_.lastTip, cfg_.okColor));
+        const std::string when = secondsText(drill_.deadline - drill_.now);
+        if (drill_.type == ft::DrillType::Mix && drill_.haveNext)
+            p.lines.push_back(makeLine(std::string("Prochaine balle : ") + ft::drillName(drill_.nextType) + " dans " + when,
+                                       kTextColor));
+        else
+            p.lines.push_back(makeLine("Balle suivante dans " + when, kTextColor));
         break;
     }
     case DrillPhase::Idle: break;
@@ -222,6 +320,30 @@ void FirstTouchModule::drawDrillPanel(const ViewContext& view, const DrawContext
                                      kDimColor));
     p.lines.push_back(detailLine("Arrêter : rlt firsttouch stop", kDimColor, 0.8f));
     out.panel(std::move(p));
+}
+
+void FirstTouchModule::drawDrillWorld(const DrawContext& ctx, DrawList& out) const {
+    (void)ctx;
+    if (!drill_.active) return;
+    const bool beforeTouch = drill_.phase == DrillPhase::Ready || drill_.phase == DrillPhase::WaitTouch;
+    if (!beforeTouch) return;
+    const Vec3 up{0.f, 0.f, 1.f};
+    const Color pathColor{0, 200, 255, 170};
+    const Color circleColor{255, 199, 64, 230};
+    // The ball's predicted path during the hold, so the player sees where it goes before it moves.
+    if (drill_.phase == DrillPhase::Ready && drill_.path.points.size() >= 2) {
+        std::vector<Vec3> pts;
+        const size_t n = std::min<size_t>(drill_.path.points.size(), 180);  // 3 s
+        for (size_t k = 0; k < n; k += 3) pts.push_back(drill_.path.points[k] - Vec3{0.f, 0.f, 80.f});
+        out.polyline3D(pts, pathColor, 2.f);
+    }
+    if (drill_.showLanding) out.circle3D(drill_.landing + Vec3{0.f, 0.f, -88.f}, up, 120.f, circleColor, 3.f, 28);
+    if (drill_.showMeet) out.circle3D(Vec3{drill_.meet.x, drill_.meet.y, 6.f}, up, 150.f, colors::Green, 3.f, 28);
+    // Hanging ball: the spot to stand on, green when the ball is over the front of the roof.
+    if (drill_.hangMode != ft::HangRelease::None && drill_.hang.hanging()) {
+        const Vec3 h = drill_.hang.position();
+        out.circle3D(Vec3{h.x, h.y, 6.f}, up, 90.f, drill_.underBall ? cfg_.goodColor : circleColor, 3.f, 24);
+    }
 }
 
 void FirstTouchModule::drawContactMarker(const ViewContext& view, const DrawContext& ctx, DrawList& out) const {

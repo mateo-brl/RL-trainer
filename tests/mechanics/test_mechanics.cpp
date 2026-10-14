@@ -1,5 +1,6 @@
 // Module-level tests: settings schema, results and HUD, focus filter, deadzone and bindings from the profile,
 // drills (activity gating, placement, countdown, game speed restore, adaptive level), persistence, robustness.
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -331,9 +332,10 @@ TEST(mechanics_focus_slow_motion_needs_activity) {
     CHECK(!ok.host.ownsActivity(&ok.mod));
 }
 
-// ---- Drills: speedflip setup per level -------------------------------------------------------------------
+// ---- Drills: get-ready phase and speedflip setup per level ---------------------------------------------------
 TEST(mechanics_drill_speedflip_countdown) {
-    // Level 1 (a new player): the diagonal flip alone, from a standstill in the own half, ball parked away.
+    // Level 1 (a new player): the diagonal flip alone, from a standstill in the own half, ball parked away. The car is
+    // held (pose and boost re-sent on every tick, inputs frozen) until the throttle, then a 3 s countdown.
     Rig rig;
     rig.command("drill", {"speedflip"});
     CHECK(rig.mod.drillActive());
@@ -342,26 +344,43 @@ TEST(mechanics_drill_speedflip_countdown) {
     CHECK(a.setCar.has_value());
     CHECK(a.setBall.has_value());
     CHECK(a.freezeCar);
-    CHECK(a.countdownMessage.has_value());
+    CHECK(!a.countdownMessage.has_value());  // waiting for the player first
     if (a.setCar) {
         CHECK(a.setCar->boost.has_value() && *a.setCar->boost == 100.f);
         CHECK(a.setCar->pos.y < -3000.f);
+        CHECK(length(a.setCar->vel) < 1e-3f);
     }
     if (a.setBall) CHECK(length2D(a.setBall->pos) > 4000.f);  // parked out of the way
     CHECK(rig.mod.drillSetup().stage == 1 && !rig.mod.drillSetup().kickoff);
-    int frozen = 0;
-    bool go = false;
-    for (int i = 0; i < 130 && !go; ++i) {
+    // Nothing happens while the player does not press the throttle (he may still be in the menu).
+    for (int i = 0; i < 4 * 120; ++i) {
         a = rig.tick(Inputs{});
+        CHECK(a.freezeCar && a.setCar.has_value() && !a.goMessage);
+    }
+    CHECK(rig.mod.status().waitingForThrottle);
+    Inputs gas;
+    gas.throttle = 1.f;
+    a = rig.tick(gas);
+    CHECK(a.countdownMessage.has_value() && *a.countdownMessage == 3);
+    CHECK(!rig.mod.status().waitingForThrottle);
+    int frozen = 1, held = 1;
+    bool go = false;
+    std::vector<int> messages;
+    for (int i = 0; i < 400 && !go; ++i) {
+        a = rig.tick(gas);
         frozen += a.freezeCar ? 1 : 0;
+        held += (a.setCar && length(a.setCar->vel) < 1e-3f && a.setBoost && *a.setBoost == 100.f) ? 1 : 0;
+        if (a.countdownMessage) messages.push_back(*a.countdownMessage);
         go = a.goMessage;
+        if (go) CHECK(!a.freezeCar && !a.setCar);  // the GO tick lets the inputs through, nothing re-placed
     }
     CHECK(go);
-    CHECK(frozen >= 110);  // about 1 s frozen to read the goal
+    CHECK(frozen >= 359 && held >= 359);  // 3 s held, every tick
+    CHECK(messages == std::vector<int>({2, 1}));
     CHECK(rig.mod.status().phase == "Essai en cours");
     CHECK(rig.mod.kickoffLive() == false);  // no kickoff timing at this step
 
-    // Level 5: the real kickoff from a diagonal spawn, ball at the centre.
+    // Level 5: the real kickoff from a diagonal spawn, ball at the centre, match boost.
     Rig ko;
     Store st;
     st.setFloat("mechanics.level.speedflip.level", 0.45f);
@@ -370,18 +389,17 @@ TEST(mechanics_drill_speedflip_countdown) {
     ko.command("drill", {"speedflip"});
     Actions k = ko.tick(Inputs{});
     CHECK(ko.mod.drillSetup().stage == 2 && ko.mod.drillSetup().kickoff);
+    CHECK(k.boostRules.has_value() && !k.boostRules->unlimited);
+    CHECK(k.resetPickups);
     if (k.setCar) {
-        CHECK(k.setCar->boost.has_value() && *k.setCar->boost == 33.f);
+        CHECK(k.setCar->boost.has_value() && std::fabs(*k.setCar->boost - 33.33f) < 0.01f);
         CHECK(length2D(k.setCar->pos) > 2000.f);  // a kickoff spawn
+        CHECK(std::fabs(k.setCar->pos.z - 20.f) < 0.01f);
     }
     if (k.setBall) CHECK(length(k.setBall->pos - Vec3{0.f, 0.f, 92.75f}) < 1.f);
-    go = false;
-    for (int i = 0; i < 130 && !go; ++i) {
-        Inputs in;
-        in.boost = true;  // boost held at GO
-        go = ko.tick(in).goMessage;
-    }
-    CHECK(go);
+    Inputs boost;
+    boost.boost = true;  // boost held at GO
+    CHECK(ko.waitGo(boost));
     CHECK(ko.mod.kickoffLive());
     // Orange team: the spawn is mirrored.
     Rig orange;
@@ -394,6 +412,26 @@ TEST(mechanics_drill_speedflip_countdown) {
     if (o.setCar) CHECK(o.setCar->pos.y > 2000.f);
 }
 
+TEST(mechanics_drill_air_start_held_during_countdown) {
+    // Cross-cutting fix 1: an air start is re-placed on every tick, so the car does not fall during the countdown.
+    for (const char* id : {"wavedash", "stall", "helicopter", "zapdash", "recovery"}) {
+        Rig rig;
+        rig.command("drill", {id});
+        rig.tick(Inputs{});
+        const Vec3 pose = rig.mod.drillSetup().car.pos;
+        float maxDrift = 0.f;
+        Inputs gas;
+        rig.tick(gas);
+        gas.throttle = 1.f;
+        for (int i = 0; i < 4 * 120 && rig.mod.status().phase == "Compte à rebours"; ++i) {
+            rig.tick(gas);
+            if (rig.mod.status().phase == "Compte à rebours") maxDrift = std::max(maxDrift, length(rig.sim.pos - mirrorY(pose)));
+        }
+        CHECK_MSG(rig.mod.status().phase == "Essai en cours", id);
+        CHECK_MSG(maxDrift < 1.f, std::string(id) + " drift " + std::to_string(maxDrift));
+    }
+}
+
 // ---- Drills: wavedash attempt, adaptive level, auto-reset, speed restore -----------------------------------
 TEST(mechanics_drill_wavedash_full_cycle) {
     Rig rig;
@@ -404,8 +442,9 @@ TEST(mechanics_drill_wavedash_full_cycle) {
     Actions a = rig.tick(Inputs{});
     CHECK(a.setCar.has_value());
     CHECK(a.setGameSpeed.has_value() && std::fabs(*a.setGameSpeed - 0.5f) < 1e-6f);
-    if (a.setCar) CHECK(a.setCar->pos.z > 60.f);  // dropped from a small height
-    rig.run(150, dropWavedash());
+    if (a.setCar) CHECK(a.setCar->pos.z > 300.f);  // held 3.5 m up at level 1
+    CHECK(rig.waitGo());
+    rig.run(240, dropWavedash());
     const AttemptResult* r = rig.result("mech.wavedash");
     CHECK_MSG(r != nullptr, "no wavedash result in the drill");
     if (r) {
@@ -414,8 +453,9 @@ TEST(mechanics_drill_wavedash_full_cycle) {
     }
     CHECK(rig.mod.status().phase == "Résultat");
     const int cars = rig.setCars;
-    rig.run(200, idle());  // drill delay 1.5 s then automatic reset
-    CHECK(rig.setCars == cars + 1);
+    rig.run(200, idle());  // drill delay 1.5 s then automatic reset: held again, 2 s countdown without waiting
+    CHECK(rig.setCars > cars);
+    CHECK(rig.mod.status().phase == "Compte à rebours" && !rig.mod.status().waitingForThrottle);
     // Stop: the speed goes back to 1 in the same callback (still owner), the activity is released next tick.
     Actions s = rig.command("stop");
     CHECK(s.setGameSpeed.has_value() && *s.setGameSpeed == 1.f);
@@ -425,23 +465,31 @@ TEST(mechanics_drill_wavedash_full_cycle) {
     CHECK(!rig.host.ownsActivity(&rig.mod));
     CHECK(rig.host.releases == 1);
     CHECK_NEAR(rig.mod.appliedGameSpeed(), 1.f, 1e-6f);
+    const int stopped = rig.setCars;
     rig.run(10, idle());
-    CHECK(rig.setCars == cars + 1);  // no placement after the stop
+    CHECK(rig.setCars == stopped);  // no placement after the stop
 }
 
 TEST(mechanics_drill_timeout_restarts) {
+    // Fix 5: nothing attempted until the time limit is a failed attempt, recorded, with the tip of the first missing
+    // step. The player did nothing at all: the next attempt waits for the throttle again (he may be in the menu).
     Rig rig;
-    rig.command("drill", {"stall"});
-    rig.tick(Inputs{});
-    rig.run(4 * 120 + 10, idle());  // nothing attempted: time limit 4 s at the first level
-    CHECK(rig.results.empty());
+    CHECK(rig.startDrill("stall"));
+    rig.run(4 * 120 + 10, idle());  // time limit 4 s at the first level
+    CHECK(rig.count("mech.stall") == 1);
+    const AttemptResult* r = rig.result("mech.stall");
+    if (r) {
+        CHECK(!r->success);
+        CHECK(!r->tips.empty() && r->tips.front().code == "me.st_no_stall");
+    }
+    CHECK(rig.mod.status().drillAttempts == 1);
     CHECK(rig.mod.status().message.find("Temps écoulé") != std::string::npos);
     // The message names the step that was missing.
-    CHECK(rig.mod.status().message.find("Stick à fond") != std::string::npos);
-    const int cars = rig.setCars;
-    rig.run(200, idle());  // the reading delay of a result (1.5 s), then the next placement
-    CHECK(rig.setCars == cars + 1);
-    CHECK_NEAR(rig.mod.level(Focus::Stall), 0.f, 1e-6f);  // a timeout does not move the staircase
+    CHECK(rig.mod.status().message.find("Stick d'un côté") != std::string::npos);
+    CHECK(rig.mod.stats().get(Mech::Stall).attempts == 1);
+    rig.run(200, idle());  // the reading delay, then the next placement, waiting for the throttle
+    CHECK(rig.mod.status().phase == "Compte à rebours" && rig.mod.status().waitingForThrottle);
+    CHECK_NEAR(rig.mod.level(Focus::Stall), 0.f, 1e-6f);  // already at the lowest level
 }
 
 TEST(mechanics_activity_taken_away) {
@@ -478,51 +526,25 @@ TEST(mechanics_focus_survives_drill_it_preceded) {
     CHECK(rig.mod.focus() == Focus::HalfFlip);
 }
 
-namespace {
-// Drop wavedash of the drill with a chosen nose tilt and dodge height (rear wheels above the floor).
-Script dropDash(float tiltDeg, float rearZ) {
-    auto S = std::make_shared<WdS>();
-    return [=](int, MiniSim& c) {
-        Inputs in;
-        in.throttle = 1.f;
-        if (S->phase == 0 && c.wheelCount() == 0) {
-            in.pitch = pitchToNose(c, tiltDeg);
-            if (c.vel.z < 0.f && c.rearWheelZ() < rearZ) {
-                S->phase = 1;
-                S->dodgeT = 0;
-            }
-        }
-        if (S->phase == 1 && S->dodgeT < 3) {
-            in.jump = true;
-            in.pitch = -1.f;
-            S->dodgeT++;
-        }
-        return in;
-    };
-}
-} // namespace
-
 TEST(mechanics_drill_below_level_explains) {
-    // Hardest level: the drill asks for 80/100. A slightly early dash is a detector success (72) but not enough.
+    // Hardest level: the drill asks for 85/100. A sloppy fast aerial (jump held too short, slow double jump) still
+    // touches the falling ball high enough, but it is not the clean execution the level asks for.
     Rig rig;
-    Store st;
-    st.setFloat("mechanics.level.wavedash.level", 1.f);
-    st.setInt("mechanics.level.wavedash.attempts", 1);
-    rig.mod.load(st);
-    CHECK_NEAR(rig.mod.level(Focus::Wavedash), 1.f, 1e-6f);
-    rig.command("drill", {"wavedash"});
-    rig.tick(Inputs{});
-    rig.run(150, dropDash(35.f, 38.f));
-    const AttemptResult* r = rig.result("mech.wavedash");
-    CHECK_MSG(r != nullptr, "no wavedash graded");
+    CHECK(rig.startDrill("fastaerial", 1.f));
+    CHECK_NEAR(rig.mod.level(Focus::FastAerial), 1.f, 1e-6f);
+    auto sloppy = fastAerialAt(&rig, 36, 12, 18);
+    for (int i = 0; i < 6 * 120 && rig.results.empty(); ++i) rig.tick(sloppy(i, rig.sim));
+    const AttemptResult* r = rig.result("mech.fastaerial");
+    CHECK_MSG(r != nullptr, "no fast aerial graded");
     if (!r) return;
+    CHECK(rig.touched && rig.touchBallZ >= 700.f);
     CHECK(!r->success);
-    CHECK(r->score >= 60.f && r->score < 80.f);
+    CHECK(r->score < 85.f);
     bool below = false;
     for (const auto& t : r->tips) {
         if (t.code != "me.drill_below_level") continue;
         below = true;
-        CHECK(t.text.find("80/100") != std::string::npos);
+        CHECK(t.text.find("85/100") != std::string::npos);
     }
     CHECK(below);
     // Ranked after the technique tip (what to fix comes first).
@@ -533,18 +555,17 @@ TEST(mechanics_drill_below_level_explains) {
     const MechanicsModule::StatRow* row = nullptr;
     const auto rows = rig.mod.statRows();
     for (const auto& x : rows)
-        if (x.focus == Focus::Wavedash) row = &x;
+        if (x.focus == Focus::FastAerial) row = &x;
     CHECK(row != nullptr);
     if (row && !row->topErrorTip.empty())
         CHECK(row->topErrorTip.find("Recommence en te concentrant") == std::string::npos);
 
-    // Same level, a cleaner dash (83) passes.
+    // Same level, a clean fast aerial (jump held 0.2 s, double jump right away) passes.
     Rig ok;
-    ok.mod.load(st);
-    ok.command("drill", {"wavedash"});
-    ok.tick(Inputs{});
-    ok.run(150, dropDash(20.f, 34.f));
-    const AttemptResult* g = ok.result("mech.wavedash");
+    CHECK(ok.startDrill("fastaerial", 1.f));
+    auto clean = fastAerialAt(&ok, 36, 24, 4);
+    for (int i = 0; i < 6 * 120 && ok.results.empty(); ++i) ok.tick(clean(i, ok.sim));
+    const AttemptResult* g = ok.result("mech.fastaerial");
     CHECK(g != nullptr && g->success);
 }
 
@@ -564,14 +585,21 @@ TEST(mechanics_context_change_stops_drill) {
 }
 
 TEST(mechanics_reset_shot_replaces_drill) {
+    // The player's own reset during an attempt: placed again, 3 s countdown without waiting for the throttle.
     Rig rig;
-    rig.command("drill", {"recovery"});
-    rig.tick(Inputs{});
-    const int cars = rig.setCars;
+    CHECK(rig.startDrill("recovery"));
     rig.run(20, idle());
+    CHECK(rig.mod.status().phase == "Essai en cours");
     rig.event(GameEventKind::ResetShot);
-    rig.tick(Inputs{});
-    CHECK(rig.setCars == cars + 1);
+    const Actions a = rig.tick(Inputs{});
+    CHECK(a.setCar.has_value() && a.freezeCar);
+    CHECK(rig.mod.status().phase == "Compte à rebours" && !rig.mod.status().waitingForThrottle);
+    int ticks = 0;
+    while (rig.mod.status().phase == "Compte à rebours" && ticks < 600) {
+        rig.tick(Inputs{});
+        ++ticks;
+    }
+    CHECK(ticks >= 358 && ticks <= 362);
 }
 
 TEST(mechanics_drill_guides_bounded) {
@@ -608,8 +636,8 @@ TEST(mechanics_drill_fast_aerial_waits_for_touch) {
     };
     {
         Rig rig;
-        rig.command("drill", {"fastaerial"});
-        rig.tick(Inputs{});
+        CHECK(rig.startDrill("fastaerial"));
+        CHECK(rig.mod.drillSetup().hangBall);
         rig.run(90, script);
         CHECK(rig.count("mech.fastaerial") == 0);  // graded, but held until the ball is touched
         TouchEvent t;
@@ -630,10 +658,9 @@ TEST(mechanics_drill_fast_aerial_waits_for_touch) {
     }
     {
         Rig rig;
-        rig.command("drill", {"fastaerial"});
-        rig.tick(Inputs{});
+        CHECK(rig.startDrill("fastaerial"));
         rig.run(90, script);
-        rig.run(400, idle());  // never touched: graded as a miss after 2.5 s
+        rig.run(600, idle());  // never touched: graded as a miss once the touch window is over
         const AttemptResult* r = rig.result("mech.fastaerial");
         CHECK(r != nullptr);
         if (r) {
@@ -643,39 +670,61 @@ TEST(mechanics_drill_fast_aerial_waits_for_touch) {
     }
 }
 
+namespace {
+// Steering toward the ball (sim axes, ball at the centre spot): + = right.
+float steerToBall(const MiniSim& c, const Vec3& ballSim) {
+    const Vec3 to = normalize(Vec3{ballSim.x - c.pos.x, ballSim.y - c.pos.y, 0.f});
+    const Vec3 f = normalize(Vec3{c.fwd().x, c.fwd().y, 0.f});
+    const float crossZ = f.x * to.y - f.y * to.x;  // > 0: ball to the left
+    return clampf(-crossZ * 6.f, -1.f, 1.f);
+}
+} // namespace
+
 TEST(mechanics_drill_speedflip_end_to_end) {
-    Rig rig;  // kickoff step of the drill (level 5)
-    Store st;
-    st.setFloat("mechanics.level.speedflip.level", 0.45f);
-    st.setInt("mechanics.level.speedflip.attempts", 1);
-    rig.mod.load(st);
-    rig.command("drill", {"speedflip"});
-    rig.tick(Inputs{});
-    for (int i = 0; i < 125; ++i) {
-        Inputs in;
-        in.boost = true;
-        in.throttle = 1.f;
-        rig.tick(in);
-    }
+    // Kickoff step (level 5, a diagonal): a player who steers a little toward the ball, then speedflips, succeeds.
+    Rig rig;
+    Inputs hold;
+    hold.boost = true;
+    CHECK(rig.startDrill("speedflip", 0.45f, false, hold));
     CHECK(rig.mod.status().phase == "Essai en cours");
-    // Jump, diagonal dodge, cancel: the drill grades it (focus on speedflip), result at the touch or the time limit.
-    rig.run(5 * 120, [](int t, MiniSim&) {
+    auto inverted = std::make_shared<bool>(false);
+    for (int t = 0; t < 6 * 120 && rig.results.empty(); ++t) {
+        MiniSim& c = rig.sim;
         Inputs in;
         in.throttle = 1.f;
         in.boost = true;
-        if (t >= 30 && t < 41) in.jump = true;
-        if (t >= 42 && t < 47) {
-            in.jump = t < 45;
+        const int J = 60, D = J + 9;
+        if (t < J) in.steer = steerToBall(c, {0.f, 0.f, 0.f});
+        else if (t < J + 8) in.jump = true;
+        else if (t >= D && t < D + 4) {
+            in.jump = t < D + 3;
             in.pitch = -std::cos(30.f * kDegToRad);
             in.yaw = -std::sin(30.f * kDegToRad);
+        } else if (t >= D + 4) {
+            in.pitch = 1.f;
+            if (c.up().z < -0.3f) *inverted = true;
+            in.roll = -1.f;
+            if (c.up().z > 0.3f && t > D + 30) {
+                Inputs pd;
+                orientPD(c, normalize(Vec3{-c.pos.x, -c.pos.y, 0.f}), pd);
+                in.roll = pd.roll;
+                in.yaw = pd.yaw;
+                in.pitch = pd.pitch;
+            }
+            if (c.wheelCount() >= 3) {
+                in.roll = in.pitch = in.yaw = 0.f;
+                in.steer = steerToBall(c, {0.f, 0.f, 0.f});
+            }
         }
-        if (t >= 47 && t < 140) in.pitch = 1.f;
-        return in;
-    });
+        rig.tick(in);
+    }
     const AttemptResult* r = rig.result("mech.speedflip");
     CHECK(r != nullptr);
     CHECK(rig.mod.status().drillAttempts == 1);
     if (r) {
+        std::string tips;
+        for (const auto& tp : r->tips) tips += tp.code + " ";
+        CHECK_MSG(r->success, tips + " gap " + std::to_string(rig.closestGap));
         bool angle = false;
         for (const auto& m : r->metrics) angle = angle || (m.key == "absAngleDeg" && m.hasIdeal && std::fabs(m.ideal - 30.f) < 0.01f);
         CHECK(angle);
@@ -683,28 +732,69 @@ TEST(mechanics_drill_speedflip_end_to_end) {
 }
 
 TEST(mechanics_drill_boost_window) {
-    Rig rig;
-    rig.command("drill", {"boost"});
-    Actions a = rig.tick(Inputs{});
-    CHECK(a.setCar.has_value());
-    if (a.setCar) CHECK(length(a.setCar->vel) > 2200.f);
-    rig.run(5 * 120 + 20, [](int, MiniSim& c) {
-        Inputs in;
-        in.throttle = 1.f;
-        in.boost = length(c.vel) < 2230.f;
-        return in;
-    });
-    const AttemptResult* r = rig.result("mech.boost");
-    CHECK(r != nullptr);
-    if (r) CHECK(r->success);
+    // Gestion du boost (spec proof test): the car starts below supersonic, the throttle alone never gets there.
+    auto runBoost = [](std::function<Inputs(MiniSim&)> drive) {
+        auto rig = std::make_unique<Rig>();
+        rig->command("drill", {"boost"});
+        Actions a = rig->tick(Inputs{});
+        CHECK(a.setCar.has_value());
+        if (a.setCar) CHECK(length(a.setCar->vel) < 1e-3f);  // held still before GO
+        CHECK(rig->waitGo());
+        CHECK(length(rig->sim.vel) > 1590.f && length(rig->sim.vel) < 2200.f);  // launched below supersonic
+        for (int i = 0; i < 5 * 120 && rig->results.empty(); ++i) rig->tick(drive(rig->sim));
+        return rig;
+    };
+    {
+        auto rig = runBoost([](MiniSim&) {
+            Inputs in;
+            in.throttle = 1.f;
+            return in;
+        });
+        const AttemptResult* r = rig->result("mech.boost");
+        CHECK(r != nullptr);
+        if (r) {
+            CHECK(!r->success);
+            CHECK(!r->tips.empty() && r->tips.front().code == "me.sm_slow_to_supersonic");
+        }
+    }
+    {
+        auto rig = runBoost([](MiniSim& c) {
+            Inputs in;
+            in.throttle = 1.f;
+            in.boost = length(c.vel) < 2290.f;
+            return in;
+        });
+        const AttemptResult* r = rig->result("mech.boost");
+        CHECK(r != nullptr);
+        if (r) {
+            std::string tips;
+            for (const auto& t : r->tips) tips += t.code + " ";
+            CHECK_MSG(r->success, tips);
+            for (const auto& m : r->metrics)
+                if (m.key == "boostUsed") CHECK(m.value <= 35.f);
+        }
+    }
+    {
+        auto rig = runBoost([](MiniSim&) {
+            Inputs in;
+            in.throttle = 1.f;
+            in.boost = true;
+            return in;
+        });
+        const AttemptResult* r = rig->result("mech.boost");
+        CHECK(r != nullptr);
+        if (r) {
+            CHECK(!r->success);
+            CHECK(!r->tips.empty() && r->tips.front().code == "me.sm_boost_at_max");
+        }
+    }
 }
 
 TEST(mechanics_status_read_model) {
     Rig rig;
     MechanicsModule::Status st = rig.mod.status();
     CHECK(st.enabled && !st.drillActive && st.focus == Focus::None);
-    rig.command("drill", {"chaindash"});
-    rig.tick(Inputs{});
+    CHECK(rig.startDrill("chaindash"));
     st = rig.mod.status();
     CHECK(st.drillActive && st.focus == Focus::ChainDash);
     CHECK(!st.goal.empty() && !st.variant.empty());

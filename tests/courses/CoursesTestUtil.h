@@ -137,14 +137,17 @@ struct Harness {
         return a;
     }
 
-    // Ticks through Setup and Countdown until the run starts. Returns the number of ticks used.
+    // Ticks through Setup and the get-ready phase until the run starts, pressing the throttle when the module waits
+    // for it (released on the first tick, pressed from the second). Returns the number of ticks used.
     int runCountdown(int maxTicks = 2000) {
         int n = 0;
         while (mod.phase() != CoursesPhase::Running && n < maxTicks) {
+            snap.in.throttle = (n > 0 && mod.ready().waiting()) ? 1.f : 0.f;
             tick();
             ++n;
             // Physics of the release tick: the car leaves the start with the placement velocity.
         }
+        snap.in.throttle = 0.f;
         return n;
     }
 

@@ -31,7 +31,7 @@ void warmUp(Harness& h, int n = 10) {
     h.run(sim.out);
 }
 
-void skipReady(Harness& h) { h.idle(static_cast<int>(h.settings.ballmech.drillReady * kTickRate) + 2); }
+void skipReady(Harness& h) { h.skipReady(); }
 
 // Index of the first airborne tick (the jump of a carry scenario).
 size_t jumpIndex(const std::vector<SimTick>& ticks) {

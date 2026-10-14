@@ -340,8 +340,8 @@ TEST(courses_draw_sanity) {
         CHECK_NEAR(dl.panels[0].pos.y, 0.12f * 1080.f, 1e-3);
         bool countdown = false, code = false;
         for (const auto& l : dl.panels[0].lines) {
-            countdown = countdown || l.text.find("Départ dans") != std::string::npos;
-            code = code || l.text.find("RLT1-A100") != std::string::npos;
+            countdown = countdown || l.text.find("Appuie sur accélérer") != std::string::npos;
+            code = code || l.text.find("RLT2-A100") != std::string::npos;
         }
         CHECK(countdown && code);
     }

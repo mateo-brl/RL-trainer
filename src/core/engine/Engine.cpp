@@ -296,6 +296,9 @@ bool Engine::requestActivity(Module* m, const std::string& name) {
     auto lk = lock();
     if (!m || !worldControlAllowed_) return false;
     if (activityOwner_ == m->id()) {
+        // A new drill of the same module starts with the player's own boost rules (it re-applies its own on its
+        // first attempt).
+        if (name != activityName_ && boostRulesModified_) pendingBoostRestore_ = true;
         activityName_ = name;
         return true;
     }

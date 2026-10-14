@@ -19,6 +19,8 @@ std::string tipText(std::string_view code, const MechGrade& g, const PlayerProfi
 const char* praiseText(Mech m);
 // Stable tip code for the coach: "me.<lowercase code>".
 std::string tipCode(std::string_view code);
+// Replaces {jump}, {boost}, {slide}, {throttle} and {airroll} with the player's own buttons ("Saut (A)").
+std::string fillButtons(std::string_view text, const PlayerProfile& profile, KeyStyle style = KeyStyle::Auto);
 // "Air roll gauche (LB)", or "Air roll (RB) + stick à gauche" when there is no dedicated binding.
 // side: -1 left, +1 right, 0 any.
 std::string airRollPrompt(const PlayerProfile& profile, int side, KeyStyle style = KeyStyle::Auto);

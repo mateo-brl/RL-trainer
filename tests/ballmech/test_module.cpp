@@ -515,7 +515,7 @@ TEST(bm_module_hud_drill_single_panel) {
     warm.step(10);
     h.run(warm.out);
     h.command("drill", {"powershot"});
-    h.idle(static_cast<int>(h.settings.ballmech.drillReady * kTickRate) + 2);
+    h.skipReady();
     DrawList dl = drawNow(h, true);
     CHECK_EQ(dl.panels.size(), 1u);
     if (!dl.panels.empty()) {
@@ -524,7 +524,7 @@ TEST(bm_module_hud_drill_single_panel) {
         const auto lines = mainLines(p);
         CHECK_EQ(lines.size(), 1u);  // no attempt yet: only what to do, with the seconds left
         if (!lines.empty()) {
-            CHECK(lines[0].text.rfind("1. Arrive vite", 0) == 0);
+            CHECK(lines[0].text.rfind("1. Boost tout droit", 0) == 0);
             CHECK(lines[0].text.find(" s") != std::string::npos);
             CHECK(lines[0].bar > 0.9f);
         }
@@ -544,7 +544,7 @@ TEST(bm_module_hud_drill_single_panel) {
             CHECK(lines[0].text.rfind("Réussi ! ", 0) == 0);
             CHECK(lines[0].text.find("/100") != std::string::npos);
             CHECK(lines[0].text.find("(1/1 réussis)") != std::string::npos);
-            CHECK(lines.back().text.rfind("1. Arrive vite", 0) == 0);
+            CHECK(lines.back().text.rfind("1. Boost tout droit", 0) == 0);
         }
         for (const auto& l : lines) CHECK_MSG(!technical(l.text) && !hasEmDash(l.text), l.text);
     }

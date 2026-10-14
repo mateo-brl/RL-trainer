@@ -17,13 +17,15 @@ const std::array<MechInfo, kMechCount> kMechs = {{
       "Pose les 4 roues sur la balle : ton flip revient (cercle vert autour de la voiture).",
       "Flippe dans la balle avec {jump} avant de retomber."}},
     {Mech::Ceiling, "ceiling", "ball.ceiling", "Ceiling shot",
-     "Monte au plafond puis laisse-toi tomber sans sauter : tu gardes ton flip pour frapper.",
-     "Ne saute pas en quittant le plafond, tombe juste derrière la balle et flippe au dernier moment.",
-     "Laisse-toi tomber du plafond sans sauter, puis flippe dans la balle.", Family::Ceiling, 6.f, true,
+     "Monte au plafond puis laisse-toi tomber sans sauter : le plafond te rend ton flip et tu le gardes pour frapper.",
+     "Ne saute pas en quittant le plafond. Tu tombes à l'envers : pour pointer le nez vers le sol, tire le stick vers "
+     "toi. Flippe quand la balle est juste devant ton nez.",
+     "Monte au plafond, laisse-toi tomber sans sauter, puis flippe dans la balle.", Family::Ceiling, 6.f, true,
      {"ball_speed_after", "drop_to_shot", "separation_at_touch", ""}, Difficulty::Intermediate,
-     {"Monte par le mur jusqu'au plafond en suivant la balle.",
-      "Quitte le plafond sans sauter : tu gardes ton flip.", "Tombe juste derrière la balle.",
-      "Flippe dans la balle au dernier moment avec {jump}."}},
+     {"Va au mur de côté et monte jusqu'au plafond avec {boost}.",
+      "Lâche-toi du plafond sans toucher à {jump} : tu gardes ton flip.",
+      "Pendant la chute tu es à l'envers : tire le stick vers toi pour pointer le nez vers la balle.",
+      "Flippe dans la balle avec {jump} quand elle est juste devant ton nez."}},
     {Mech::Flick, "flick", "ball.flick", "Flick",
      "Balle posée sur le toit, saut puis flip pour la projeter (avant, 45°, 90°, arrière, inversé).",
      "Stabilise la balle au centre du toit, saute avec {jump}, tourne d'environ 45° puis flippe stick à fond.",
@@ -59,8 +61,8 @@ const std::array<MechInfo, kMechCount> kMechs = {{
      "Emmène la balle en l'air (depuis le sol ou le mur) et touche-la plusieurs fois avec le nez ou le toit.",
      "Touches douces, boost dosé avec {boost} (feathering), nez toujours pointé vers la balle.",
      "Emmène la balle en l'air et touche-la plusieurs fois, boost dosé.", Family::AirDribble, 10.f, true,
-     {"duration", "touches", "avg_dist", "air_time"}, Difficulty::Intermediate,
-     {"Balle sur le toit (ou contre le mur), saute avec {jump}.",
+     {"duration", "touches", "avg_dist", "air_time"}, Difficulty::Advanced,
+     {"Balle sur le toit (ou contre le mur), saute avec {jump} en levant un peu le nez.",
       "Boost doucement sous la balle avec {boost} : elle reste sur le nez.",
       "Touche-la par petites touches, le nez toujours vers elle.", "Finis en poussant la balle vers le but."}},
     {Mech::AirRoll, "airroll", "ball.airroll", "Air roll shot",
@@ -94,9 +96,10 @@ const std::array<MechInfo, kMechCount> kMechs = {{
 }};
 
 // Basics first: ground power, simple aerials, then roof and wall play, then the advanced aerial mechanics.
+// Pinch before the air roll and the ceiling shot: it is played on the ground.
 const std::array<Mech, kMechCount> kLearningOrder = {
-    Mech::PowerShot, Mech::Aerial,     Mech::Flick, Mech::AirRoll,   Mech::Pinch, Mech::Ceiling,
-    Mech::AirDribble, Mech::DoubleTap, Mech::Musty, Mech::FlipReset, Mech::Breezi};
+    Mech::PowerShot,  Mech::Aerial, Mech::Flick,     Mech::Pinch,     Mech::AirRoll, Mech::Ceiling,
+    Mech::AirDribble, Mech::Musty,  Mech::DoubleTap, Mech::FlipReset, Mech::Breezi};
 
 std::string baseVariant(const std::string& v) { return v.substr(0, v.find("_delayed")); }
 } // namespace
@@ -144,7 +147,7 @@ Mech mechOf(const MechGrade& g) {
     case Family::Flick: {
         const std::string b = baseVariant(g.variant);
         if (b == "musty") return Mech::Musty;
-        if (b == "breezi") return Mech::Breezi;
+        if (b == "breezi" || b == "tornado") return Mech::Breezi;
         return Mech::Flick;
     }
     default: return Mech::Aerial;
@@ -197,6 +200,7 @@ std::string gradeTitle(const MechGrade& g) {
         else if (b == "reverse") t = "Flick inversé (Mawkzy)";
         else if (b == "musty") t = "Musty flick";
         else if (b == "breezi") t = "Breezi flick";
+        else if (b == "tornado") t = "Tornade (breezi)";
         else t = "Flick";
         if (v.find("_delayed") != std::string::npos) t += " retardé";
         return t;

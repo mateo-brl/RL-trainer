@@ -538,6 +538,7 @@ TEST(ft_reset_commands) {
     h.command("drill", {"pass"});
     Snapshot s = makeSnap(5001, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{}));
     h.tick(s);
+    passReady(h, s);
     for (int i = 0; i < 910; ++i) {
         s.frame += 1;
         s.time = static_cast<float>(s.frame) / kTickRate;
@@ -569,8 +570,10 @@ TEST(ft_save_load_roundtrip) {
     h.set("rlt_ft_drill_seed", "77");
     h.tick(makeSnap(2500, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{})));
     h.command("drill", {"lob"});
-    h.tick(makeSnap(2501, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{})));
-    runScenario(h, groundPickup(1000.f, 950.f, 1000.f, 1040.f, 2600));
+    Snapshot s = makeSnap(2501, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{}));
+    h.tick(s);
+    passReady(h, s);
+    runScenario(h, groundPickup(1000.f, 950.f, 1000.f, 1040.f, afterGo(h)));
     CHECK_NEAR(h.mod.drillLevel(DrillType::Lob).level, 0.04f, 1e-4f);
 
     Store st;
@@ -739,23 +742,42 @@ TEST(ft_draw_drill_panel) {
     h.set("rlt_ft_drill_seed", "9");
     h.tick(makeSnap(100, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{})));
     h.command("drill", {"roll_in"});
-    h.tick(makeSnap(101, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{})));
-    const DrawList dl = h.draw();
+    Snapshot s = makeSnap(101, groundCar(Vec3{0.f, 0.f, kCarZ}, Vec3{}), makeBall(Vec3{0.f, 1500.f, kBallZ}, Vec3{}));
+    h.tick(s);
+    // Get-ready hold of the first ball: the first step, the throttle prompt, the goal.
+    DrawList dl = h.draw();
     CHECK(dl.panels.size() == 1);  // no stats yet: drill panel only
+    if (dl.panels.empty()) return;
+    auto main = mainLines(dl.panels.front());
+    CHECK(main.size() == 3);
+    if (main.size() == 3) {
+        CHECK(main[0] == "1/3 Reste face à la balle");
+        CHECK(main[1] == "Appuie sur accélérer quand tu es prêt");
+        CHECK(main[2] == "Objectif : une touche douce.");
+    }
+    CHECK(h.mod.drillStatus().phase == FirstTouchModule::DrillPhase::Ready);
+    passReady(h, s);
+    dl = h.draw();
+    CHECK(dl.panels.size() == 1);
     if (dl.panels.empty()) return;
     const DrawPanel& p = dl.panels.front();
     CHECK(p.title == "Roulante vers toi, niveau 1/10");
     CHECK(p.anchorX == Align::Left);
     CHECK_NEAR(p.pos.x, 0.01f * 1920.f, 0.01f);
     CHECK_NEAR(p.pos.y, 0.12f * 1080.f, 0.01f);
-    // What to do first, then the time left (9 s at niveau 1), then the goal of the level.
-    const auto main = mainLines(p);
+    // The step to do now, then the time left (9 s at niveau 1), then the goal of the level.
+    main = mainLines(p);
     CHECK(main.size() == 3);
     if (main.size() == 3) {
-        CHECK(contains(main[0], "Boost (B)"));
+        CHECK(main[0] == "1/3 Reste face à la balle");
         CHECK(main[1] == "Temps : 9 s");
         CHECK(main[2] == "Objectif : une touche douce.");
     }
+    // The full instruction with the player's buttons stays as a detail line.
+    bool boost = false;
+    for (const auto& l : p.lines)
+        if (l.detail && contains(l.text, "Boost (B)")) boost = true;
+    CHECK(boost);
     const auto view = h.mod.drillStatus();
     CHECK(view.active && view.phase == FirstTouchModule::DrillPhase::WaitTouch);
     CHECK(contains(view.instruction, "Boost (B)"));

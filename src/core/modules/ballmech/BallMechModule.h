@@ -8,8 +8,13 @@
 // "ball.<id>"). Flip resets are counted from the game event (detail "sdk") and from our own detector, de-duplicated
 // within 0.3 s; a reset found only by the detector is broadcast as GameEvent{FlipReset, "detecteur"}.
 //
-// Commands ("rlt ballmech <cmd>"): drill <mech> [variante], stop, next, level <mech> <0-100>, variant <flick>,
-// reset_stats, reset_session.
+// Drills (see Drills.h, Parcours.h): every attempt starts with a get-ready hold (car and ball re-placed with zero
+// velocity on every tick; the first attempt waits for the throttle, then counts 3, 2, 1). A drill starts either with
+// the mechanic alone (short start) or with the full sequence ("parcours complet": shared step tracker, hanging ball,
+// shared "Ramassage" start whose failures feed their own staircase).
+//
+// Commands ("rlt ballmech <cmd>"): drill <mech> [variante] [court|parcours], stop, next, level <mech> <0-100>,
+// mode <mech> <court|parcours>, variant <flick>, reset_stats, reset_session.
 
 #include <array>
 #include <cstdint>
@@ -58,6 +63,8 @@ public:
         std::string difficulty;                       // "Débutant", "Intermédiaire", "Avancé"
         int order = 0;                                // position in bm::learningOrder (easiest first)
         std::string progression;                      // how the drill gets harder, plain words
+        int mode = 0;                                 // drill start: 0 short, 1 full sequence (bm::DrillMode)
+        std::string modeShort, modeFull;              // their names ("Départ au plafond", "Parcours complet")
         int attempts = 0, successes = 0;
         int sessionAttempts = 0, sessionSuccesses = 0;
         float average = 0.f, best = 0.f;              // 0..100
@@ -78,6 +85,12 @@ public:
         float timeLeft = 0.f;
         std::string lastVerdict;
         bool lastSuccess = false;
+        bool full = false;                            // full sequence ("parcours complet")
+        std::string modeLabel;
+        std::vector<std::string> steps;               // the steps of the full sequence, "1/5 Va au mur : OK"...
+        int currentStep = -1;                         // index in `steps` of the step to do now (-1 = none)
+        std::string missing;                          // "Il manquait : ..." after a failed step
+        bool waitingThrottle = false;                 // first attempt: held until the player presses the throttle
     };
     struct UiState {
         bool enabled = true;
@@ -94,6 +107,7 @@ public:
         int successScore = 50;                        // settings used by the drill criteria (tab details)
         float pinchSpeed = 4000.f;
         float timeoutScale = 1.f;
+        int pickupLevel = 1;                          // niveau of the shared "Ramassage" start (1..10)
     };
     UiState uiState() const;
 
@@ -103,16 +117,22 @@ public:
     bool drillActive() const { return drill_.phase != DrillPhase::Off; }
     const AttemptResult* lastResult() const { return hasLast_ ? &last_ : nullptr; }
     float drillLevel(const std::string& mechId) const;
+    int drillMode(const std::string& mechId) const;  // 0 short, 1 full sequence
+    float pickupLevel() const;                       // 0..1, the shared "Ramassage" staircase
 
 private:
     enum class DrillPhase { Off, Ready, Live, Result };
+    enum class ReadyKind { First, Auto };  // first attempt: wait for the throttle, then 3 s; then a short hold
     struct Drill {
         DrillPhase phase = DrillPhase::Off;
         int mech = 0;                 // bm::Mech
+        bool full = false;            // this attempt runs the full sequence
         float phaseStart = 0.f;       // game time
         int64_t launchFrame = 0;
         int burnStep = -1;            // scripted double jump (flip reset drill), -1 = none
         bool airborneSeen = false;
+        float completeAt = -1.f;      // full sequence completed on its checks, waiting for the detector's grade
+        bool flickLanded = false;     // breezi: the carried jump already ended on the floor
         bool activity = false;        // the player did something during the attempt
         float failAt = -1.f;          // pending fail (landing / ball lost) after a grace delay
         std::string failCode;
@@ -138,10 +158,15 @@ private:
     bool startDrill(int mech, const TickContext& ctx, Actions& out);
     void stopDrill(Actions* out, bool release);
     void drillTick(const TickContext& ctx, Actions& out);
-    void beginAttempt(const TickContext& ctx);
+    void beginAttempt(const TickContext& ctx, ReadyKind kind = ReadyKind::Auto);
+    void launch(const TickContext& ctx, Actions& out);
+    void fullTick(const TickContext& ctx, Actions& out);
+    void stepFailed(const TickContext& ctx, Actions& out);
+    void checksSucceeded(const TickContext& ctx, Actions& out);
+    void tornadoLanded(const TickContext& ctx, Actions& out);
+    bool idleTimeout(const TickContext& ctx, Actions& out);  // true when the attempt was restarted or the drill paused
     void resolveDrill(bool success, const TickContext& ctx);
-    void failDrill(const char* code, const TickContext& ctx, Actions& out);
-    void applySetup(const TickContext& ctx, Actions& out, bool launch);
+    void failDrill(const char* code, const TickContext& ctx, Actions& out, bool withPrimary = true);
     float drillTimeout() const;
     const Tip* drillTip() const;      // main advice after the last drill attempt (nullptr = none)
     std::string drillActionNow() const;
@@ -153,6 +178,11 @@ private:
     std::unique_ptr<Impl> impl_;
     std::array<Staircase, 11> stairs_;   // one adaptive level per mechanic (bm::kMechCount)
     std::array<bool, 11> levelChosen_{};  // level set with the - / + buttons ("level" command): kept even unplayed
+    std::array<int, 11> modes_{};         // drill start per mechanic (bm::DrillMode)
+    std::array<bool, 11> modeChosen_{};   // start chosen by the player (saved; otherwise the default start)
+    bool gameSpeedSet_ = false;           // a drill slowed the game down: put it back at the next launch
+    bool touchThisTick_ = false;          // onTouch since the last tick (full sequence checks)
+    bool resetThisTick_ = false;          // flip reset game event since the last tick
     Drill drill_;
     std::string flickVariant_;
     Rng rng_;

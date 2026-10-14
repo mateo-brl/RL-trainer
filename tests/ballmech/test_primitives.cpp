@@ -423,14 +423,19 @@ TEST(bm_drill_setup_details) {
     Rng rngv(42);
     CHECK(makeDrillSetup(Mech::Flick, 0.3f, 0, car, 91.25f, rngv, "45").flickTarget == "45");
 
-    // Flip reset: car below the ball, wheels facing it, closing in, flip burned by a scripted double jump.
+    // Flip reset: car below the ball, closing in, flip burned by a scripted double jump. Level 1: the car is turned a
+    // quarter turn around its nose (a passive contact is a side touch), the hint names the air roll that fixes it.
     Rng rng3(7);
     const DrillSetup r = makeDrillSetup(Mech::FlipReset, 0.f, 0, car, 91.25f, rng3);
     CHECK(r.burnFlip);
     CHECK(r.car.pos.z < r.ball.pos.z);
     const Basis rb = basisFromRot(r.car.rot);
     const Vec3 toBall = normalize(r.ball.pos - r.car.pos);
-    CHECK(dot(-rb.up, toBall) > 0.95f);  // level 0: no orientation error
+    CHECK(std::fabs(dot(-rb.up, toBall)) < 0.2f);
+    CHECK(r.airRollHint != 0);
+    Rot back = r.car.rot;
+    back.roll += static_cast<int>(std::lround(r.airRollHint * 90.f * 65536.f / 360.f));
+    CHECK(dot(-basisFromRot(back).up, toBall) > 0.95f);
     const Vec3 launchVel = r.car.vel + rb.up * arena::kJumpImpulse;  // after the scripted double jump
     CHECK(dot(launchVel - r.ball.vel, toBall) > 200.f);
 
@@ -606,7 +611,12 @@ TEST(bm_tips_hud_text) {
         "AE_OFF_TARGET", "AE_HIT_SIDE", "AE_OFF_CENTER", "AE_WEAK", "AE_ROLL_MIXED", "AE_NO_AIR_ROLL",
         "PI_NOT_PINCHED", "PI_TIMING", "PI_OFF_TARGET", "PS_WEAK", "PS_FLIP_EARLY", "PS_SIDE_HIT", "PS_SLIDE_HELD",
         "PS_OFF_TARGET", "DRILL_TIMEOUT", "DRILL_LANDED", "DRILL_BALL_LOST", "DRILL_WRONG_MECH", "DRILL_NEED_POWER",
-        "DRILL_NEED_TARGET", "DRILL_NEED_DURATION", "DRILL_NEED_CONVERT", "DRILL_NEED_SCORE"};
+        "DRILL_NEED_TARGET", "DRILL_NEED_DURATION", "DRILL_NEED_CONVERT", "DRILL_NEED_SCORE",
+        // Steps of the full sequences and the level overrides.
+        "CEIL_STEP_WALL", "CEIL_STEP_CEILING", "CEIL_STEP_FELL_WALL", "CEIL_TOO_FAST", "CEIL_STEP_DROP",
+        "FR_STEP_TAKEOFF", "FR_STEP_UNDER", "FL_STEP_JUMP", "BZ_STEP_HOLD", "AD_NO_CATCH", "AD_LOW_POP",
+        "AD_STEP_POP", "AD_STEP_TOUCH", "AE_STEP_TAKEOFF", "AE_STEP_AXIS", "PI_STEP_SPEED", "PS_STEP_ALIGN",
+        "PS_NO_FLIP", "PU_NO_ROOF", "PU_UNSTABLE", "PU_DROPPED"};
     PlayerProfile profile;
     for (const char* c : codes) {
         const auto tips = buildTips({c}, profile, KeyStyle::Xbox);

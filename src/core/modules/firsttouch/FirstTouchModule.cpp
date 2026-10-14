@@ -152,6 +152,7 @@ void FirstTouchModule::describeSettings(SettingsSchema& schema) {
 
 FirstTouchModule::FirstTouchModule() {
     for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
+    for (auto& s : fullStairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
 }
 
 void FirstTouchModule::onSettingsChanged(const Settings& settings) {
@@ -175,13 +176,15 @@ void FirstTouchModule::onProfileChanged(const PlayerProfile& profile) {
 void FirstTouchModule::refreshUnit() { unit_ = resolveUnit(static_cast<SpeedUnit>(cfg_.unit), profileMetric_); }
 
 void FirstTouchModule::rebuildStaircases() {
-    for (auto& s : stairs_) {
+    auto rebuild = [this](Staircase& s) {
         Store tmp;
         s.save(tmp, "s");
         Staircase n(cfg_.drillTarget, cfg_.drillStep, s.level());
         n.load(tmp, "s");
         s = n;
-    }
+    };
+    for (auto& s : stairs_) rebuild(s);
+    for (auto& s : fullStairs_) rebuild(s);
 }
 
 ft::ScoreParams FirstTouchModule::scoreParams() const {
@@ -245,6 +248,7 @@ void FirstTouchModule::onTick(const TickContext& ctx, Actions& out) {
 
 void FirstTouchModule::onTouch(const TouchEvent& t, const TickContext& ctx, Actions& out) {
     if (!cfg_.enabled) return;
+    touchFrame_ = t.post.frame;  // a hanging ball is never put back on the tick of a touch
     if (!t.pre.car.valid || !t.pre.ball.valid) return;
     if (ignoreTouchesUntil_ - t.pre.frame > 1200) ignoreTouchesUntil_ = -1;  // frame counter restarted
     if (t.pre.frame <= ignoreTouchesUntil_) return;  // state before a teleport / placement
@@ -255,6 +259,14 @@ void FirstTouchModule::onTouch(const TouchEvent& t, const TickContext& ctx, Acti
     const bool recentBounce = ft::ballBouncedRecently(ctx.history, t.pre.frame);
     const ft::TouchType type = ft::classifyTouch(t.pre, t.newContact, sincePrev, recentBounce, gapTicks);
     if (sincePrev == (1 << 30) && chain_.active) endChain();  // fresh possession after a reset
+    // Parcours complet: the first touch of the rep is judged by its touch step on the next tick (after the step
+    // checks of that tick).
+    if (drill_.active && drill_.full && drill_.type != ft::DrillType::Mix && drill_.phase == DrillPhase::WaitTouch &&
+        !drill_.fullState.touched && !drill_.touchPending && t.pre.frame > drill_.placeFrame) {
+        drill_.touchPending = true;
+        drill_.touchMetrics = ft::computeMetrics(t, type == ft::TouchType::Dribble ? ft::TouchType::Ground : type);
+        drill_.touchPre = t.pre;
+    }
     updateChain(t.pre.time, t.newContact);
     if (type == ft::TouchType::Dribble) {
         if (t.newContact) {
@@ -277,7 +289,8 @@ void FirstTouchModule::startPending(const TouchEvent& t, ft::TouchType type, con
         pending_.inDrill = true;
         pending_.drillLevel = drill_.repLevel;
         pending_.drillType = drill_.current;
-        drill_.phase = DrillPhase::Evaluate;
+        // A parcours complet keeps its own steps: the window only feeds the "Garde-la" step.
+        if (!(drill_.full && drill_.type != ft::DrillType::Mix)) drill_.phase = DrillPhase::Evaluate;
     }
     const int windowTicks = static_cast<int>(std::lround(cfg_.controlWindow * kTickRate));
     pending_.window.start(t, windowTicks, cfg_.controlRadius, cfg_.controlRelSpeed, cfg_.controlFraction);
@@ -296,9 +309,13 @@ void FirstTouchModule::finalizePending(const TickContext& ctx, Actions& out) {
     const int windowTicks = pending_.window.windowTicks();
     pending_.window.cancel();
     const ft::TouchMetrics& m = pending_.metrics;
+    const bool fullKeep = pending_.inDrill && drill_.active && drill_.full && drill_.type != ft::DrillType::Mix &&
+                          drill_.steps.running() && drill_.steps.currentStep() &&
+                          drill_.steps.currentStep()->id == ft::kFullKeepStep;
     if (!m.valid || c.ticks < std::max(1, windowTicks / 3)) {
         // Not enough valid ticks (car demolished, ball gone): no grade; a drill rep is replayed.
-        if (pending_.inDrill && drill_.active && drill_.phase == DrillPhase::Evaluate) drill_.phase = DrillPhase::Place;
+        if (pending_.inDrill && drill_.active && (drill_.phase == DrillPhase::Evaluate || fullKeep))
+            drill_.phase = DrillPhase::Place;
         return;
     }
     const SpeedUnit unit = resolveUnit(static_cast<SpeedUnit>(cfg_.unit), ctx.profile.metric);
@@ -396,8 +413,14 @@ void FirstTouchModule::finalizePending(const TickContext& ctx, Actions& out) {
         msg.text = ft::chatTouchLine(m.speedDiff, sc.score, zone, unit, cfg_.chatWithScore);
         out.chat.push_back(std::move(msg));
     }
-    if (pending_.inDrill && drill_.active && drill_.phase == DrillPhase::Evaluate)
+    if (fullKeep) {
+        // "Garde-la": the ball stayed close for most of the window.
+        if (c.fraction >= ft::kFullKeepFraction) drill_.steps.complete(ctx.snap.time);
+        else drill_.steps.fail(ctx.snap.time);
+        fullRepDone(drill_.steps.isComplete(), out);
+    } else if (pending_.inDrill && drill_.active && drill_.phase == DrillPhase::Evaluate) {
         drillRepDone(success, repScore, repTip, out);
+    }
     if (++gradedSinceSave_ >= 10) {
         gradedSinceSave_ = 0;
         out.requestSave = true;
@@ -498,12 +521,21 @@ void FirstTouchModule::onGameEvent(const GameEvent& ev, const TickContext& ctx, 
 void FirstTouchModule::onCommand(const Command& cmd, const TickContext& ctx, Actions& out) {
     if (cmd.name == "drill" || cmd.name == "start") {
         ft::DrillType t = ft::DrillType::Mix;
-        if (!cmd.args.empty() && !ft::parseDrillId(cmd.args[0], t)) {
-            toast(out, "Exercice inconnu : " + cmd.args[0] + " (roll_in, roll_away, pass, lob, wall, high, mix).",
+        bool full = false;
+        for (size_t i = 0; i < cmd.args.size(); ++i) {
+            const std::string& a = cmd.args[i];
+            if (a == "full" || a == "parcours" || a == "complet") {
+                full = true;
+                continue;
+            }
+            if (i == 0 && ft::parseDrillId(a, t)) continue;
+            toast(out,
+                  "Exercice inconnu : " + a +
+                      " (roll_in, roll_away, pass, lob, wall, high, mix, puis full pour le parcours complet).",
                   ToastKind::Warning);
             return;
         }
-        startDrill(t, ctx, out);
+        startDrill(t, full, ctx, out);
     } else if (cmd.name == "stop") {
         if (drill_.active) stopDrill(&out, "Exercice arrêté.");
     } else if (cmd.name == "skip") {
@@ -511,6 +543,21 @@ void FirstTouchModule::onCommand(const Command& cmd, const TickContext& ctx, Act
             cancelPending();
             drill_.phase = DrillPhase::Place;
         }
+    } else if (cmd.name == "reset_level") {
+        // "Revenir au niveau 1": one drill and its parcours complet start again from the first level.
+        ft::DrillType t = ft::DrillType::Mix;
+        if (cmd.args.empty() || !ft::parseDrillId(cmd.args[0], t)) {
+            toast(out, "Exercice inconnu (roll_in, roll_away, pass, lob, wall, high, mix).", ToastKind::Warning);
+            return;
+        }
+        const auto i = static_cast<size_t>(t);
+        if (t != ft::DrillType::Mix) {
+            stairs_[i] = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
+            drillBest_[i] = 0.f;
+        }
+        fullStairs_[i] = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
+        out.requestSave = true;
+        toast(out, std::string(ft::drillName(t)) + " : retour au niveau 1.", ToastKind::Info);
     } else if (cmd.name == "reset_stats") {
         session_ = ft::TouchStats{};
         recentScores_.clear();
@@ -525,6 +572,7 @@ void FirstTouchModule::onCommand(const Command& cmd, const TickContext& ctx, Act
         toast(out, "Stats de session remises à zéro.", ToastKind::Info);
     } else if (cmd.name == "reset_levels") {
         for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
+        for (auto& s : fullStairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
         drillBest_.fill(0.f);
         out.requestSave = true;
         toast(out, "Niveaux des exercices remis au niveau 1.", ToastKind::Info);
@@ -536,19 +584,22 @@ void FirstTouchModule::onCommand(const Command& cmd, const TickContext& ctx, Act
         recentTipCodes_.clear();
         last_ = LastTouchView{};
         for (auto& s : stairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
+        for (auto& s : fullStairs_) s = Staircase(cfg_.drillTarget, cfg_.drillStep, ft::kDrillStartLevel);
         drillBest_.fill(0.f);
         drillSessionReps_.fill(0);
         drillSessionSuccesses_.fill(0);
         out.requestSave = true;
         toast(out, "Toutes les stats de première touche sont effacées.", ToastKind::Info);
     } else {
-        toast(out, "Commande inconnue : " + cmd.name + " (drill, stop, skip, reset_stats, reset_levels, reset_all).",
+        toast(out,
+              "Commande inconnue : " + cmd.name +
+                  " (drill, stop, skip, reset_level, reset_stats, reset_levels, reset_all).",
               ToastKind::Warning);
     }
 }
 
 // ---- Drills ---------------------------------------------------------------------------------------------
-void FirstTouchModule::startDrill(ft::DrillType type, const TickContext& ctx, Actions& out) {
+void FirstTouchModule::startDrill(ft::DrillType type, bool full, const TickContext& ctx, Actions& out) {
     if (!cfg_.enabled) {
         toast(out, "Active d'abord le module Première touche.", ToastKind::Warning);
         return;
@@ -561,12 +612,15 @@ void FirstTouchModule::startDrill(ft::DrillType type, const TickContext& ctx, Ac
         toast(out, "Exercices indisponibles ici : seule l'analyse des touches est active.", ToastKind::Warning);
         return;
     }
-    if (!requestActivity(std::string("Première touche : ") + ft::drillName(type))) {
+    std::string activity = std::string("Première touche : ") + ft::drillName(type);
+    if (full) activity += type == ft::DrillType::Mix ? " (séquence de match)" : " (parcours complet)";
+    if (!requestActivity(activity)) {
         toast(out, "Impossible de lancer l'exercice maintenant.", ToastKind::Warning);
         return;
     }
     drill_ = Drill{};
     drill_.active = true;
+    drill_.full = full;
     drill_.type = type;
     drill_.current = type == ft::DrillType::Mix ? ft::DrillType::RollIn : type;
     drill_.phase = DrillPhase::Place;
@@ -577,15 +631,33 @@ void FirstTouchModule::startDrill(ft::DrillType type, const TickContext& ctx, Ac
     if (ctx.hasSnapshot && ctx.snap.car.valid) {
         drill_.pose = ft::poseFromCar(ctx.snap.car);
         drill_.havePose = true;
+        drill_.wallSide = ctx.snap.car.pos.x >= 0.f ? 1.f : -1.f;  // the nearest side wall first, then alternate
     }
     drill_.now = ctx.snap.time;
     cancelPending();
-    std::string msg = std::string("Exercice lancé : ") + ft::drillName(type);
-    if (type != ft::DrillType::Mix) {
-        const float level = stairs_[static_cast<size_t>(type)].level();
-        msg += ", niveau " + std::to_string(ft::playerLevel(level)) + "/10. " + ft::drillGoal(level);
+    if (full && type == ft::DrillType::Mix) {
+        // Séquence de match: the first ball comes after the same short gap as the others, its name shown.
+        drill_.phase = DrillPhase::Pause;
+        drill_.deadline = ctx.snap.time + ft::kMatchGap;
+        drill_.nextType = ft::pickMixType(drill_.rng, drill_.current, mixWeights(false, nullptr));
+        drill_.haveNext = true;
+    }
+    std::string msg;
+    if (full && type == ft::DrillType::Mix) {
+        msg = "Séquence de match lancée : " + std::to_string(ft::kMatchBalls) + " balles, réussis-en " +
+              std::to_string(ft::kMatchToPass) + ".";
+    } else if (full) {
+        const float level = fullStairs_[static_cast<size_t>(type)].level();
+        msg = std::string("Parcours complet lancé : ") + ft::drillName(type) + ", niveau " +
+              std::to_string(ft::playerLevel(level)) + "/10.";
     } else {
-        msg += ".";
+        msg = std::string("Exercice lancé : ") + ft::drillName(type);
+        if (type != ft::DrillType::Mix) {
+            const float level = stairs_[static_cast<size_t>(type)].level();
+            msg += ", niveau " + std::to_string(ft::playerLevel(level)) + "/10. " + ft::drillGoal(level);
+        } else {
+            msg += ".";
+        }
     }
     toast(out, msg, ToastKind::Ok);
 }
@@ -617,15 +689,373 @@ void FirstTouchModule::recordDrillRep(bool success) {
     drill_.idleReps = 0;
 }
 
+std::array<float, ft::kDrillKinds> FirstTouchModule::mixWeights(bool matchOnly, const ft::DrillPose* pose) const {
+    std::array<float, ft::kDrillKinds> w{};
+    for (int i = 0; i < ft::kDrillKinds; ++i) {
+        const auto t = static_cast<ft::DrillType>(i);
+        const Staircase& s = stairs_[static_cast<size_t>(i)];
+        if (!ft::mixUnlocked(t, s.level(), s.successes())) continue;
+        w[static_cast<size_t>(i)] = ft::mixWeight(s.recentRate());
+    }
+    // A wall ball needs the car near a side wall when the car is not placed by the drill.
+    float sigma = 0.f;
+    if (matchOnly && pose && !ft::wallInReach(*pose, sigma)) w[static_cast<size_t>(ft::DrillType::Wall)] = 0.f;
+    return w;
+}
+
 void FirstTouchModule::drillRepDone(bool success, float score, const std::string& tip, Actions& out) {
+    const std::string outcome = (success ? "Réussi ! " : "Raté : ") + intText(score) + "/100";
+    if (drill_.full && drill_.type == ft::DrillType::Mix) {
+        matchBallDone(success, outcome, success ? std::string() : tip, out);
+        return;
+    }
     recordDrillRep(success);
     drill_.lastSuccess = success;
     // Verdict and score on one line, the single most important tip on its own (kept for the next rep).
-    drill_.lastOutcome = (success ? "Réussi ! " : "Raté : ") + intText(score) + "/100";
+    drill_.lastOutcome = outcome;
     drill_.lastTip = success ? std::string() : tip;
     drill_.phase = DrillPhase::Pause;
     drill_.deadline = drill_.now + cfg_.drillPause;
+    if (drill_.type == ft::DrillType::Mix) {
+        // The next ball is drawn now: its name shows during the pause and the hold.
+        drill_.nextType = ft::pickMixType(drill_.rng, drill_.current, mixWeights(false, nullptr));
+        drill_.haveNext = true;
+    }
     out.requestSave = true;
+}
+
+void FirstTouchModule::fullRepDone(bool success, Actions& out) {
+    if (drill_.phase == DrillPhase::Pause || !drill_.steps.finished()) return;
+    const auto i = static_cast<size_t>(drill_.type);
+    fullStairs_[i].record(success);
+    ++drill_.reps;
+    if (success) ++drill_.successes;
+    drill_.idleReps = 0;
+    drill_.lastSuccess = success;
+    drill_.lastOutcome = success ? std::string("Parcours réussi !") : drill_.steps.missingText();
+    drill_.lastTip = success ? std::string() : drill_.steps.failure().tip;
+    drill_.phase = DrillPhase::Pause;
+    drill_.deadline = drill_.now + cfg_.drillPause;
+    out.requestSave = true;
+}
+
+void FirstTouchModule::matchBallDone(bool success, const std::string& outcome, const std::string& tip, Actions& out) {
+    ++drill_.matchBall;
+    if (success) ++drill_.matchPassed;
+    drill_.idleReps = 0;
+    drill_.lastSuccess = success;
+    drill_.lastOutcome = "Balle " + std::to_string(drill_.matchBall) + "/" + std::to_string(ft::kMatchBalls) + " : " +
+                         outcome;
+    drill_.lastTip = tip;
+    drill_.phase = DrillPhase::Pause;
+    drill_.deadline = drill_.now + ft::kMatchGap;
+    if (drill_.matchBall >= ft::kMatchBalls) {
+        const bool ok = drill_.matchPassed >= ft::kMatchToPass;
+        fullStairs_[static_cast<size_t>(ft::DrillType::Mix)].record(ok);
+        ++drill_.reps;
+        if (ok) ++drill_.successes;
+        drill_.lastSuccess = ok;
+        drill_.lastOutcome = "Séquence : " + std::to_string(drill_.matchPassed) + "/" + std::to_string(ft::kMatchBalls) +
+                             (ok ? " réussies !" : " réussies, il en faut " + std::to_string(ft::kMatchToPass) + ".");
+        drill_.lastTip = ok ? std::string() : (tip.empty() ? "Reprends chaque balle calmement : place-toi avant elle." : tip);
+        drill_.matchBall = 0;
+        drill_.matchPassed = 0;
+        drill_.deadline = drill_.now + std::max(cfg_.drillPause, ft::kMatchGap) + 1.f;
+    }
+    drill_.nextType = ft::pickMixType(drill_.rng, drill_.current, mixWeights(false, nullptr));
+    drill_.haveNext = true;
+    out.requestSave = true;
+}
+
+void FirstTouchModule::updateLiveFacts(const Snapshot& s) {
+    if (!s.car.valid || !s.ball.valid) return;
+    drill_.ballDist = distance(hitboxCenter(s.car), s.ball.pos);
+    // Speed of the car along the ball's path minus the ball's speed (roulante qui s'éloigne).
+    const Vec3 dir = normalize(flat(s.ball.vel), flat(s.car.basis.fwd));
+    drill_.speedDiff = dot(flat(s.car.vel), dir) - length2D(s.ball.vel);
+    if (drill_.havePrevBall && drill_.prevBallVz < -20.f && s.ball.vel.z > drill_.prevBallVz + 40.f &&
+        s.ball.vel.z >= -5.f && s.ball.pos.z < 93.15f + 40.f)
+        ++drill_.floorBounces;
+    drill_.prevBallVz = s.ball.vel.z;
+    drill_.havePrevBall = true;
+}
+
+void FirstTouchModule::placeRep(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
+    if (!s.car.valid || !s.ball.valid) return;
+    if (drill_.full && drill_.type == ft::DrillType::Mix) {
+        placeMatchBall(ctx, out);
+        return;
+    }
+    if (drill_.full) {
+        placeFullRep(ctx, out);
+        return;
+    }
+    if (!drill_.havePose || !cfg_.drillResetCar) {
+        drill_.pose = ft::poseFromCar(s.car);
+        drill_.havePose = true;
+    }
+    if (drill_.type == ft::DrillType::Mix) {
+        drill_.current = drill_.haveNext ? drill_.nextType
+                                         : ft::pickMixType(drill_.rng, drill_.current, mixWeights(false, nullptr));
+        drill_.haveNext = false;
+    } else {
+        drill_.current = drill_.type;
+    }
+    const auto i = static_cast<size_t>(drill_.current);
+    drill_.repLevel = stairs_[i].level();
+    drill_.repCriteria = criteriaFor(drill_.repLevel);
+    ft::SpawnContext sc;
+    sc.team = s.car.team;
+    sc.placeCar = cfg_.drillResetCar;
+    sc.wallSide = drill_.wallSide;
+    const ft::DrillPose pose =
+        cfg_.drillResetCar ? ft::drillPoseFor(drill_.current, drill_.pose, s.car.team) : ft::poseFromCar(s.car);
+    const ft::DrillSpawn spawn = ft::makeSpawn(drill_.current, pose, drill_.repLevel, drill_.rng, sc);
+    if (!spawn.valid) {  // Chute du mur without car reset: wait until a side wall is close enough
+        drill_.waitingWall = true;
+        return;
+    }
+    drill_.waitingWall = false;
+    if (drill_.current == ft::DrillType::Wall && cfg_.drillResetCar) drill_.wallSide = -drill_.wallSide;
+    drill_.spawn = spawn;
+    drill_.repPose = spawn.placesCar ? spawn.carPose : pose;
+
+    // What is drawn during the hold and the rep: the path, the landing circle, the meeting point.
+    drill_.showLanding = drill_.showMeet = false;
+    if (spawn.hang == ft::HangRelease::None) {
+        drill_.path = ft::predictBall(spawn.ball.pos, spawn.ball.vel, spawn.ball.angVel, 4.f);
+        const bool airborneBall = drill_.current == ft::DrillType::Lob || drill_.current == ft::DrillType::Wall ||
+                                  drill_.current == ft::DrillType::High;
+        if (airborneBall && !drill_.path.floorBounces.empty()) {
+            drill_.showLanding = true;
+            drill_.landing = drill_.path.floorBounces.front();
+        }
+        if (drill_.current == ft::DrillType::Pass) {
+            // Meeting point: the predicted point closest to the car's route straight ahead.
+            float best = 1e9f;
+            for (const Vec3& p : drill_.path.points) {
+                const Vec3 rel = flat(p - drill_.repPose.pos);
+                const float along = dot(rel, drill_.repPose.fwd);
+                if (along < 200.f) continue;
+                const float off = length(rel - drill_.repPose.fwd * along);
+                if (off < best) {
+                    best = off;
+                    drill_.meet = Vec3{p.x, p.y, 93.15f};
+                }
+            }
+            drill_.showMeet = best < 1e8f;
+        }
+    } else {
+        drill_.path = ft::BallTrack{};
+    }
+
+    // Get-ready hold: car and ball held still; the first ball waits for the throttle.
+    drill_.carHeld = cfg_.drillResetCar;
+    drill_.hold = HoldPose{};
+    drill_.hold.car = ft::carPlacementFor(drill_.repPose, false);
+    BallPlacement held;
+    held.pos = spawn.ball.pos;
+    drill_.hold.ball = held;
+    if (cfg_.drillFullBoost) drill_.hold.boost = 100.f;
+    float freeze = ft::freezeSeconds(drill_.repLevel);
+    if (drill_.type == ft::DrillType::Mix) freeze = std::max(freeze, ft::kMixFreeze);
+    // Only a held car gets the freeze: a ball frozen in front of a car that drives freely would erase its touches.
+    if (drill_.firstRep && cfg_.drillResetCar)
+        drill_.ready.start(s.time, ReadyPhase::firstAttempt());
+    else if (freeze > 0.f && drill_.carHeld)
+        drill_.ready.start(s.time, ReadyPhase::timed(freeze));
+    else
+        drill_.ready.stop();
+
+    drill_.hang.stop();
+    drill_.hangMode = ft::HangRelease::None;
+    drill_.underSince = -1.f;
+    drill_.underBall = false;
+    drill_.floorBounces = 0;
+    drill_.havePrevBall = false;
+    drill_.placeFrame = s.frame;
+    ignoreTouchesUntil_ = s.frame;
+    cancelPending();
+    endChain();
+    havePrev_ = false;  // our own teleport is not a "reset"
+    if (drill_.ready.active()) {
+        drill_.phase = DrillPhase::Ready;
+        applyHold(drill_.hold, &s, out);  // the get-ready phase only runs with the car held
+    } else {
+        launchRep(s, out);
+    }
+}
+
+void FirstTouchModule::placeFullRep(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
+    if (!drill_.havePose) {
+        drill_.pose = ft::poseFromCar(s.car);
+        drill_.havePose = true;
+    }
+    drill_.current = drill_.type;
+    drill_.repLevel = fullStairs_[static_cast<size_t>(drill_.type)].level();
+    drill_.repCriteria = criteriaFor(drill_.repLevel);
+    drill_.fullSetup = ft::makeFullSetup(drill_.type, drill_.pose, s.car.team, drill_.repLevel, drill_.rng);
+    drill_.repPose = drill_.fullSetup.car;
+    drill_.path = drill_.fullSetup.track;
+    drill_.showLanding = drill_.fullSetup.landingTime >= 0.f &&
+                         (drill_.type == ft::DrillType::Lob || drill_.type == ft::DrillType::High);
+    drill_.landing = drill_.fullSetup.landing;
+    drill_.showMeet = drill_.fullSetup.targetTime >= 0.f;
+    drill_.meet = drill_.fullSetup.target;
+    drill_.spawn = ft::DrillSpawn{};
+    drill_.spawn.type = drill_.type;
+    drill_.spawn.ball = drill_.fullSetup.ball;
+    drill_.carHeld = true;  // a parcours complet always starts from its own place
+    drill_.hold = HoldPose{};
+    drill_.hold.car = ft::carPlacementFor(drill_.repPose, false);
+    BallPlacement held;
+    held.pos = drill_.fullSetup.ball.pos;
+    drill_.hold.ball = held;
+    if (cfg_.drillFullBoost) drill_.hold.boost = 100.f;
+    drill_.ready.start(s.time, drill_.firstRep ? ReadyPhase::firstAttempt() : ReadyPhase::autoReset());
+    drill_.steps.clear();
+    drill_.touchPending = false;
+    drill_.hang.stop();
+    drill_.hangMode = ft::HangRelease::None;
+    drill_.floorBounces = 0;
+    drill_.havePrevBall = false;
+    drill_.placeFrame = s.frame;
+    ignoreTouchesUntil_ = s.frame;
+    cancelPending();
+    endChain();
+    havePrev_ = false;
+    drill_.phase = DrillPhase::Ready;
+    applyHold(drill_.hold, &s, out);
+}
+
+void FirstTouchModule::placeMatchBall(const TickContext& ctx, Actions& out) {
+    // Séquence de match: the car is never placed; the ball comes relative to where it is and where it goes.
+    const Snapshot& s = ctx.snap;
+    const ft::DrillPose pose = ft::matchPose(s.car);
+    const auto weights = mixWeights(true, &pose);
+    if (!drill_.haveNext || weights[static_cast<size_t>(drill_.nextType)] <= 0.f)
+        drill_.nextType = ft::pickMixType(drill_.rng, drill_.current, weights);
+    drill_.current = drill_.nextType;
+    drill_.haveNext = false;
+    drill_.repLevel = stairs_[static_cast<size_t>(drill_.current)].level();
+    drill_.repCriteria = criteriaFor(drill_.repLevel);
+    ft::SpawnContext sc;
+    sc.team = s.car.team;
+    sc.placeCar = false;
+    ft::DrillSpawn spawn = ft::makeSpawn(drill_.current, pose, drill_.repLevel, drill_.rng, sc);
+    if (!spawn.valid) {
+        drill_.current = ft::DrillType::RollIn;
+        spawn = ft::makeSpawn(drill_.current, pose, drill_.repLevel, drill_.rng, sc);
+    }
+    drill_.spawn = spawn;
+    drill_.repPose = pose;
+    drill_.path = ft::BallTrack{};
+    drill_.showLanding = drill_.showMeet = false;
+    drill_.carHeld = false;
+    drill_.ready.stop();
+    drill_.hang.stop();
+    drill_.hangMode = ft::HangRelease::None;
+    drill_.underSince = -1.f;
+    drill_.floorBounces = 0;
+    drill_.havePrevBall = false;
+    cancelPending();
+    endChain();
+    havePrev_ = false;
+    launchRep(s, out);
+}
+
+void FirstTouchModule::launchRep(const Snapshot& s, Actions& out) {
+    const bool wasHeld = drill_.phase == DrillPhase::Ready;
+    const ft::DrillSpawn& sp = drill_.spawn;
+    if (sp.hang != ft::HangRelease::None) {
+        drill_.hangMode = sp.hang;
+        drill_.hangVz = sp.releaseVz;
+        drill_.underSince = -1.f;
+        drill_.hang.hang(sp.ball.pos);
+        drill_.hang.update(s, out, touchFrame_ == s.frame);  // held from this tick
+    } else {
+        out.setBall = sp.ball;
+    }
+    // A car that was not held is placed now (no hold at the high levels); a held car is left to the player's inputs.
+    if (drill_.carHeld && !wasHeld) out.setCar = ft::carPlacementFor(drill_.repPose, cfg_.drillFullBoost);
+    else if (cfg_.drillFullBoost) out.setBoost = 100.f;
+    drill_.ready.stop();
+    drill_.placeFrame = s.frame;
+    ignoreTouchesUntil_ = s.frame;
+    drill_.goTime = s.time;
+    drill_.repInput = false;
+    drill_.firstRep = false;
+    drill_.phase = DrillPhase::WaitTouch;
+    cancelPending();
+    endChain();
+    havePrev_ = false;
+    if (drill_.full && drill_.type != ft::DrillType::Mix) {
+        ft::fullBegin(drill_.fullState, drill_.fullSetup, drill_.type, ft::playerLevel(drill_.repLevel), s.time);
+        drill_.steps.setSteps(ft::fullSteps(drill_.fullState));
+        drill_.steps.start(s.time);
+        drill_.touchPending = false;
+        drill_.deadline = s.time + drill_.fullSetup.timeLimit;
+    } else {
+        drill_.deadline = s.time + drill_.repCriteria.timeout;
+    }
+}
+
+void FirstTouchModule::tickHanging(const Snapshot& s, Actions& out) {
+    drill_.underBall = drill_.hang.hanging() && ft::ballOverFrontRoof(s.car, drill_.hang.position());
+    if (!drill_.hang.hanging()) return;
+    const bool jumpEdge = s.in.jump && !drill_.prevJump;
+    if (drill_.underBall) {
+        if (drill_.underSince < 0.f) drill_.underSince = s.time;
+    } else {
+        drill_.underSince = -1.f;
+    }
+    bool release = false;
+    if (drill_.hangMode == ft::HangRelease::OnJump)
+        release = drill_.underBall && (jumpEdge || s.time - drill_.underSince >= ft::kHangIdleRelease);
+    else if (drill_.hangMode == ft::HangRelease::Under)
+        release = drill_.underBall;
+    if (release) drill_.hang.release(Vec3{0.f, 0.f, drill_.hangVz});
+    drill_.hang.update(s, out, touchFrame_ == s.frame);
+}
+
+void FirstTouchModule::tickFull(const TickContext& ctx, Actions& out) {
+    const Snapshot& s = ctx.snap;
+    ft::fullTick(drill_.fullState, s);
+    if (s.frame > drill_.placeFrame + 1 && inputActive(s.in)) drill_.repInput = true;
+    drill_.steps.update(s, &ctx);
+    if (drill_.touchPending) {
+        drill_.touchPending = false;
+        ft::fullOnTouch(drill_.fullState, drill_.touchPre);
+        const Step* cur = drill_.steps.running() ? drill_.steps.currentStep() : nullptr;
+        if (cur && cur->id == ft::kFullTouchStep) {
+            const StepVerdict v = ft::fullTouchVerdict(drill_.fullState, drill_.touchMetrics, drill_.touchPre);
+            if (v.state == StepState::Done) drill_.steps.complete(s.time);
+            else drill_.steps.fail(s.time, v.code, v.tip);
+        } else if (cur && drill_.steps.indexOf(cur->id) < drill_.steps.indexOf(ft::kFullTouchStep)) {
+            drill_.steps.fail(s.time, "ft.full.early_touch", ft::fullEarlyTouchTip(drill_.type, cur->id));
+        }
+    }
+    if (drill_.steps.running() && s.time >= drill_.deadline) {
+        if (!drill_.repInput && !drill_.fullState.touched) {
+            // Nothing done at all: the rep is ignored, not failed (like the drills).
+            ++drill_.idleReps;
+            drill_.steps.reset();
+            drill_.lastSuccess = false;
+            drill_.lastOutcome = "Aucune action : essai ignoré.";
+            drill_.lastTip.clear();
+            if (drill_.idleReps >= 3) {
+                stopDrill(&out, "Exercice arrêté : aucune action détectée. Relance-le quand tu veux.");
+                return;
+            }
+            drill_.phase = DrillPhase::Pause;
+            drill_.deadline = s.time + cfg_.drillPause;
+            return;
+        }
+        drill_.steps.failOnTimeout(s.time);  // never silent: the missing step and its tip
+    }
+    if (drill_.steps.finished()) fullRepDone(drill_.steps.isComplete(), out);
 }
 
 void FirstTouchModule::tickDrill(const TickContext& ctx, Actions& out) {
@@ -641,38 +1071,37 @@ void FirstTouchModule::tickDrill(const TickContext& ctx, Actions& out) {
     const Snapshot& s = ctx.snap;
     drill_.now = s.time;
     if (s.paused) return;
+    updateLiveFacts(s);
     switch (drill_.phase) {
-    case DrillPhase::Place: {
-        if (!s.car.valid || !s.ball.valid) return;
-        if (!drill_.havePose || !cfg_.drillResetCar) {
-            drill_.pose = ft::poseFromCar(s.car);
-            drill_.havePose = true;
+    case DrillPhase::Place: placeRep(ctx, out); break;
+    case DrillPhase::Ready:
+        if (drill_.ready.update(s, out)) {
+            launchRep(s, out);
+        } else {
+            applyHold(drill_.hold, &s, out);  // the get-ready phase only runs with the car held
+            ignoreTouchesUntil_ = s.frame;
+            havePrev_ = false;
         }
-        drill_.current = drill_.type == ft::DrillType::Mix ? ft::pickMixType(drill_.rng, drill_.current) : drill_.type;
-        const auto i = static_cast<size_t>(drill_.current);
-        drill_.repLevel = stairs_[i].level();
-        drill_.repCriteria = criteriaFor(drill_.repLevel);
-        const ft::DrillSpawn spawn = ft::makeSpawn(drill_.current, drill_.pose, drill_.repLevel, drill_.rng);
-        out.setBall = spawn.ball;
-        if (cfg_.drillResetCar) out.setCar = ft::carPlacementFor(drill_.pose, cfg_.drillFullBoost);
-        else if (cfg_.drillFullBoost) out.setBoost = 100.f;
-        drill_.placeFrame = s.frame;
-        ignoreTouchesUntil_ = s.frame;
-        drill_.deadline = s.time + drill_.repCriteria.timeout;
-        drill_.repInput = false;
-        drill_.phase = DrillPhase::WaitTouch;
-        cancelPending();
-        endChain();
-        havePrev_ = false;  // our own teleport is not a "reset"
         break;
-    }
     case DrillPhase::WaitTouch: {
+        if (drill_.full && drill_.type != ft::DrillType::Mix) {
+            tickFull(ctx, out);
+            break;
+        }
+        if (drill_.hangMode != ft::HangRelease::None) tickHanging(s, out);
         if (s.frame > drill_.placeFrame + 1 && inputActive(s.in)) drill_.repInput = true;
         if (s.time < drill_.deadline) break;
+        const std::string tip = drill_.hangMode == ft::HangRelease::OnJump
+                                    ? "Mets la balle au-dessus de l'avant de ton toit, puis saute."
+                                    : "Va chercher la balle plus tôt.";
+        if (drill_.repInput && drill_.full) {
+            matchBallDone(false, "temps écoulé", tip, out);
+            break;
+        }
         if (drill_.repInput) {
             recordDrillRep(false);
             drill_.lastOutcome = "Temps écoulé.";
-            drill_.lastTip = "Va chercher la balle plus tôt.";
+            drill_.lastTip = tip;
             out.requestSave = true;
         } else {
             ++drill_.idleReps;
@@ -685,7 +1114,11 @@ void FirstTouchModule::tickDrill(const TickContext& ctx, Actions& out) {
         }
         drill_.lastSuccess = false;
         drill_.phase = DrillPhase::Pause;
-        drill_.deadline = s.time + cfg_.drillPause;
+        drill_.deadline = s.time + (drill_.full ? ft::kMatchGap : cfg_.drillPause);
+        if (drill_.type == ft::DrillType::Mix) {
+            drill_.nextType = ft::pickMixType(drill_.rng, drill_.current, mixWeights(false, nullptr));
+            drill_.haveNext = true;
+        }
         break;
     }
     case DrillPhase::Evaluate:
@@ -696,6 +1129,7 @@ void FirstTouchModule::tickDrill(const TickContext& ctx, Actions& out) {
         break;
     case DrillPhase::Idle: break;
     }
+    drill_.prevJump = s.in.jump;
 }
 
 // ---- Views ----------------------------------------------------------------------------------------------
@@ -703,10 +1137,15 @@ FirstTouchModule::DrillView FirstTouchModule::drillStatus() const {
     DrillView v;
     v.active = drill_.active;
     if (!drill_.active) return v;
+    v.full = drill_.full;
     v.type = drill_.type;
     v.current = drill_.current;
     v.phase = drill_.phase;
-    v.level = drill_.phase == DrillPhase::Place ? stairs_[static_cast<size_t>(drill_.current)].level() : drill_.repLevel;
+    if (drill_.phase == DrillPhase::Place)
+        v.level = drill_.full ? fullStairs_[static_cast<size_t>(drill_.type)].level()
+                              : stairs_[static_cast<size_t>(drill_.current)].level();
+    else
+        v.level = drill_.repLevel;
     v.playerLevel = ft::playerLevel(v.level);
     v.criteria = drill_.phase == DrillPhase::Place ? criteriaFor(v.level) : drill_.repCriteria;
     v.reps = drill_.reps;
@@ -717,12 +1156,37 @@ FirstTouchModule::DrillView FirstTouchModule::drillStatus() const {
     v.lastOutcome = drill_.lastOutcome;
     v.lastTip = drill_.lastTip;
     v.lastSuccess = drill_.lastSuccess;
+    v.readyLine = drill_.phase == DrillPhase::Ready ? drill_.ready.hudLine(drill_.now) : std::string();
+    if (drill_.type == ft::DrillType::Mix) {
+        if (drill_.haveNext) v.nextBall = ft::drillName(drill_.nextType);
+        else if (drill_.phase == DrillPhase::Ready) v.nextBall = ft::drillName(drill_.current);
+    }
+    if (drill_.full && drill_.type != ft::DrillType::Mix) {
+        if (!drill_.steps.idle()) {
+            std::vector<PanelLine> lines;
+            StepHudStyle st;
+            st.flashSeconds = 0.f;
+            appendStepLines(lines, drill_.steps, drill_.now, st);
+            for (const auto& l : lines) v.steps.push_back(l.text);
+        } else {
+            v.steps = ft::fullLabels(drill_.type, v.playerLevel);
+        }
+    }
+    v.matchBall = drill_.matchBall;
+    v.matchPassed = drill_.matchPassed;
+    v.waitingWall = drill_.waitingWall;
     return v;
 }
 
 FirstTouchModule::DrillLevelView FirstTouchModule::drillLevel(ft::DrillType t) const {
     DrillLevelView v;
     const auto i = static_cast<size_t>(t);
+    if (i < fullStairs_.size()) {
+        const Staircase& f = fullStairs_[i];
+        v.fullLevel = f.level();
+        v.fullAttempts = f.attempts();
+        v.fullSuccesses = f.successes();
+    }
     if (i >= stairs_.size()) return v;
     const Staircase& s = stairs_[i];
     v.level = s.level();
@@ -732,6 +1196,7 @@ FirstTouchModule::DrillLevelView FirstTouchModule::drillLevel(ft::DrillType t) c
     v.recentRate = s.recentRate();
     v.sessionReps = drillSessionReps_[i];
     v.sessionSuccesses = drillSessionSuccesses_[i];
+    v.mixUnlocked = ft::mixUnlocked(t, s.level(), s.successes());
     return v;
 }
 
@@ -771,6 +1236,9 @@ void FirstTouchModule::save(Store& store) const {
         stairs_[static_cast<size_t>(i)].save(store, key);
         store.setFloat(key + ".best", drillBest_[static_cast<size_t>(i)]);
     }
+    for (int i = 0; i <= ft::kDrillKinds; ++i)
+        fullStairs_[static_cast<size_t>(i)].save(store, std::string("firsttouch.full.") +
+                                                            ft::drillId(static_cast<ft::DrillType>(i)));
 }
 
 void FirstTouchModule::load(const Store& store) {
@@ -814,6 +1282,10 @@ void FirstTouchModule::load(const Store& store) {
         // Only a played level is kept: the previous version saved untried drills at its old start value.
         if (store.getInt(key + ".attempts", 0) > 0) s.load(store, key);
         drillBest_[static_cast<size_t>(i)] = clampf(store.getFloat(key + ".best", s.level()), 0.f, 1.f);
+    }
+    for (int i = 0; i <= ft::kDrillKinds; ++i) {
+        const std::string key = std::string("firsttouch.full.") + ft::drillId(static_cast<ft::DrillType>(i));
+        if (store.getInt(key + ".attempts", 0) > 0) fullStairs_[static_cast<size_t>(i)].load(store, key);
     }
 }
 

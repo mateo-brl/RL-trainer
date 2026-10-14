@@ -297,6 +297,28 @@ inline void setDrillLevel(FirstTouchModule& m, ft::DrillType t, float level) {
     m.load(st);
 }
 
+// Runs the get-ready hold of the current ball until the drill is live (fix 1): the first ball of a drill waits for the
+// throttle (released once, then pressed) and counts down 3 s; the next balls hold for their level's time. `s` is
+// advanced frame by frame (its car and ball are kept as given, inputs cleared at the end). Returns everything
+// emitted, the GO tick (release) included.
+inline Actions passReady(Harness& h, Snapshot& s, int maxTicks = 900) {
+    Actions acc;
+    for (int i = 0; i < maxTicks; ++i) {
+        const auto ph = h.mod.drillStatus().phase;
+        if (ph != FirstTouchModule::DrillPhase::Ready && ph != FirstTouchModule::DrillPhase::Place) break;
+        s.frame += 1;
+        s.time = static_cast<float>(s.frame) / kTickRate;
+        s.in = Inputs{};
+        s.in.throttle = i == 0 ? 0.f : 1.f;
+        acc.merge(h.tick(s));
+    }
+    s.in = Inputs{};
+    return acc;
+}
+
+// A frame safely after the release of the current ball (for scripted touches).
+inline int64_t afterGo(const Harness& h, int ticks = 30) { return h.latest.frame + ticks; }
+
 // Main lines of a panel: what the compact HUD shows (detail lines are hidden).
 inline std::vector<std::string> mainLines(const DrawPanel& p) {
     std::vector<std::string> v;

@@ -79,6 +79,10 @@ void refreshNow(const UiContext& ctx) {
     std::shared_ptr<GameWrapper> gw = ctx.game;
     auto apply = ctx.applyActions;
     ctx.runOnGame([eng, ps, gw, apply]() {
+        if (!ps->canRead()) {
+            if (gw) gw->Toast("RL Trainer", "Lance le freeplay pour lire ta config.", "default", 3.5f, ToastType_Info);
+            return;
+        }
         PlayerProfile previous;
         bool accents = false;
         {

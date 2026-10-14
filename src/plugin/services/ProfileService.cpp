@@ -71,38 +71,39 @@ std::string trimBind(const std::string& s) {
 ProfileService::ProfileService(std::shared_ptr<GameWrapper> gw, std::shared_ptr<CVarManagerWrapper> cvars)
     : gw_(std::move(gw)), cvars_(std::move(cvars)) {}
 
-bool ProfileService::readBallCam(PlayerControllerWrapper& pc, bool& out) const {
-    if (pc.IsNull()) return false;
-    PriWrapper pri = pc.GetPRI();
+bool ProfileService::canRead() const {
+    if (!gw_ || gw_->IsInOnlineGame() || gw_->IsInReplay()) return false;
+    return gw_->IsInFreeplay() || gw_->IsInCustomTraining() || gw_->IsInGame();
+}
+
+bool ProfileService::readBallCam(CarWrapper& car, bool& out) const {
+    // The car's own PRI, never PlayerController::GetPRI() (see canRead()).
+    if (car.IsNull()) return false;
+    PriWrapper pri = car.GetPRI();
     if (pri.IsNull()) return false;
     out = pri.GetbUsingSecondaryCamera() != 0;
     return true;
 }
 
 bool ProfileService::readCamera(CameraProfile& out) const {
-    if (!gw_) return false;
-    // Live camera first (per-device overrides), only in a game with our own car (not in replays/menus).
-    if (!gw_->IsInReplay()) {
-        CarWrapper car = gw_->GetLocalCar();
-        if (!car.IsNull()) {
-            CameraWrapper cam = gw_->GetCamera();
-            if (!cam.IsNull()) {
-                const ProfileCameraSettings c = cam.GetCameraSettings();
-                if (plausibleCamera(c)) {
-                    out = toCameraProfile(c, out.ballCam);
-                    return true;
-                }
+    if (!canRead()) return false;
+    // Live camera first (per-device overrides), only with our own car on the field.
+    CarWrapper car = gw_->GetLocalCar();
+    if (!car.IsNull()) {
+        CameraWrapper cam = gw_->GetCamera();
+        if (!cam.IsNull()) {
+            const ProfileCameraSettings c = cam.GetCameraSettings();
+            if (plausibleCamera(c)) {
+                out = toCameraProfile(c, out.ballCam);
+                return true;
             }
-            PlayerControllerWrapper pc = gw_->GetPlayerController();
-            if (!pc.IsNull()) {
-                PriWrapper pri = pc.GetPRI();
-                if (!pri.IsNull()) {
-                    const ProfileCameraSettings c = pri.GetCameraSettings();
-                    if (plausibleCamera(c)) {
-                        out = toCameraProfile(c, out.ballCam);
-                        return true;
-                    }
-                }
+        }
+        PriWrapper pri = car.GetPRI();
+        if (!pri.IsNull()) {
+            const ProfileCameraSettings c = pri.GetCameraSettings();
+            if (plausibleCamera(c)) {
+                out = toCameraProfile(c, out.ballCam);
+                return true;
             }
         }
     }
@@ -130,7 +131,7 @@ std::string ProfileService::readBodyName(int bodyId) const {
 
 PlayerProfile ProfileService::read(const PlayerProfile& previous) const {
     PlayerProfile p = previous;
-    if (!gw_) return p;
+    if (!canRead()) return p;
     p.valid = true;
     p.metric = gw_->GetbMetric() != 0;
 
@@ -146,8 +147,9 @@ PlayerProfile ProfileService::read(const PlayerProfile& previous) const {
 
     CameraProfile cam = p.camera;
     if (readCamera(cam)) p.camera = cam;
+    CarWrapper car = gw_->GetLocalCar();
     bool ballCam = p.camera.ballCam;
-    if (readBallCam(pc, ballCam)) p.camera.ballCam = ballCam;
+    if (readBallCam(car, ballCam)) p.camera.ballCam = ballCam;
 
     // The SDK returns (key, action) pairs (InputLogger, StreamAPIPlugin); normalizeBindings detects the order anyway.
     // An empty answer (loading screens) keeps the previous lists.
@@ -161,7 +163,6 @@ PlayerProfile ProfileService::read(const PlayerProfile& previous) const {
     // Body and hitbox change together: the extent reads 0 on the first tick after a spawn (physics.md 7.2), and a
     // new body paired with the previous (or default Octane) hitbox would be announced with the wrong family.
     // quickChanged() keeps asking for a read while the body differs, so the pair lands on a later read.
-    CarWrapper car = gw_->GetLocalCar();
     if (!car.IsNull()) {
         const int body = car.GetLoadoutBody();
         Vec3 extent, offset;
@@ -188,15 +189,15 @@ PlayerProfile ProfileService::read(const PlayerProfile& previous) const {
 }
 
 bool ProfileService::quickChanged(const PlayerProfile& current) const {
-    if (!gw_) return false;
+    if (!canRead()) return false;
     if (!current.valid) return true;
 
     PlayerControllerWrapper pc = gw_->GetPlayerController();
     if (!pc.IsNull() && pc.GetbUsingGamepad() != current.usingGamepad) return true;
-    bool ballCam = current.camera.ballCam;
-    if (readBallCam(pc, ballCam) && ballCam != current.camera.ballCam) return true;
-
     CarWrapper car = gw_->GetLocalCar();
+    bool ballCam = current.camera.ballCam;
+    if (readBallCam(car, ballCam) && ballCam != current.camera.ballCam) return true;
+
     if (!car.IsNull()) {
         const int body = car.GetLoadoutBody();
         if (body > 0) {  // same condition as read(): no endless full reads while the body is unreadable

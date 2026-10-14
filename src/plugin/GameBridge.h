@@ -28,6 +28,9 @@ public:
 
     // Current game mode (online, freeplay, workshop...). `isStockMap` tells if the map is a stock arena.
     GameMode detectMode(bool isStockMap) const;
+    // Freeplay, custom training, offline match or workshop map: the only places where the local car and the
+    // player controller wrappers are safe to read (menus give non-null garbage, online is off limits).
+    bool inLocalGame() const;
 
     // Applies world/feedback actions. `params` is the SetVehicleInput params (ControllerInput*) when called
     // from that pre-hook, otherwise null (input overrides are then ignored).

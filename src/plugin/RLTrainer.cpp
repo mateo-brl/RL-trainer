@@ -68,8 +68,8 @@ void RLTrainer::onLoad() {
         if (*alive) guarded(cvarManager, "draw", [&] { onDraw(canvas); });
     });
 
-    refreshContext();
-    refreshProfile(true);
+    // No game reads here: BakkesMod loads plugins in the main menu, where player wrappers are not safe.
+    // The first periodic tick (0.25 s) reads the context; the profile is read once a game is running.
     schedulePeriodic();
     gameWrapper->SetTimeout([alive = alive_, this](GameWrapper*) {
         if (!*alive) return;
@@ -97,9 +97,11 @@ void RLTrainer::onUnload() {
         CVarWrapper speed = cvarManager->getCvar("sv_soccar_gamespeed");
         if (!speed.IsNull()) speed.setValue(1.f);
     }
-    if (bridge_) bridge_->restoreBoostRules();
-    CarWrapper car = gameWrapper->GetLocalCar();
-    if (!car.IsNull()) car.SetbDriving(1);
+    if (bridge_ && bridge_->inLocalGame()) {
+        bridge_->restoreBoostRules();
+        CarWrapper car = gameWrapper->GetLocalCar();
+        if (!car.IsNull()) car.SetbDriving(1);
+    }
 }
 
 // ---- Cvars and commands ----------------------------------------------------------------------------------
@@ -262,6 +264,8 @@ void RLTrainer::run(Actions& actions, void* params) {
 // ---- Drawing ---------------------------------------------------------------------------------------------
 void RLTrainer::onDraw(CanvasWrapper canvas) {
     if (gameWrapper->IsInOnlineGame()) return;
+    // Nothing to draw in menus, and camera/car wrappers are not safe there.
+    if (!bridge_->inLocalGame() && !gameWrapper->IsInReplay()) return;
     GeneralConfig general;
     {
         auto lk = engine_->lock();
@@ -366,6 +370,7 @@ void RLTrainer::refreshContext() {
 }
 
 void RLTrainer::refreshProfile(bool force) {
+    if (!profile_->canRead()) return;  // a pending request waits for the next game
     // "rlt profile refresh" (console or tab) asks for a full read even when nothing seems to have changed.
     {
         auto lk = engine_->lock();
